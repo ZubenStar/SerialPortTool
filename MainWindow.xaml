@@ -1,0 +1,155 @@
+<Window
+    x:Class="SerialPortTool.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="{x:Bind ViewModel.Title, Mode=OneWay}">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Menu Bar -->
+        <MenuBar Grid.Row="0">
+            <MenuBarItem Title="文件">
+                <MenuFlyoutItem Text="新建连接" Click="NewConnection_Click"/>
+                <MenuFlyoutSeparator/>
+                <MenuFlyoutItem Text="退出" Click="Exit_Click"/>
+            </MenuBarItem>
+            <MenuBarItem Title="工具">
+                <MenuFlyoutItem Text="扫描串口" Command="{x:Bind ViewModel.ScanPortsCommand}"/>
+                <MenuFlyoutItem Text="清空日志"/>
+            </MenuBarItem>
+            <MenuBarItem Title="帮助">
+                <MenuFlyoutItem Text="关于"/>
+            </MenuBarItem>
+        </MenuBar>
+
+        <!-- Main Content -->
+        <Grid Grid.Row="1" Padding="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="250"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Sidebar -->
+            <Grid Grid.Column="0" Padding="0,0,8,0">
+                <StackPanel Spacing="16">
+                    <!-- Available Ports -->
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="可用串口" 
+                                   Style="{StaticResource SubtitleTextBlockStyle}"
+                                   FontWeight="SemiBold"/>
+                        
+                        <Button Content="🔄 扫描串口" 
+                                Command="{x:Bind ViewModel.ScanPortsCommand}"
+                                HorizontalAlignment="Stretch"/>
+                        
+                        <ListView ItemsSource="{x:Bind ViewModel.AvailablePorts, Mode=OneWay}"
+                                  SelectionMode="Single"
+                                  Height="150">
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="x:String">
+                                    <Grid>
+                                        <TextBlock Text="{x:Bind}" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </StackPanel>
+
+                    <!-- Open Ports -->
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="已打开串口" 
+                                   Style="{StaticResource SubtitleTextBlockStyle}"
+                                   FontWeight="SemiBold"/>
+                        
+                        <ListView ItemsSource="{x:Bind ViewModel.OpenPorts, Mode=OneWay}"
+                                  SelectionMode="Single"
+                                  Height="200">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="{Binding PortName}" 
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding Statistics.ReceivedBytes, Mode=OneWay}" 
+                                                   FontSize="12"
+                                                   Opacity="0.7"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+
+            <!-- Main Content Area -->
+            <Grid Grid.Column="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Logs Display -->
+                <ScrollViewer Grid.Row="0" 
+                              VerticalScrollBarVisibility="Auto"
+                              Padding="8"
+                              Background="{ThemeResource LayerFillColorDefaultBrush}">
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.AllLogs, Mode=OneWay}">
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,2">
+                                    <TextBlock>
+                                        <Run Text="{Binding Timestamp, Mode=OneWay}"/>
+                                        <Run Text=" ["/>
+                                        <Run Text="{Binding Level, Mode=OneWay}"/>
+                                        <Run Text="] ["/>
+                                        <Run Text="{Binding PortName, Mode=OneWay}"/>
+                                        <Run Text="] "/>
+                                        <Run Text="{Binding Content, Mode=OneWay}"/>
+                                    </TextBlock>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                </ScrollViewer>
+
+                <!-- Send Area -->
+                <StackPanel Grid.Row="1" 
+                            Spacing="8" 
+                            Padding="8"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <TextBox Grid.Column="0" 
+                                 PlaceholderText="输入要发送的数据..."
+                                 Margin="0,0,8,0"/>
+                        
+                        <Button Grid.Column="1" 
+                                Content="发送"
+                                Style="{StaticResource AccentButtonStyle}"/>
+                    </Grid>
+                </StackPanel>
+            </Grid>
+        </Grid>
+
+        <!-- Status Bar -->
+        <Grid Grid.Row="2" 
+              Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+              Padding="8,4"
+              BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+              BorderThickness="0,1,0,0">
+            <TextBlock Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                       VerticalAlignment="Center"/>
+        </Grid>
+    </Grid>
+</Window>
