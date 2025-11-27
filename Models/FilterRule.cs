@@ -1,3 +1,4 @@
+using System;
 using SerialPortTool.Core.Enums;
 
 namespace SerialPortTool.Models;
