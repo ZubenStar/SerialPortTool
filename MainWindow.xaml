@@ -76,7 +76,7 @@
                         <ListView x:Name="PortListView"
                                   ItemsSource="{x:Bind ViewModel.AvailablePorts, Mode=OneWay}"
                                   SelectionMode="Single"
-                                  Height="100"
+                                  MaxHeight="300"
                                   SelectionChanged="PortListView_SelectionChanged">
                             <ListView.ItemTemplate>
                                 <DataTemplate x:DataType="x:String">
