@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using SerialPortTool.ViewModels;
 using System;
 
@@ -59,5 +60,27 @@ public sealed partial class MainWindow : Window
             await portVm.SendDataCommand.ExecuteAsync(null);
             SendTextBox.Text = string.Empty;
         }
+    }
+
+    private async void ClosePort_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button button && button.Tag is string portName)
+        {
+            await ViewModel.ClosePortCommand.ExecuteAsync(portName);
+        }
+    }
+
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (sender is TextBox textBox)
+        {
+            ViewModel.SearchText = textBox.Text;
+            ViewModel.FilterLogs();
+        }
+    }
+
+    private void ClearLogs_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.ClearLogsCommand.Execute(null);
     }
 }

@@ -98,15 +98,28 @@
                                   Height="200">
                             <ListView.ItemTemplate>
                                 <DataTemplate>
-                                    <StackPanel Spacing="4">
-                                        <TextBlock Text="{Binding PortName}"
-                                                   FontWeight="SemiBold"/>
-                                        <TextBlock FontSize="12" Opacity="0.7">
-                                            <Run Text="Received: "/>
-                                            <Run Text="{Binding Statistics.ReceivedBytes, Mode=OneWay}"/>
-                                            <Run Text=" bytes"/>
-                                        </TextBlock>
-                                    </StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        
+                                        <StackPanel Grid.Column="0" Spacing="4">
+                                            <TextBlock Text="{Binding PortName}"
+                                                       FontWeight="SemiBold"/>
+                                            <TextBlock Text="{Binding StatisticsDisplay, Mode=OneWay}"
+                                                       FontSize="12"
+                                                       Opacity="0.7"/>
+                                        </StackPanel>
+                                        
+                                        <Button Grid.Column="1"
+                                                Content="❌"
+                                                FontSize="12"
+                                                Padding="4"
+                                                VerticalAlignment="Center"
+                                                Click="ClosePort_Click"
+                                                Tag="{Binding PortName}"/>
+                                    </Grid>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
@@ -117,37 +130,51 @@
             <!-- Main Content Area -->
             <Grid Grid.Column="1">
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- Logs Display -->
-                <ScrollViewer Grid.Row="0" 
-                              VerticalScrollBarVisibility="Auto"
-                              Padding="8"
-                              Background="{ThemeResource LayerFillColorDefaultBrush}">
-                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.AllLogs, Mode=OneWay}">
-                        <ItemsRepeater.ItemTemplate>
-                            <DataTemplate>
-                                <Grid Margin="0,2">
-                                    <TextBlock>
-                                        <Run Text="{Binding Timestamp, Mode=OneWay}"/>
-                                        <Run Text=" ["/>
-                                        <Run Text="{Binding Level, Mode=OneWay}"/>
-                                        <Run Text="] ["/>
-                                        <Run Text="{Binding PortName, Mode=OneWay}"/>
-                                        <Run Text="] "/>
-                                        <Run Text="{Binding Content, Mode=OneWay}"/>
-                                    </TextBlock>
-                                </Grid>
-                            </DataTemplate>
-                        </ItemsRepeater.ItemTemplate>
-                    </ItemsRepeater>
-                </ScrollViewer>
+                <!-- Search and Controls -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="8" Spacing="8">
+                    <TextBox x:Name="SearchBox"
+                             PlaceholderText="搜索日志..."
+                             TextChanged="SearchBox_TextChanged"
+                             Width="300"/>
+                    
+                    <Button Content="清空"
+                            Click="ClearLogs_Click"/>
+                    
+                    <CheckBox Content="自动滚动"
+                              IsChecked="True"
+                              x:Name="AutoScrollCheckBox"/>
+                </StackPanel>
+
+                <!-- Logs Display with Virtualization -->
+                <ListView Grid.Row="1"
+                          x:Name="LogsListView"
+                          ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
+                          SelectionMode="Extended"
+                          Background="{ThemeResource LayerFillColorDefaultBrush}"
+                          Padding="8">
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock TextWrapping="Wrap" IsTextSelectionEnabled="True">
+                                <Run Text="{Binding Timestamp, Mode=OneWay}"/>
+                                <Run Text=" ["/>
+                                <Run Text="{Binding Level, Mode=OneWay}"/>
+                                <Run Text="] ["/>
+                                <Run Text="{Binding PortName, Mode=OneWay}"/>
+                                <Run Text="] "/>
+                                <Run Text="{Binding Content, Mode=OneWay}"/>
+                            </TextBlock>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
 
                 <!-- Send Area -->
-                <StackPanel Grid.Row="1" 
-                            Spacing="8" 
+                <StackPanel Grid.Row="2"
+                            Spacing="8"
                             Padding="8"
                             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
                     <Grid>

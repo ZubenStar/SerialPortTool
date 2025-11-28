@@ -35,7 +35,15 @@ public partial class MainViewModel : ObservableObject
     private ObservableCollection<LogEntry> _allLogs = new();
 
     [ObservableProperty]
+    private ObservableCollection<LogEntry> _displayLogs = new();
+
+    [ObservableProperty]
     private ObservableCollection<FilterRule> _filters = new();
+
+    [ObservableProperty]
+    private string _searchText = string.Empty;
+
+    private const int MaxLogCount = 5000; // Limit logs to prevent freezing
 
     [ObservableProperty]
     private string _statusMessage = "Ready";
@@ -146,7 +154,12 @@ public partial class MainViewModel : ObservableObject
             var opened = await _serialPortService.OpenPortAsync(config);
             if (opened)
             {
-                var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService);
+                var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue);
+                
+                // Initialize statistics display
+                var stats = _serialPortService.GetStatistics(portName);
+                portViewModel.UpdateStatistics(stats);
+                
                 OpenPorts.Add(portViewModel);
                 StatusMessage = $"Port {portName} opened successfully";
                 _logger.LogInformation("Port {PortName} opened", portName);
@@ -160,6 +173,30 @@ public partial class MainViewModel : ObservableObject
         {
             StatusMessage = $"Error opening port {portName}: {ex.Message}";
             _logger.LogError(ex, "Error opening port {PortName}", portName);
+        }
+    }
+
+    [RelayCommand]
+    private void ClearLogs()
+    {
+        AllLogs.Clear();
+        DisplayLogs.Clear();
+        _logger.LogInformation("All logs cleared");
+    }
+
+    public void FilterLogs()
+    {
+        DisplayLogs.Clear();
+        
+        var filtered = string.IsNullOrEmpty(SearchText)
+            ? AllLogs
+            : AllLogs.Where(log =>
+                log.Content.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
+                log.PortName.Contains(SearchText, StringComparison.OrdinalIgnoreCase));
+
+        foreach (var log in filtered)
+        {
+            DisplayLogs.Add(log);
         }
     }
 
@@ -198,11 +235,34 @@ public partial class MainViewModel : ObservableObject
                 IsReceived = true
             };
 
-            AllLogs.Add(logEntry);
+            // Limit log count to prevent memory issues and UI freezing
+            if (AllLogs.Count >= MaxLogCount)
+            {
+                AllLogs.RemoveAt(0);
+                if (DisplayLogs.Count > 0)
+                {
+                    DisplayLogs.RemoveAt(0);
+                }
+            }
 
-            // Update port-specific logs
+            AllLogs.Add(logEntry);
+            
+            // Apply search filter
+            if (string.IsNullOrEmpty(SearchText) ||
+                logEntry.Content.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
+                logEntry.PortName.Contains(SearchText, StringComparison.OrdinalIgnoreCase))
+            {
+                DisplayLogs.Add(logEntry);
+            }
+
+            // Update port-specific logs and statistics
             var portVm = OpenPorts.FirstOrDefault(p => p.PortName == e.PortName);
-            portVm?.AddLog(logEntry);
+            if (portVm != null)
+            {
+                portVm.AddLog(logEntry);
+                // Update statistics from service
+                portVm.UpdateStatistics(_serialPortService.GetStatistics(e.PortName));
+            }
         });
     }
 
@@ -247,18 +307,25 @@ public partial class PortViewModel : ObservableObject
     private string _sendText = string.Empty;
 
     [ObservableProperty]
-    private PortStatistics _statistics = new();
+    private string _statisticsDisplay = "0 bytes";
+
+    private readonly DispatcherQueue? _dispatcherQueue;
 
     public PortViewModel(
         string portName,
         ISerialPortService serialPortService,
-        ILogFilterService logFilterService)
+        ILogFilterService logFilterService,
+        DispatcherQueue? dispatcherQueue = null)
     {
         _portName = portName;
         _serialPortService = serialPortService;
         _logFilterService = logFilterService;
+        _dispatcherQueue = dispatcherQueue;
+    }
 
-        _statistics.PortName = portName;
+    public void UpdateStatistics(PortStatistics stats)
+    {
+        StatisticsDisplay = $"↓ {stats.ReceivedBytes} bytes | ↑ {stats.SentBytes} bytes";
     }
 
     public void AddLog(LogEntry entry)
