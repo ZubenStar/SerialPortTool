@@ -257,45 +257,61 @@ public partial class MainViewModel : ObservableObject
         _dispatcherQueue.TryEnqueue(() =>
         {
             var text = Encoding.UTF8.GetString(e.Data);
-            var logEntry = new LogEntry
+            
+            // Split by newlines to create separate log entries for each line
+            var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            
+            foreach (var line in lines)
             {
-                PortName = e.PortName,
-                Content = text,
-                Level = Core.Enums.LogLevel.Info,
-                RawData = e.Data,
-                IsReceived = true
-            };
-
-            // Limit log count to prevent memory issues and UI freezing
-            if (AllLogs.Count >= MaxLogCount)
-            {
-                AllLogs.RemoveAt(0);
-                if (DisplayLogs.Count > 0)
+                // Skip empty lines at the end (but keep them if they're in the middle)
+                if (line == string.Empty && line == lines[lines.Length - 1])
+                    continue;
+                    
+                var logEntry = new LogEntry
                 {
-                    DisplayLogs.RemoveAt(0);
+                    PortName = e.PortName,
+                    Content = line,
+                    Level = Core.Enums.LogLevel.Info,
+                    RawData = Encoding.UTF8.GetBytes(line),
+                    IsReceived = true
+                };
+
+                // Limit log count to prevent memory issues and UI freezing
+                if (AllLogs.Count >= MaxLogCount)
+                {
+                    AllLogs.RemoveAt(0);
+                    if (DisplayLogs.Count > 0)
+                    {
+                        DisplayLogs.RemoveAt(0);
+                    }
+                }
+
+                AllLogs.Add(logEntry);
+                
+                // Apply search filter
+                if (string.IsNullOrEmpty(SearchText) ||
+                    logEntry.Content.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
+                    logEntry.PortName.Contains(SearchText, StringComparison.OrdinalIgnoreCase))
+                {
+                    DisplayLogs.Add(logEntry);
+                }
+
+                // Write to log file
+                _ = _fileLoggerService.WriteLogAsync(e.PortName, logEntry);
+
+                // Update port-specific logs and statistics
+                var portVm = OpenPorts.FirstOrDefault(p => p.PortName == e.PortName);
+                if (portVm != null)
+                {
+                    portVm.AddLog(logEntry);
                 }
             }
-
-            AllLogs.Add(logEntry);
             
-            // Apply search filter
-            if (string.IsNullOrEmpty(SearchText) ||
-                logEntry.Content.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
-                logEntry.PortName.Contains(SearchText, StringComparison.OrdinalIgnoreCase))
+            // Update statistics once after processing all lines (moved outside the loop)
+            var portViewModel = OpenPorts.FirstOrDefault(p => p.PortName == e.PortName);
+            if (portViewModel != null)
             {
-                DisplayLogs.Add(logEntry);
-            }
-
-            // Write to log file
-            _ = _fileLoggerService.WriteLogAsync(e.PortName, logEntry);
-
-            // Update port-specific logs and statistics
-            var portVm = OpenPorts.FirstOrDefault(p => p.PortName == e.PortName);
-            if (portVm != null)
-            {
-                portVm.AddLog(logEntry);
-                // Update statistics from service
-                portVm.UpdateStatistics(_serialPortService.GetStatistics(e.PortName));
+                portViewModel.UpdateStatistics(_serialPortService.GetStatistics(e.PortName));
             }
 
             // Trigger auto-scroll if enabled
