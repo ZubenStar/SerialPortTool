@@ -159,9 +159,19 @@
                           SelectionMode="Extended"
                           Background="{ThemeResource LayerFillColorDefaultBrush}"
                           Padding="8">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="Padding" Value="0,2"/>
+                            <Setter Property="MinHeight" Value="0"/>
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                        </Style>
+                    </ListView.ItemContainerStyle>
                     <ListView.ItemTemplate>
                         <DataTemplate>
-                            <TextBlock TextWrapping="Wrap" IsTextSelectionEnabled="True">
+                            <TextBlock TextWrapping="Wrap"
+                                       IsTextSelectionEnabled="True"
+                                       Padding="0"
+                                       LineHeight="20">
                                 <Run Text="{Binding Timestamp, Mode=OneWay}"/>
                                 <Run Text=" ["/>
                                 <Run Text="{Binding Level, Mode=OneWay}"/>
