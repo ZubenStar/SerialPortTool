@@ -61,7 +61,7 @@ public partial class MainViewModel : ObservableObject
 
     public ObservableCollection<int> AvailableBaudRates { get; } = new()
     {
-        9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600
+        1152000, 3000000, 6000000
     };
 
     public ObservableCollection<int> AvailableDataBits { get; } = new()
@@ -264,7 +264,7 @@ public partial class PortViewModel : ObservableObject
     public void AddLog(LogEntry entry)
     {
         Logs.Add(entry);
-        
+
         if (_logFilterService.ShouldDisplay(entry))
         {
             FilteredLogs.Add(entry);
@@ -289,7 +289,7 @@ public partial class PortViewModel : ObservableObject
         try
         {
             await _serialPortService.SendTextAsync(PortName, SendText, Encoding.UTF8);
-            
+
             var logEntry = new LogEntry
             {
                 PortName = PortName,
@@ -297,7 +297,7 @@ public partial class PortViewModel : ObservableObject
                 Level = Core.Enums.LogLevel.Info,
                 IsReceived = false
             };
-            
+
             AddLog(logEntry);
             SendText = string.Empty;
         }
