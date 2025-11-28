@@ -100,4 +100,26 @@ public sealed partial class MainWindow : Window
     {
         ViewModel.ClearLogsCommand.Execute(null);
     }
+
+    private void OpenLogFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var logDirectory = ViewModel.GetLogDirectory();
+            if (!string.IsNullOrEmpty(logDirectory) && System.IO.Directory.Exists(logDirectory))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = logDirectory,
+                    UseShellExecute = true,
+                    Verb = "open"
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            // Log error - you may want to show a dialog to the user
+            System.Diagnostics.Debug.WriteLine($"Error opening log folder: {ex.Message}");
+        }
+    }
 }

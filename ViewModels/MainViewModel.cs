@@ -324,6 +324,12 @@ public partial class MainViewModel : ObservableObject
             _logger.LogError(e.Exception, "Error on port {PortName}", e.PortName);
         });
     }
+
+    public string GetLogDirectory()
+    {
+        var documentsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        return System.IO.Path.Combine(documentsPath, "SerialPortTool", "Logs");
+    }
 }
 
 /// <summary>

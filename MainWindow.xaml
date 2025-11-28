@@ -24,6 +24,8 @@
             <MenuBarItem Title="工具">
                 <MenuFlyoutItem Text="扫描串口" Command="{x:Bind ViewModel.ScanPortsCommand}"/>
                 <MenuFlyoutItem Text="清空日志"/>
+                <MenuFlyoutSeparator/>
+                <MenuFlyoutItem Text="打开日志文件夹" Click="OpenLogFolder_Click"/>
             </MenuBarItem>
             <MenuBarItem Title="帮助">
                 <MenuFlyoutItem Text="关于"/>
