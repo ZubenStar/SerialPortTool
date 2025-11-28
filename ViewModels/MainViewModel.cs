@@ -5,12 +5,57 @@ using Microsoft.UI.Dispatching;
 using SerialPortTool.Models;
 using SerialPortTool.Services;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
 namespace SerialPortTool.ViewModels;
+
+/// <summary>
+/// ObservableCollection that can suspend change notifications
+/// </summary>
+public class RangeObservableCollection<T> : ObservableCollection<T>
+{
+    private bool _suppressNotification = false;
+
+    public void AddRange(IEnumerable<T> items)
+    {
+        if (items == null) return;
+
+        _suppressNotification = true;
+        foreach (var item in items)
+        {
+            Add(item);
+        }
+        _suppressNotification = false;
+        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+    }
+
+    public void RemoveRange(IEnumerable<T> items)
+    {
+        if (items == null) return;
+
+        _suppressNotification = true;
+        foreach (var item in items)
+        {
+            Remove(item);
+        }
+        _suppressNotification = false;
+        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+    }
+
+    protected override void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
+    {
+        if (!_suppressNotification)
+        {
+            base.OnCollectionChanged(e);
+        }
+    }
+}
 
 /// <summary>
 /// 主窗口视图模型
@@ -37,13 +82,31 @@ public partial class MainViewModel : ObservableObject
     private ObservableCollection<LogEntry> _allLogs = new();
 
     [ObservableProperty]
-    private ObservableCollection<LogEntry> _displayLogs = new();
+    private RangeObservableCollection<LogEntry> _displayLogs = new();
 
     [ObservableProperty]
     private ObservableCollection<FilterRule> _filters = new();
 
-    [ObservableProperty]
     private string _searchText = string.Empty;
+    
+    public string SearchText
+    {
+        get => _searchText;
+        set
+        {
+            if (SetProperty(ref _searchText, value))
+            {
+                // Debounce filter updates to reduce UI thrashing
+                _filterDebounceTimer?.Dispose();
+                _filterDebounceTimer = new System.Threading.Timer(_ =>
+                {
+                    _dispatcherQueue.TryEnqueue(() => FilterLogs());
+                }, null, 150, System.Threading.Timeout.Infinite);
+            }
+        }
+    }
+    
+    private System.Threading.Timer? _filterDebounceTimer;
 
     [ObservableProperty]
     private bool _autoScroll = true;
@@ -214,7 +277,9 @@ public partial class MainViewModel : ObservableObject
 
     public void FilterLogs()
     {
-        // Use incremental updates instead of Clear() to prevent UI flashing
+        // CRITICAL: Never replace DisplayLogs collection, only modify in place
+        // This prevents ListView from rebinding and causing flicker
+        
         var filtered = (string.IsNullOrEmpty(SearchText)
             ? AllLogs
             : AllLogs.Where(log =>
@@ -222,32 +287,24 @@ public partial class MainViewModel : ObservableObject
                 log.PortName.Contains(SearchText, StringComparison.OrdinalIgnoreCase)))
             .ToList();
 
-        // Remove items that are no longer in the filtered list
+        var filteredSet = new HashSet<LogEntry>(filtered);
+        
+        // Remove items that no longer match filter (in reverse to maintain indices)
         for (int i = DisplayLogs.Count - 1; i >= 0; i--)
         {
-            if (!filtered.Contains(DisplayLogs[i]))
+            if (!filteredSet.Contains(DisplayLogs[i]))
             {
                 DisplayLogs.RemoveAt(i);
             }
         }
-
-        // Add new items that are in the filtered list but not in DisplayLogs
+        
+        // Add new items that match filter but aren't in DisplayLogs yet
+        var displaySet = new HashSet<LogEntry>(DisplayLogs);
         foreach (var log in filtered)
         {
-            if (!DisplayLogs.Contains(log))
+            if (!displaySet.Contains(log))
             {
-                // Find the correct insertion position to maintain order
-                int insertIndex = 0;
-                for (int i = 0; i < DisplayLogs.Count; i++)
-                {
-                    if (AllLogs.IndexOf(log) < AllLogs.IndexOf(DisplayLogs[i]))
-                    {
-                        insertIndex = i;
-                        break;
-                    }
-                    insertIndex = i + 1;
-                }
-                DisplayLogs.Insert(insertIndex, log);
+                DisplayLogs.Add(log);
             }
         }
     }
@@ -278,75 +335,88 @@ public partial class MainViewModel : ObservableObject
 
     private void OnDataReceived(object? sender, DataReceivedEventArgs e)
     {
-        // Use lower priority to reduce UI thread pressure
+        var text = Encoding.UTF8.GetString(e.Data);
+        
+        // Split by newlines to create separate log entries for each line
+        var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+        
+        // Batch process logs
+        var newLogs = new List<LogEntry>();
+        
+        foreach (var line in lines)
+        {
+            // Skip empty lines at the end (but keep them if they're in the middle)
+            if (line == string.Empty && line == lines[lines.Length - 1])
+                continue;
+                
+            var logEntry = new LogEntry
+            {
+                PortName = e.PortName,
+                Content = line,
+                Level = Core.Enums.LogLevel.Info,
+                RawData = Encoding.UTF8.GetBytes(line),
+                IsReceived = true
+            };
+
+            newLogs.Add(logEntry);
+            
+            // Write to log file asynchronously
+            _ = _fileLoggerService.WriteLogAsync(e.PortName, logEntry);
+        }
+
+        if (newLogs.Count == 0) return;
+
+        // Update AllLogs and DisplayLogs on UI thread using batch operations
         _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
         {
-            var text = Encoding.UTF8.GetString(e.Data);
-            
-            // Split by newlines to create separate log entries for each line
-            var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-            
-            // Batch process logs to reduce UI updates
-            var newLogs = new System.Collections.Generic.List<LogEntry>();
-            var logsToDisplay = new System.Collections.Generic.List<LogEntry>();
-            
-            foreach (var line in lines)
-            {
-                // Skip empty lines at the end (but keep them if they're in the middle)
-                if (line == string.Empty && line == lines[lines.Length - 1])
-                    continue;
-                    
-                var logEntry = new LogEntry
-                {
-                    PortName = e.PortName,
-                    Content = line,
-                    Level = Core.Enums.LogLevel.Info,
-                    RawData = Encoding.UTF8.GetBytes(line),
-                    IsReceived = true
-                };
-
-                newLogs.Add(logEntry);
-                
-                // Pre-filter logs before adding to display
-                if (string.IsNullOrEmpty(SearchText) ||
-                    logEntry.Content.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
-                    logEntry.PortName.Contains(SearchText, StringComparison.OrdinalIgnoreCase))
-                {
-                    logsToDisplay.Add(logEntry);
-                }
-                
-                // Write to log file asynchronously
-                _ = _fileLoggerService.WriteLogAsync(e.PortName, logEntry);
-            }
-
-            // Batch add to AllLogs
+            // Handle log count limit for AllLogs
             if (AllLogs.Count + newLogs.Count > MaxLogCount)
             {
                 int itemsToRemove = (AllLogs.Count + newLogs.Count) - MaxLogCount;
+                
+                // Collect logs to remove from DisplayLogs
+                var logsToRemoveFromDisplay = new List<LogEntry>();
                 for (int i = 0; i < itemsToRemove; i++)
                 {
-                    var removedLog = AllLogs[0];
-                    AllLogs.RemoveAt(0);
-                    // Remove from DisplayLogs if present
-                    if (DisplayLogs.Contains(removedLog))
+                    var log = AllLogs[i];
+                    if (DisplayLogs.Contains(log))
                     {
-                        DisplayLogs.Remove(removedLog);
+                        logsToRemoveFromDisplay.Add(log);
                     }
+                }
+                
+                // Remove from DisplayLogs using batch operation
+                if (logsToRemoveFromDisplay.Count > 0)
+                {
+                    DisplayLogs.RemoveRange(logsToRemoveFromDisplay);
+                }
+                
+                // Then remove from AllLogs
+                for (int i = 0; i < itemsToRemove; i++)
+                {
+                    AllLogs.RemoveAt(0);
                 }
             }
 
+            // Add to AllLogs
             foreach (var logEntry in newLogs)
             {
                 AllLogs.Add(logEntry);
             }
 
-            // Batch add to DisplayLogs
-            foreach (var logEntry in logsToDisplay)
+            // Filter and batch add to DisplayLogs
+            var logsToAdd = newLogs.Where(logEntry =>
+                string.IsNullOrEmpty(SearchText) ||
+                logEntry.Content.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
+                logEntry.PortName.Contains(SearchText, StringComparison.OrdinalIgnoreCase)
+            ).ToList();
+
+            if (logsToAdd.Count > 0)
             {
-                DisplayLogs.Add(logEntry);
+                DisplayLogs.AddRange(logsToAdd);
             }
 
-            // Update port-specific logs and statistics once
+            // Update port-specific logs and statistics
             var portVm = OpenPorts.FirstOrDefault(p => p.PortName == e.PortName);
             if (portVm != null)
             {
@@ -357,8 +427,8 @@ public partial class MainViewModel : ObservableObject
                 portVm.UpdateStatistics(_serialPortService.GetStatistics(e.PortName));
             }
 
-            // Trigger auto-scroll if enabled (only once after batch)
-            if (AutoScroll && logsToDisplay.Count > 0)
+            // Trigger auto-scroll if enabled
+            if (AutoScroll && logsToAdd.Count > 0)
             {
                 ScrollToBottomRequested?.Invoke(this, EventArgs.Empty);
             }
