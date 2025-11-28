@@ -1,51 +1,60 @@
 using System;
+using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace SerialPortTool.Models;
 
 /// <summary>
 /// 串口统计信息模型
 /// </summary>
-public class PortStatistics
+public partial class PortStatistics : ObservableObject
 {
     /// <summary>
     /// 串口名称
     /// </summary>
-    public string PortName { get; set; } = string.Empty;
+    [ObservableProperty]
+    private string _portName = string.Empty;
 
     /// <summary>
     /// 接收字节数
     /// </summary>
-    public long ReceivedBytes { get; set; }
+    [ObservableProperty]
+    private long _receivedBytes;
 
     /// <summary>
     /// 发送字节数
     /// </summary>
-    public long SentBytes { get; set; }
+    [ObservableProperty]
+    private long _sentBytes;
 
     /// <summary>
     /// 接收消息数
     /// </summary>
-    public long ReceivedMessages { get; set; }
+    [ObservableProperty]
+    private long _receivedMessages;
 
     /// <summary>
     /// 发送消息数
     /// </summary>
-    public long SentMessages { get; set; }
+    [ObservableProperty]
+    private long _sentMessages;
 
     /// <summary>
     /// 错误次数
     /// </summary>
-    public long ErrorCount { get; set; }
+    [ObservableProperty]
+    private long _errorCount;
 
     /// <summary>
     /// 连接时间
     /// </summary>
-    public DateTime? ConnectedAt { get; set; }
+    [ObservableProperty]
+    private DateTime? _connectedAt;
 
     /// <summary>
     /// 断开时间
     /// </summary>
-    public DateTime? DisconnectedAt { get; set; }
+    [ObservableProperty]
+    private DateTime? _disconnectedAt;
 
     /// <summary>
     /// 连接持续时间

@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
+using Microsoft.UI.Dispatching;
 using SerialPortTool.Models;
 using SerialPortTool.Services;
 using System;
@@ -19,6 +20,7 @@ public partial class MainViewModel : ObservableObject
     private readonly ISerialPortService _serialPortService;
     private readonly ILogFilterService _logFilterService;
     private readonly ILogger<MainViewModel> _logger;
+    private readonly DispatcherQueue _dispatcherQueue;
 
     [ObservableProperty]
     private string _title = "串口工具 - Multi-Port Serial Monitor";
@@ -41,6 +43,32 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private bool _isScanning = false;
 
+    [ObservableProperty]
+    private string _sendText = string.Empty;
+
+    // Port configuration properties
+    [ObservableProperty]
+    private int _baudRate = 115200;
+
+    [ObservableProperty]
+    private int _dataBits = 8;
+
+    [ObservableProperty]
+    private System.IO.Ports.StopBits _stopBits = System.IO.Ports.StopBits.One;
+
+    [ObservableProperty]
+    private System.IO.Ports.Parity _parity = System.IO.Ports.Parity.None;
+
+    public ObservableCollection<int> AvailableBaudRates { get; } = new()
+    {
+        9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600
+    };
+
+    public ObservableCollection<int> AvailableDataBits { get; } = new()
+    {
+        5, 6, 7, 8
+    };
+
     public MainViewModel(
         ISerialPortService serialPortService,
         ILogFilterService logFilterService,
@@ -49,6 +77,7 @@ public partial class MainViewModel : ObservableObject
         _serialPortService = serialPortService;
         _logFilterService = logFilterService;
         _logger = logger;
+        _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
 
         // Subscribe to events
         _serialPortService.DataReceived += OnDataReceived;
@@ -108,10 +137,10 @@ public partial class MainViewModel : ObservableObject
             var config = new SerialPortConfig
             {
                 PortName = portName,
-                BaudRate = 115200,
-                DataBits = 8,
-                StopBits = System.IO.Ports.StopBits.One,
-                Parity = System.IO.Ports.Parity.None
+                BaudRate = BaudRate,
+                DataBits = DataBits,
+                StopBits = StopBits,
+                Parity = Parity
             };
 
             var opened = await _serialPortService.OpenPortAsync(config);
@@ -157,34 +186,43 @@ public partial class MainViewModel : ObservableObject
 
     private void OnDataReceived(object? sender, DataReceivedEventArgs e)
     {
-        var text = Encoding.UTF8.GetString(e.Data);
-        var logEntry = new LogEntry
+        _dispatcherQueue.TryEnqueue(() =>
         {
-            PortName = e.PortName,
-            Content = text,
-            Level = Core.Enums.LogLevel.Info,
-            RawData = e.Data,
-            IsReceived = true
-        };
+            var text = Encoding.UTF8.GetString(e.Data);
+            var logEntry = new LogEntry
+            {
+                PortName = e.PortName,
+                Content = text,
+                Level = Core.Enums.LogLevel.Info,
+                RawData = e.Data,
+                IsReceived = true
+            };
 
-        AllLogs.Add(logEntry);
+            AllLogs.Add(logEntry);
 
-        // Update port-specific logs
-        var portVm = OpenPorts.FirstOrDefault(p => p.PortName == e.PortName);
-        portVm?.AddLog(logEntry);
+            // Update port-specific logs
+            var portVm = OpenPorts.FirstOrDefault(p => p.PortName == e.PortName);
+            portVm?.AddLog(logEntry);
+        });
     }
 
     private void OnPortStateChanged(object? sender, PortStateChangedEventArgs e)
     {
-        StatusMessage = $"Port {e.PortName}: {e.NewState}";
-        _logger.LogInformation("Port {PortName} state changed: {OldState} -> {NewState}",
-            e.PortName, e.OldState, e.NewState);
+        _dispatcherQueue.TryEnqueue(() =>
+        {
+            StatusMessage = $"Port {e.PortName}: {e.NewState}";
+            _logger.LogInformation("Port {PortName} state changed: {OldState} -> {NewState}",
+                e.PortName, e.OldState, e.NewState);
+        });
     }
 
     private void OnErrorOccurred(object? sender, Services.ErrorEventArgs e)
     {
-        StatusMessage = $"Error on {e.PortName}: {e.ErrorMessage}";
-        _logger.LogError(e.Exception, "Error on port {PortName}", e.PortName);
+        _dispatcherQueue.TryEnqueue(() =>
+        {
+            StatusMessage = $"Error on {e.PortName}: {e.ErrorMessage}";
+            _logger.LogError(e.Exception, "Error on port {PortName}", e.PortName);
+        });
     }
 }
 
@@ -263,7 +301,7 @@ public partial class PortViewModel : ObservableObject
             AddLog(logEntry);
             SendText = string.Empty;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             // Error will be handled by the service
         }

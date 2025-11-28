@@ -39,4 +39,25 @@ public sealed partial class MainWindow : Window
     {
         Application.Current.Exit();
     }
+
+    private async void PortListView_SelectionChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
+    {
+        if (sender is Microsoft.UI.Xaml.Controls.ListView listView &&
+            listView.SelectedItem is string portName &&
+            !string.IsNullOrEmpty(portName))
+        {
+            await ViewModel.OpenPortCommand.ExecuteAsync(portName);
+            listView.SelectedItem = null; // Deselect after opening
+        }
+    }
+
+    private async void SendButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (OpenPortListView.SelectedItem is ViewModels.PortViewModel portVm &&
+            !string.IsNullOrEmpty(SendTextBox.Text))
+        {
+            await portVm.SendDataCommand.ExecuteAsync(null);
+            SendTextBox.Text = string.Empty;
+        }
+    }
 }

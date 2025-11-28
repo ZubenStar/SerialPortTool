@@ -40,19 +40,42 @@
             <!-- Sidebar -->
             <Grid Grid.Column="0" Padding="0,0,8,0">
                 <StackPanel Spacing="16">
-                    <!-- Available Ports -->
+                    <!-- Port Configuration -->
                     <StackPanel Spacing="8">
-                        <TextBlock Text="可用串口" 
+                        <TextBlock Text="串口配置"
                                    Style="{StaticResource SubtitleTextBlockStyle}"
                                    FontWeight="SemiBold"/>
                         
-                        <Button Content="🔄 扫描串口" 
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="波特率:" FontSize="12"/>
+                            <ComboBox ItemsSource="{x:Bind ViewModel.AvailableBaudRates}"
+                                      SelectedItem="{x:Bind ViewModel.BaudRate, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch"/>
+                        </StackPanel>
+                        
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="数据位:" FontSize="12"/>
+                            <ComboBox ItemsSource="{x:Bind ViewModel.AvailableDataBits}"
+                                      SelectedItem="{x:Bind ViewModel.DataBits, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- Available Ports -->
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="可用串口"
+                                   Style="{StaticResource SubtitleTextBlockStyle}"
+                                   FontWeight="SemiBold"/>
+                        
+                        <Button Content="🔄 扫描串口"
                                 Command="{x:Bind ViewModel.ScanPortsCommand}"
                                 HorizontalAlignment="Stretch"/>
                         
-                        <ListView ItemsSource="{x:Bind ViewModel.AvailablePorts, Mode=OneWay}"
+                        <ListView x:Name="PortListView"
+                                  ItemsSource="{x:Bind ViewModel.AvailablePorts, Mode=OneWay}"
                                   SelectionMode="Single"
-                                  Height="150">
+                                  Height="100"
+                                  SelectionChanged="PortListView_SelectionChanged">
                             <ListView.ItemTemplate>
                                 <DataTemplate x:DataType="x:String">
                                     <Grid>
@@ -69,17 +92,20 @@
                                    Style="{StaticResource SubtitleTextBlockStyle}"
                                    FontWeight="SemiBold"/>
                         
-                        <ListView ItemsSource="{x:Bind ViewModel.OpenPorts, Mode=OneWay}"
+                        <ListView x:Name="OpenPortListView"
+                                  ItemsSource="{x:Bind ViewModel.OpenPorts, Mode=OneWay}"
                                   SelectionMode="Single"
                                   Height="200">
                             <ListView.ItemTemplate>
                                 <DataTemplate>
                                     <StackPanel Spacing="4">
-                                        <TextBlock Text="{Binding PortName}" 
+                                        <TextBlock Text="{Binding PortName}"
                                                    FontWeight="SemiBold"/>
-                                        <TextBlock Text="{Binding Statistics.ReceivedBytes, Mode=OneWay}" 
-                                                   FontSize="12"
-                                                   Opacity="0.7"/>
+                                        <TextBlock FontSize="12" Opacity="0.7">
+                                            <Run Text="Received: "/>
+                                            <Run Text="{Binding Statistics.ReceivedBytes, Mode=OneWay}"/>
+                                            <Run Text=" bytes"/>
+                                        </TextBlock>
                                     </StackPanel>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
@@ -130,13 +156,15 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         
-                        <TextBox Grid.Column="0" 
+                        <TextBox x:Name="SendTextBox"
+                                 Grid.Column="0"
                                  PlaceholderText="输入要发送的数据..."
                                  Margin="0,0,8,0"/>
                         
-                        <Button Grid.Column="1" 
+                        <Button Grid.Column="1"
                                 Content="发送"
-                                Style="{StaticResource AccentButtonStyle}"/>
+                                Style="{StaticResource AccentButtonStyle}"
+                                Click="SendButton_Click"/>
                     </Grid>
                 </StackPanel>
             </Grid>

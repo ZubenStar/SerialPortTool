@@ -1,4 +1,5 @@
 using System;
+using CommunityToolkit.Mvvm.ComponentModel;
 using SerialPortTool.Core.Enums;
 
 namespace SerialPortTool.Models;
@@ -6,7 +7,7 @@ namespace SerialPortTool.Models;
 /// <summary>
 /// 日志条目模型
 /// </summary>
-public class LogEntry
+public partial class LogEntry : ObservableObject
 {
     /// <summary>
     /// 日志ID
@@ -16,37 +17,44 @@ public class LogEntry
     /// <summary>
     /// 时间戳
     /// </summary>
-    public DateTime Timestamp { get; set; } = DateTime.Now;
+    [ObservableProperty]
+    private DateTime _timestamp = DateTime.Now;
 
     /// <summary>
     /// 串口名称
     /// </summary>
-    public string PortName { get; set; } = string.Empty;
+    [ObservableProperty]
+    private string _portName = string.Empty;
 
     /// <summary>
     /// 日志级别
     /// </summary>
-    public LogLevel Level { get; set; } = LogLevel.Info;
+    [ObservableProperty]
+    private LogLevel _level = LogLevel.Info;
 
     /// <summary>
     /// 日志内容
     /// </summary>
-    public string Content { get; set; } = string.Empty;
+    [ObservableProperty]
+    private string _content = string.Empty;
 
     /// <summary>
     /// 原始字节数据
     /// </summary>
-    public byte[]? RawData { get; set; }
+    [ObservableProperty]
+    private byte[]? _rawData;
 
     /// <summary>
     /// 数据格式
     /// </summary>
-    public DataFormat Format { get; set; } = DataFormat.Text;
+    [ObservableProperty]
+    private DataFormat _format = DataFormat.Text;
 
     /// <summary>
     /// 是否为接收数据(false为发送数据)
     /// </summary>
-    public bool IsReceived { get; set; } = true;
+    [ObservableProperty]
+    private bool _isReceived = true;
 
     /// <summary>
     /// 转换为字符串表示
