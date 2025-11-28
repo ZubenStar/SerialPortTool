@@ -43,7 +43,12 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private string _searchText = string.Empty;
 
+    [ObservableProperty]
+    private bool _autoScroll = true;
+
     private const int MaxLogCount = 5000; // Limit logs to prevent freezing
+
+    public event EventHandler? ScrollToBottomRequested;
 
     [ObservableProperty]
     private string _statusMessage = "Ready";
@@ -262,6 +267,12 @@ public partial class MainViewModel : ObservableObject
                 portVm.AddLog(logEntry);
                 // Update statistics from service
                 portVm.UpdateStatistics(_serialPortService.GetStatistics(e.PortName));
+            }
+
+            // Trigger auto-scroll if enabled
+            if (AutoScroll)
+            {
+                ScrollToBottomRequested?.Invoke(this, EventArgs.Empty);
             }
         });
     }

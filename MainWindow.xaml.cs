@@ -29,6 +29,23 @@ public sealed partial class MainWindow : Window
         {
             appWindow.Resize(new Windows.Graphics.SizeInt32(1200, 800));
         }
+        
+        // Subscribe to scroll events
+        ViewModel.ScrollToBottomRequested += OnScrollToBottomRequested;
+    }
+    
+    private void OnScrollToBottomRequested(object? sender, EventArgs e)
+    {
+        // Ensure we're on the UI thread
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            // Scroll to the last item in the log list
+            if (LogsListView?.Items.Count > 0)
+            {
+                var lastItem = LogsListView.Items[LogsListView.Items.Count - 1];
+                LogsListView.ScrollIntoView(lastItem);
+            }
+        });
     }
 
     private void NewConnection_Click(object sender, RoutedEventArgs e)

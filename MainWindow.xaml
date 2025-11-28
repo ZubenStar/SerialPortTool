@@ -146,7 +146,7 @@
                             Click="ClearLogs_Click"/>
                     
                     <CheckBox Content="自动滚动"
-                              IsChecked="True"
+                              IsChecked="{x:Bind ViewModel.AutoScroll, Mode=TwoWay}"
                               x:Name="AutoScrollCheckBox"/>
                 </StackPanel>
 
