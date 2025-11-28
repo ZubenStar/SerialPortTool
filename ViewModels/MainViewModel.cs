@@ -19,6 +19,8 @@ public partial class MainViewModel : ObservableObject
 {
     private readonly ISerialPortService _serialPortService;
     private readonly ILogFilterService _logFilterService;
+    private readonly IFileLoggerService _fileLoggerService;
+    private readonly ISettingsService _settingsService;
     private readonly ILogger<MainViewModel> _logger;
     private readonly DispatcherQueue _dispatcherQueue;
 
@@ -61,7 +63,7 @@ public partial class MainViewModel : ObservableObject
 
     // Port configuration properties
     [ObservableProperty]
-    private int _baudRate = 115200;
+    private int _baudRate = 3000000; // Default to 3M
 
     [ObservableProperty]
     private int _dataBits = 8;
@@ -85,10 +87,14 @@ public partial class MainViewModel : ObservableObject
     public MainViewModel(
         ISerialPortService serialPortService,
         ILogFilterService logFilterService,
+        IFileLoggerService fileLoggerService,
+        ISettingsService settingsService,
         ILogger<MainViewModel> logger)
     {
         _serialPortService = serialPortService;
         _logFilterService = logFilterService;
+        _fileLoggerService = fileLoggerService;
+        _settingsService = settingsService;
         _logger = logger;
         _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
 
@@ -98,7 +104,17 @@ public partial class MainViewModel : ObservableObject
         _serialPortService.ErrorOccurred += OnErrorOccurred;
 
         // Initialize
-        _ = ScanPortsAsync();
+        _ = InitializeAsync();
+    }
+
+    private async Task InitializeAsync()
+    {
+        // Load saved baud rate
+        BaudRate = await _settingsService.LoadSettingAsync("BaudRate", 3000000);
+        _logger.LogInformation("Loaded baud rate: {BaudRate}", BaudRate);
+
+        // Scan ports
+        await ScanPortsAsync();
     }
 
     [RelayCommand]
@@ -159,6 +175,9 @@ public partial class MainViewModel : ObservableObject
             var opened = await _serialPortService.OpenPortAsync(config);
             if (opened)
             {
+                // Start file logging
+                await _fileLoggerService.StartLoggingAsync(portName);
+                
                 var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue);
                 
                 // Initialize statistics display
@@ -166,8 +185,12 @@ public partial class MainViewModel : ObservableObject
                 portViewModel.UpdateStatistics(stats);
                 
                 OpenPorts.Add(portViewModel);
-                StatusMessage = $"Port {portName} opened successfully";
-                _logger.LogInformation("Port {PortName} opened", portName);
+                
+                // Save the baud rate for next time
+                await _settingsService.SaveSettingAsync("BaudRate", BaudRate);
+                
+                StatusMessage = $"Port {portName} opened successfully. Log file: {_fileLoggerService.GetLogFilePath(portName)}";
+                _logger.LogInformation("Port {PortName} opened with logging", portName);
             }
             else
             {
@@ -210,6 +233,9 @@ public partial class MainViewModel : ObservableObject
     {
         try
         {
+            // Stop file logging
+            await _fileLoggerService.StopLoggingAsync(portName);
+            
             await _serialPortService.ClosePortAsync(portName);
             var portVm = OpenPorts.FirstOrDefault(p => p.PortName == portName);
             if (portVm != null)
@@ -259,6 +285,9 @@ public partial class MainViewModel : ObservableObject
             {
                 DisplayLogs.Add(logEntry);
             }
+
+            // Write to log file
+            _ = _fileLoggerService.WriteLogAsync(e.PortName, logEntry);
 
             // Update port-specific logs and statistics
             var portVm = OpenPorts.FirstOrDefault(p => p.PortName == e.PortName);

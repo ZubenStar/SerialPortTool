@@ -62,6 +62,8 @@ public partial class App : Application
         // Register Services
         services.AddSingleton<ISerialPortService, SerialPortService>();
         services.AddSingleton<ILogFilterService, LogFilterService>();
+        services.AddSingleton<IFileLoggerService, FileLoggerService>();
+        services.AddSingleton<ISettingsService, SettingsService>();
 
         // Register ViewModels
         services.AddTransient<MainViewModel>();
