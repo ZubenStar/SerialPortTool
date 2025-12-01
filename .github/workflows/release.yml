@@ -49,12 +49,12 @@ jobs:
         Write-Host "✓ Version verified: $jsonVersion"
     
     - name: Restore dependencies
-      run: dotnet restore -r win10-${{ matrix.platform }}
+      run: dotnet restore -r win-${{ matrix.platform }}
     
     - name: Build application
       run: |
         dotnet build --configuration ${{ matrix.configuration }} `
-          --runtime win10-${{ matrix.platform }} `
+          --runtime win-${{ matrix.platform }} `
           --self-contained true `
           --no-restore `
           -p:PublishSingleFile=true `
@@ -64,7 +64,7 @@ jobs:
     - name: Publish application
       run: |
         dotnet publish --configuration ${{ matrix.configuration }} `
-          --runtime win10-${{ matrix.platform }} `
+          --runtime win-${{ matrix.platform }} `
           --self-contained true `
           --output publish/${{ matrix.platform }} `
           -p:PublishSingleFile=true `
