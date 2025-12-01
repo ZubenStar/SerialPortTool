@@ -179,9 +179,12 @@
                               VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Auto"
                               Background="{ThemeResource LayerFillColorDefaultBrush}"
-                              Padding="8">
+                              Padding="8"
+                              IsTabStop="True"
+                              TabNavigation="Local">
                     <ItemsRepeater x:Name="LogsItemsRepeater"
-                                   ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}">
+                                   ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
+                                   VerticalAlignment="Top">
                         <ItemsRepeater.Layout>
                             <StackLayout Orientation="Vertical" Spacing="0"/>
                         </ItemsRepeater.Layout>
@@ -191,7 +194,8 @@
                                            FontFamily="Consolas"
                                            FontSize="12"
                                            TextWrapping="NoWrap"
-                                           Padding="0"/>
+                                           Padding="0"
+                                           IsTextSelectionEnabled="True"/>
                             </DataTemplate>
                         </ItemsRepeater.ItemTemplate>
                     </ItemsRepeater>

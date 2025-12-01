@@ -32,22 +32,56 @@ public sealed partial class MainWindow : Window
         }
         
         // Auto-scroll support for ItemsRepeater
-        ViewModel.PropertyChanged += ViewModel_PropertyChanged;
+        ViewModel.DisplayLogs.CollectionChanged += DisplayLogs_CollectionChanged;
+        
+        // Disable auto-scroll when user manually scrolls
+        LogScrollViewer.ViewChanged += LogScrollViewer_ViewChanged;
     }
     
-    private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    private bool _isAutoScrolling = false;
+    
+    private void LogScrollViewer_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
+    {
+        // If user manually scrolled (not at bottom), disable auto-scroll
+        if (!_isAutoScrolling && !e.IsIntermediate)
+        {
+            var scrollViewer = sender as ScrollViewer;
+            if (scrollViewer != null)
+            {
+                // Check if user scrolled away from bottom (with 10px tolerance)
+                var distanceFromBottom = scrollViewer.ScrollableHeight - scrollViewer.VerticalOffset;
+                if (distanceFromBottom > 10)
+                {
+                    ViewModel.AutoScroll = false;
+                }
+                else if (distanceFromBottom <= 10 && !ViewModel.AutoScroll)
+                {
+                    // Re-enable auto-scroll if user scrolls back to bottom
+                    ViewModel.AutoScroll = true;
+                }
+            }
+        }
+    }
+    
+    private void DisplayLogs_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
         // Auto-scroll when new logs are added
-        if (e.PropertyName == nameof(ViewModel.DisplayLogs) && ViewModel.AutoScroll)
+        if (ViewModel.AutoScroll && e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)
         {
-            DispatcherQueue.TryEnqueue(() =>
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
                 try
                 {
-                    // Scroll to bottom
+                    _isAutoScrolling = true;
+                    // Small delay to ensure layout is updated
+                    LogScrollViewer.UpdateLayout();
                     LogScrollViewer.ChangeView(null, LogScrollViewer.ScrollableHeight, null, false);
+                    _isAutoScrolling = false;
                 }
-                catch { }
+                catch
+                {
+                    _isAutoScrolling = false;
+                }
             });
         }
     }
