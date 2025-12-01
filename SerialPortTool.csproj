@@ -12,7 +12,29 @@
     <WindowsPackageType>None</WindowsPackageType>
     <Nullable>enable</Nullable>
     <LangVersion>12</LangVersion>
+    
+    <!-- Version Information - Edit version.json to update -->
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <!-- Auto-generate build time -->
+    <InformationalVersion>1.0.0+$([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))</InformationalVersion>
   </PropertyGroup>
+  
+  <ItemGroup>
+    <!-- Include version.json in project -->
+    <None Include="version.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+  
+  <!-- Target to read version from version.json before build -->
+  <Target Name="ReadVersionFromJson" BeforeTargets="BeforeBuild">
+    <PropertyGroup>
+      <VersionJsonContent>$([System.IO.File]::ReadAllText('$(ProjectDir)version.json'))</VersionJsonContent>
+    </PropertyGroup>
+    <Message Text="Version configuration loaded from version.json" Importance="high" />
+  </Target>
 
   <ItemGroup>
     <!-- WinUI 3 和 MVVM -->

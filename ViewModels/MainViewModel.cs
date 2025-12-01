@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
+using SerialPortTool.Helpers;
 using SerialPortTool.Models;
 using SerialPortTool.Services;
 using System;
@@ -84,7 +85,22 @@ public partial class MainViewModel : ObservableObject
     private readonly DispatcherQueue _dispatcherQueue;
 
     [ObservableProperty]
-    private string _title = "串口工具 - Multi-Port Serial Monitor";
+    private string _title = $"串口工具 - Multi-Port Serial Monitor {VersionInfo.VersionString}";
+    
+    /// <summary>
+    /// Gets the application version information
+    /// </summary>
+    public string AppVersion => VersionInfo.Version;
+    
+    /// <summary>
+    /// Gets the build time
+    /// </summary>
+    public string BuildTime => VersionInfo.BuildTime;
+    
+    /// <summary>
+    /// Gets the complete version string
+    /// </summary>
+    public string VersionDisplay => VersionInfo.VersionString;
 
     [ObservableProperty]
     private ObservableCollection<string> _availablePorts = new();
