@@ -11,7 +11,7 @@ jobs:
     
     strategy:
       matrix:
-        platform: [x64, ARM64]
+        platform: [x64, arm64]
         configuration: [Release]
     
     steps:
@@ -24,6 +24,7 @@ jobs:
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '9.0.x'
+        dotnet-quality: 'ga'
     
     - name: Extract version from tag
       id: get_version
@@ -48,15 +49,14 @@ jobs:
         Write-Host "✓ Version verified: $jsonVersion"
     
     - name: Restore dependencies
-      run: dotnet restore -r win-${{ matrix.platform }}
+      run: dotnet restore -r win10-${{ matrix.platform }}
     
     - name: Build application
       run: |
         dotnet build --configuration ${{ matrix.configuration }} `
-          --runtime win-${{ matrix.platform }} `
+          --runtime win10-${{ matrix.platform }} `
           --self-contained true `
           --no-restore `
-          -p:Platform=${{ matrix.platform }} `
           -p:PublishSingleFile=true `
           -p:IncludeNativeLibrariesForSelfExtract=true `
           -p:EnableCompressionInSingleFile=true
@@ -64,10 +64,9 @@ jobs:
     - name: Publish application
       run: |
         dotnet publish --configuration ${{ matrix.configuration }} `
-          --runtime win-${{ matrix.platform }} `
+          --runtime win10-${{ matrix.platform }} `
           --self-contained true `
           --output publish/${{ matrix.platform }} `
-          -p:Platform=${{ matrix.platform }} `
           -p:PublishSingleFile=true `
           -p:IncludeNativeLibrariesForSelfExtract=true `
           -p:EnableCompressionInSingleFile=true

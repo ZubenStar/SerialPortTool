@@ -1,7 +1,16 @@
 ﻿{
-    "version":  "1.0.1",
+    "version":  "1.0.2",
     "description":  "SerialPortTool Version Configuration",
     "changelog":  [
+                      {
+                          "date":  "2025-12-01",
+                          "version":  "1.0.2",
+                          "changes":  [
+                                          "Fixed GitHub Actions workflow .NET setup issues",
+                                          "Corrected RuntimeIdentifier format for ARM64 builds",
+                                          "Updated build configuration for better cross-platform support"
+                                      ]
+                      },
                       {
                           "date":  "2025-12-01",
                           "version":  "1.0.1",
