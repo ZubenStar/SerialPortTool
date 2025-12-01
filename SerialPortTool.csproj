@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows10.0.22621.0</TargetFramework>
@@ -14,9 +14,9 @@
     <LangVersion>12</LangVersion>
     
     <!-- Version Information - Edit version.json to update -->
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <Version>1.0.1</Version>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
+    <FileVersion>1.0.1.0</FileVersion>
     <!-- Auto-generate build time -->
     <InformationalVersion>1.0.0+$([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))</InformationalVersion>
   </PropertyGroup>
@@ -37,29 +37,29 @@
   </Target>
 
   <ItemGroup>
-    <!-- WinUI 3 和 MVVM -->
+    <!-- WinUI 3 鍜?MVVM -->
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.241114003" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
     <PackageReference Include="WinUIEx" Version="2.3.4" />
     
-    <!-- 串口通信 -->
+    <!-- 涓插彛閫氫俊 -->
     <PackageReference Include="System.IO.Ports" Version="9.0.0" />
     
-    <!-- 数据处理 -->
+    <!-- 鏁版嵁澶勭悊 -->
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="CsvHelper" Version="30.0.1" />
     
-    <!-- UI增强 -->
+    <!-- UI澧炲己 -->
     <PackageReference Include="CommunityToolkit.WinUI.UI.Controls.DataGrid" Version="7.1.2" />
     <PackageReference Include="CommunityToolkit.WinUI.UI.Controls" Version="7.1.2" />
     
-    <!-- 日志 -->
+    <!-- 鏃ュ織 -->
     <PackageReference Include="Serilog" Version="4.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
     <PackageReference Include="Serilog.Extensions.Logging" Version="8.0.0" />
     
-    <!-- 依赖注入 -->
+    <!-- 渚濊禆娉ㄥ叆 -->
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />

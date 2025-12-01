@@ -144,6 +144,110 @@ Example: `1.2.3` = Major.Minor.Patch
 - Ensure version.json is in the project root directory
 - Check that it's included in the build: [`SerialPortTool.csproj`](SerialPortTool.csproj:25) lines 25-28
 
+## Automated Release with GitHub Actions
+
+The project includes automated build and release workflows using GitHub Actions.
+
+### Automated Release Workflow
+
+When you push a version tag (e.g., `v1.2.3`) to GitHub, the workflow automatically:
+
+1. **Builds** the application for both x64 and ARM64 platforms
+2. **Verifies** that version.json matches the tag version
+3. **Packages** the compiled application into ZIP files
+4. **Generates** release notes from version.json changelog
+5. **Creates** a GitHub Release with all build artifacts
+
+**Workflow File**: [`.github/workflows/release.yml`](.github/workflows/release.yml:1)
+
+### Quick Release Process (Automated)
+
+Use the version bump script for the easiest release process:
+
+```powershell
+# Bump patch version (1.0.0 → 1.0.1)
+.\scripts\bump-version.ps1 -BumpType patch -Message "Bug fixes and improvements"
+
+# Bump minor version (1.0.1 → 1.1.0)
+.\scripts\bump-version.ps1 -BumpType minor -Message "Added new features"
+
+# Bump major version (1.1.0 → 2.0.0)
+.\scripts\bump-version.ps1 -BumpType major -Message "Breaking changes"
+
+# Push to trigger the automated release
+git push && git push --tags
+```
+
+The script automatically:
+- Updates version.json and SerialPortTool.csproj
+- Creates a changelog entry with your message
+- Commits the changes
+- Creates and tags the version
+
+Once you push the tag, GitHub Actions takes over and builds/releases everything automatically.
+
+### Manual Release Process
+
+If you prefer manual control:
+
+```powershell
+# 1. Update version files manually
+.\scripts\bump-version.ps1 -BumpType patch -NoCommit
+
+# 2. Review changes
+git diff version.json SerialPortTool.csproj
+
+# 3. Commit and tag
+git add version.json SerialPortTool.csproj
+git commit -m "Bump version to 1.2.3"
+git tag -a v1.2.3 -m "Release 1.2.3"
+
+# 4. Push to trigger automated build
+git push origin main
+git push origin v1.2.3
+```
+
+### Helper Scripts
+
+| Script | Purpose | Usage |
+|--------|---------|-------|
+| [`scripts/bump-version.ps1`](scripts/bump-version.ps1:1) | Automate version bumping and tagging | `.\scripts\bump-version.ps1 -BumpType [major\|minor\|patch]` |
+| [`scripts/generate-release-notes.ps1`](scripts/generate-release-notes.ps1:1) | Generate release notes from changelog | `.\scripts\generate-release-notes.ps1 -Version "1.2.3"` |
+
+### Build Artifacts
+
+Each release automatically includes:
+
+- **SerialPortTool-vX.X.X-win-x64.zip**: For 64-bit Windows PCs
+- **SerialPortTool-vX.X.X-win-ARM64.zip**: For ARM-based Windows devices
+
+All packages are:
+- Self-contained (no .NET installation required)
+- Single-file executables with all dependencies included
+- Compressed for smaller download size
+
+### Monitoring Releases
+
+1. **Check workflow status**: Visit the Actions tab in your GitHub repository
+2. **View build logs**: Click on a workflow run to see detailed logs
+3. **Download artifacts**: Build artifacts are available for 30 days
+4. **Release notes**: Automatically generated from version.json changelog
+
+### Troubleshooting Releases
+
+#### Workflow fails with "Version mismatch"
+- Ensure version.json version matches the git tag
+- The tag should be `v1.2.3` and version.json should have `"version": "1.2.3"`
+
+#### Build fails on specific platform
+- Check the Actions logs for the specific platform (x64 or ARM64)
+- Verify all NuGet packages support the target platform
+
+#### Release not created
+- Ensure you pushed both the commit AND the tag
+- Check that the tag follows the pattern `v*` (e.g., `v1.2.3`)
+- Verify GitHub Actions has write permissions for releases
+
 ## Future Enhancements
 
 Consider these improvements:

@@ -1,0 +1,201 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0, v2.1.3, etc.
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    strategy:
+      matrix:
+        platform: [x64, ARM64]
+        configuration: [Release]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Get all history for proper versioning
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+    
+    - name: Extract version from tag
+      id: get_version
+      shell: pwsh
+      run: |
+        $tag = "${{ github.ref_name }}"
+        $version = $tag -replace '^v', ''
+        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        echo "TAG=$tag" >> $env:GITHUB_OUTPUT
+    
+    - name: Verify version.json matches tag
+      shell: pwsh
+      run: |
+        $versionJson = Get-Content version.json | ConvertFrom-Json
+        $jsonVersion = $versionJson.version
+        $tagVersion = "${{ steps.get_version.outputs.VERSION }}"
+        
+        if ($jsonVersion -ne $tagVersion) {
+          Write-Error "Version mismatch: version.json has $jsonVersion but tag is $tagVersion"
+          exit 1
+        }
+        Write-Host "✓ Version verified: $jsonVersion"
+    
+    - name: Restore dependencies
+      run: dotnet restore -r win-${{ matrix.platform }}
+    
+    - name: Build application
+      run: |
+        dotnet build --configuration ${{ matrix.configuration }} `
+          --runtime win-${{ matrix.platform }} `
+          --self-contained true `
+          --no-restore `
+          -p:Platform=${{ matrix.platform }} `
+          -p:PublishSingleFile=true `
+          -p:IncludeNativeLibrariesForSelfExtract=true `
+          -p:EnableCompressionInSingleFile=true
+    
+    - name: Publish application
+      run: |
+        dotnet publish --configuration ${{ matrix.configuration }} `
+          --runtime win-${{ matrix.platform }} `
+          --self-contained true `
+          --output publish/${{ matrix.platform }} `
+          -p:Platform=${{ matrix.platform }} `
+          -p:PublishSingleFile=true `
+          -p:IncludeNativeLibrariesForSelfExtract=true `
+          -p:EnableCompressionInSingleFile=true
+    
+    - name: Create release package
+      shell: pwsh
+      run: |
+        $version = "${{ steps.get_version.outputs.VERSION }}"
+        $platform = "${{ matrix.platform }}"
+        $packageName = "SerialPortTool-v$version-win-$platform"
+        
+        # Create package directory
+        New-Item -ItemType Directory -Force -Path "packages/$packageName"
+        
+        # Copy published files
+        Copy-Item -Path "publish/$platform/*" -Destination "packages/$packageName/" -Recurse
+        
+        # Copy additional files
+        Copy-Item -Path "README.md" -Destination "packages/$packageName/"
+        Copy-Item -Path "version.json" -Destination "packages/$packageName/"
+        
+        # Create ZIP archive
+        Compress-Archive -Path "packages/$packageName/*" -DestinationPath "packages/$packageName.zip"
+        
+        Write-Host "✓ Created package: $packageName.zip"
+    
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: SerialPortTool-${{ steps.get_version.outputs.VERSION }}-win-${{ matrix.platform }}
+        path: packages/*.zip
+        retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Extract version from tag
+      id: get_version
+      run: |
+        VERSION=${GITHUB_REF_NAME#v}
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "TAG=$GITHUB_REF_NAME" >> $GITHUB_OUTPUT
+    
+    - name: Generate release notes
+      id: release_notes
+      shell: pwsh
+      run: |
+        $versionJson = Get-Content version.json | ConvertFrom-Json
+        $version = "${{ steps.get_version.outputs.VERSION }}"
+        
+        # Find the changelog for this version
+        $changelog = $versionJson.changelog | Where-Object { $_.version -eq $version } | Select-Object -First 1
+        
+        if ($null -eq $changelog) {
+          Write-Error "No changelog found for version $version in version.json"
+          exit 1
+        }
+        
+        # Build release notes
+        $notes = @"
+        # SerialPortTool $version
+        
+        **Release Date:** $($changelog.date)
+        
+        ## What's Changed
+        
+        $($changelog.changes | ForEach-Object { "- $_" } | Out-String)
+        
+        ## Downloads
+        
+        Choose the appropriate package for your system:
+        - **x64**: For standard 64-bit Windows PCs
+        - **ARM64**: For ARM-based Windows devices (Surface Pro X, etc.)
+        
+        Each package is self-contained and requires no additional dependencies.
+        
+        ## Installation
+        
+        1. Download the appropriate ZIP file for your platform
+        2. Extract to a folder of your choice
+        3. Run SerialPortTool.exe
+        
+        ## System Requirements
+        
+        - Windows 10 version 1809 (build 17763) or later
+        - Windows 11 (recommended)
+        
+        ---
+        
+        **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.get_version.outputs.TAG }}...HEAD
+        "@
+        
+        # Save to file
+        $notes | Out-File -FilePath release-notes.md -Encoding utf8
+        
+        Write-Host "✓ Generated release notes"
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+    
+    - name: Prepare release assets
+      run: |
+        mkdir -p release-assets
+        find artifacts -name "*.zip" -exec cp {} release-assets/ \;
+        ls -lh release-assets/
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: SerialPortTool ${{ steps.get_version.outputs.VERSION }}
+        body_path: release-notes.md
+        draft: false
+        prerelease: false
+        files: release-assets/*.zip
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Upload release artifacts to release
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-notes
+        path: release-notes.md
+        retention-days: 90
