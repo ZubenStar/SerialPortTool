@@ -71,21 +71,17 @@ public sealed partial class MainWindow : Window
     
     private void LogScrollViewer_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
     {
-        // If user manually scrolled (not at bottom), disable auto-scroll
-        if (!_isAutoScrolling && !e.IsIntermediate)
+        // Don't disable auto-scroll automatically - let user control it via checkbox
+        // This method is now only used to detect when to re-enable auto-scroll
+        if (!_isAutoScrolling && !e.IsIntermediate && !ViewModel.AutoScroll)
         {
             var scrollViewer = sender as ScrollViewer;
             if (scrollViewer != null)
             {
-                // Check if user scrolled away from bottom (with 10px tolerance)
+                // Re-enable auto-scroll if user manually scrolls back to bottom
                 var distanceFromBottom = scrollViewer.ScrollableHeight - scrollViewer.VerticalOffset;
-                if (distanceFromBottom > 10)
+                if (distanceFromBottom <= 10)
                 {
-                    ViewModel.AutoScroll = false;
-                }
-                else if (distanceFromBottom <= 10 && !ViewModel.AutoScroll)
-                {
-                    // Re-enable auto-scroll if user scrolls back to bottom
                     ViewModel.AutoScroll = true;
                 }
             }
