@@ -265,9 +265,49 @@ public class SerialPortService : ISerialPortService, IDisposable
         {
             return Task.Run(() =>
             {
+                SerialPort? port = null;
                 try
                 {
-                    _serialPort = new SerialPort
+                    // Dispose existing port if any
+                    if (_serialPort != null)
+                    {
+                        var oldPort = _serialPort;
+                        _serialPort = null;
+                        
+                        try
+                        {
+                            // Unsubscribe events first
+                            try
+                            {
+                                oldPort.DataReceived -= SerialPort_DataReceived;
+                                oldPort.ErrorReceived -= SerialPort_ErrorReceived;
+                            }
+                            catch { }
+                            
+                            // Close if open
+                            if (oldPort.IsOpen)
+                            {
+                                try { oldPort.Close(); } catch { }
+                            }
+                            
+                            // Dispose - catch known .NET bug
+                            try
+                            {
+                                oldPort.Dispose();
+                            }
+                            catch (NullReferenceException)
+                            {
+                                // Known .NET SerialPort bug - safe to ignore
+                            }
+                        }
+                        catch
+                        {
+                            // Ignore all disposal errors
+                        }
+                    }
+
+                    // Create new port instance
+                    port = new SerialPort
                     {
                         PortName = Config.PortName,
                         BaudRate = Config.BaudRate,
@@ -278,16 +318,46 @@ public class SerialPortService : ISerialPortService, IDisposable
                         WriteTimeout = Config.WriteTimeout
                     };
 
-                    _serialPort.DataReceived += SerialPort_DataReceived;
-                    _serialPort.ErrorReceived += SerialPort_ErrorReceived;
+                    // Attach event handlers before opening
+                    port.DataReceived += SerialPort_DataReceived;
+                    port.ErrorReceived += SerialPort_ErrorReceived;
 
-                    _serialPort.Open();
+                    // Open the port
+                    port.Open();
+                    
+                    // Only assign to field after successful open
+                    _serialPort = port;
                     Statistics.ConnectedAt = DateTime.Now;
                     return true;
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Failed to open port {PortName}", Config.PortName);
+                    
+                    // Clean up the local port instance if it was created
+                    if (port != null)
+                    {
+                        try
+                        {
+                            port.DataReceived -= SerialPort_DataReceived;
+                            port.ErrorReceived -= SerialPort_ErrorReceived;
+                            
+                            if (port.IsOpen)
+                            {
+                                port.Close();
+                            }
+                            
+                            port.Dispose();
+                        }
+                        catch
+                        {
+                            // Ignore cleanup errors
+                        }
+                    }
+                    
+                    // Ensure field is null on failure
+                    _serialPort = null;
+                    
                     RaiseError(ex);
                     return false;
                 }
@@ -298,17 +368,60 @@ public class SerialPortService : ISerialPortService, IDisposable
         {
             return Task.Run(() =>
             {
+                if (_serialPort == null)
+                    return;
+
+                var port = _serialPort;
+                _serialPort = null;
+
                 try
                 {
-                    if (_serialPort?.IsOpen == true)
+                    // Unsubscribe from events first to prevent callbacks during disposal
+                    try
                     {
-                        _serialPort.Close();
-                        Statistics.DisconnectedAt = DateTime.Now;
+                        port.DataReceived -= SerialPort_DataReceived;
+                        port.ErrorReceived -= SerialPort_ErrorReceived;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Error unsubscribing from events");
+                    }
+
+                    // Close the port if it's open
+                    if (port.IsOpen)
+                    {
+                        try
+                        {
+                            port.Close();
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug(ex, "Error closing port");
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error closing port {PortName}", Config.PortName);
+                    _logger.LogDebug(ex, "Error during port close operations");
+                }
+                finally
+                {
+                    // Always try to dispose, catching the known .NET SerialPort bug
+                    try
+                    {
+                        port.Dispose();
+                    }
+                    catch (NullReferenceException)
+                    {
+                        // Known .NET bug in SerialPort.Dispose() - safe to ignore
+                        // The port resources are still released despite the exception
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Error disposing port");
+                    }
+
+                    Statistics.DisconnectedAt = DateTime.Now;
                 }
             });
         }
@@ -387,8 +500,60 @@ public class SerialPortService : ISerialPortService, IDisposable
 
         public void Dispose()
         {
-            _serialPort?.Dispose();
-            _writeLock.Dispose();
+            try
+            {
+                if (_serialPort != null)
+                {
+                    var port = _serialPort;
+                    _serialPort = null;
+
+                    // Unsubscribe from events
+                    try
+                    {
+                        port.DataReceived -= SerialPort_DataReceived;
+                        port.ErrorReceived -= SerialPort_ErrorReceived;
+                    }
+                    catch
+                    {
+                        // Ignore event unsubscription errors
+                    }
+                    
+                    // Try to close if still open
+                    if (port.IsOpen)
+                    {
+                        try
+                        {
+                            port.Close();
+                        }
+                        catch
+                        {
+                            // Ignore close errors during dispose
+                        }
+                    }
+                    
+                    // Dispose the port - catch known .NET SerialPort bug
+                    try
+                    {
+                        port.Dispose();
+                    }
+                    catch (NullReferenceException)
+                    {
+                        // Known .NET bug in SerialPort.Dispose() - safe to ignore
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Exception during port disposal");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Exception during Dispose");
+            }
+            finally
+            {
+                _writeLock.Dispose();
+            }
         }
     }
 }

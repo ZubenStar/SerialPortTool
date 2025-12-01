@@ -81,6 +81,11 @@ public partial class MainViewModel : ObservableObject
     private readonly ISettingsService _settingsService;
     private readonly ILogger<MainViewModel> _logger;
     private readonly DispatcherQueue _dispatcherQueue;
+    
+    // Batching for UI updates
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(string portName, List<LogEntry> logs, string formattedText)> _pendingUpdates = new();
+    private System.Threading.Timer? _uiUpdateTimer;
+    private readonly object _updateLock = new();
 
     [ObservableProperty]
     private string _title = "串口工具 - Multi-Port Serial Monitor";
@@ -126,7 +131,7 @@ public partial class MainViewModel : ObservableObject
 
     private const int MaxLogCount = 5000; // Limit logs to prevent freezing
 
-    public event EventHandler? ScrollToBottomRequested;
+    public event EventHandler<string>? LogsUpdated;
 
     [ObservableProperty]
     private string _statusMessage = "Ready";
@@ -382,123 +387,179 @@ public partial class MainViewModel : ObservableObject
 
     private void OnDataReceived(object? sender, DataReceivedEventArgs e)
     {
+        // Capture data on background thread
         var text = Encoding.UTF8.GetString(e.Data);
+        var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+        var portName = e.PortName;
         
-        // Split by newlines to create separate log entries for each line
-        var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-        
-        // Batch process logs
+        // Build formatted text and log entries on background thread
+        var formattedText = new StringBuilder();
         var newLogs = new List<LogEntry>();
         
-        foreach (var line in lines)
+        var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+        
+        for (int i = 0; i < lines.Length; i++)
         {
-            // Skip empty lines at the end (but keep them if they're in the middle)
-            if (line == string.Empty && line == lines[lines.Length - 1])
+            var line = lines[i];
+            
+            // Skip only the last line if it's empty (common from splitting)
+            if (i == lines.Length - 1 && string.IsNullOrEmpty(line))
                 continue;
-                
+            
             var logEntry = new LogEntry
             {
-                PortName = e.PortName,
+                PortName = portName,
                 Content = line,
                 Level = Core.Enums.LogLevel.Info,
                 RawData = Encoding.UTF8.GetBytes(line),
                 IsReceived = true
             };
-
+            
             newLogs.Add(logEntry);
             
+            // Format as text - always include the line even if empty
+            formattedText.AppendLine($"[{timestamp}] [Info] [{portName}] {line}");
+            
             // Write to log file asynchronously
-            _ = _fileLoggerService.WriteLogAsync(e.PortName, logEntry);
+            _ = _fileLoggerService.WriteLogAsync(portName, logEntry);
         }
 
         if (newLogs.Count == 0) return;
 
-        // Update AllLogs and DisplayLogs on UI thread with Normal priority for smoother updates
-        _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Normal, () =>
+        // Queue updates for batching
+        _pendingUpdates.Enqueue((portName, newLogs, formattedText.ToString()));
+        
+        // Start or reset the update timer
+        lock (_updateLock)
         {
-            // Handle log count limit for AllLogs
-            if (AllLogs.Count + newLogs.Count > MaxLogCount)
+            if (_uiUpdateTimer == null)
             {
-                int itemsToRemove = (AllLogs.Count + newLogs.Count) - MaxLogCount;
-                
-                // Collect logs to remove from DisplayLogs
-                var logsToRemoveFromDisplay = new List<LogEntry>();
-                for (int i = 0; i < itemsToRemove; i++)
+                _uiUpdateTimer = new System.Threading.Timer(_ => ProcessPendingUpdates(), null, 50, System.Threading.Timeout.Infinite);
+            }
+            else
+            {
+                _uiUpdateTimer.Change(50, System.Threading.Timeout.Infinite);
+            }
+        }
+    }
+    
+    private void ProcessPendingUpdates()
+    {
+        var allLogs = new List<LogEntry>();
+        var portUpdates = new Dictionary<string, List<LogEntry>>();
+        var allFormattedText = new StringBuilder();
+        
+        // Drain the queue
+        while (_pendingUpdates.TryDequeue(out var update))
+        {
+            allLogs.AddRange(update.logs);
+            allFormattedText.Append(update.formattedText);
+            
+            if (!portUpdates.ContainsKey(update.portName))
+            {
+                portUpdates[update.portName] = new List<LogEntry>();
+            }
+            portUpdates[update.portName].AddRange(update.logs);
+        }
+        
+        if (allLogs.Count == 0) return;
+        
+        // Dispatch batched UI updates to UI thread
+        _dispatcherQueue.TryEnqueue(() =>
+        {
+            try
+            {
+                // Store logs on UI thread
+                foreach (var logEntry in allLogs)
                 {
-                    var log = AllLogs[i];
-                    if (DisplayLogs.Contains(log))
-                    {
-                        logsToRemoveFromDisplay.Add(log);
-                    }
+                    AllLogs.Add(logEntry);
                 }
-                
-                // Remove from DisplayLogs using batch operation
-                if (logsToRemoveFromDisplay.Count > 0)
-                {
-                    DisplayLogs.RemoveRange(logsToRemoveFromDisplay);
-                }
-                
-                // Then remove from AllLogs
-                for (int i = 0; i < itemsToRemove; i++)
+
+                // Limit log count
+                while (AllLogs.Count > MaxLogCount)
                 {
                     AllLogs.RemoveAt(0);
                 }
-            }
 
-            // Filter logs before adding
-            var logsToAdd = newLogs.Where(logEntry =>
-                string.IsNullOrEmpty(SearchText) ||
-                logEntry.Content.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
-                logEntry.PortName.Contains(SearchText, StringComparison.OrdinalIgnoreCase)
-            ).ToList();
-
-            // Add to AllLogs in batch
-            foreach (var logEntry in newLogs)
-            {
-                AllLogs.Add(logEntry);
-            }
-
-            // Add to DisplayLogs using single batch operation
-            if (logsToAdd.Count > 0)
-            {
-                DisplayLogs.AddRange(logsToAdd);
-            }
-
-            // Update port-specific logs and statistics
-            var portVm = OpenPorts.FirstOrDefault(p => p.PortName == e.PortName);
-            if (portVm != null)
-            {
-                foreach (var logEntry in newLogs)
+                // Update port-specific logs and statistics
+                foreach (var kvp in portUpdates)
                 {
-                    portVm.AddLog(logEntry);
+                    var portVm = OpenPorts.FirstOrDefault(p => p.PortName == kvp.Key);
+                    if (portVm != null)
+                    {
+                        foreach (var logEntry in kvp.Value)
+                        {
+                            portVm.AddLog(logEntry);
+                        }
+                        
+                        var stats = _serialPortService.GetStatistics(kvp.Key);
+                        portVm.UpdateStatistics(stats);
+                    }
                 }
-                portVm.UpdateStatistics(_serialPortService.GetStatistics(e.PortName));
-            }
 
-            // Trigger auto-scroll if enabled
-            if (AutoScroll && logsToAdd.Count > 0)
+                // Fire text update event
+                var textToAdd = allFormattedText.ToString();
+                if (!string.IsNullOrEmpty(SearchText))
+                {
+                    var filteredLines = textToAdd.Split('\n')
+                        .Where(line => line.Contains(SearchText, StringComparison.OrdinalIgnoreCase));
+                    textToAdd = string.Join("\n", filteredLines);
+                }
+
+                if (!string.IsNullOrEmpty(textToAdd))
+                {
+                    LogsUpdated?.Invoke(this, textToAdd);
+                }
+            }
+            catch (Exception ex)
             {
-                ScrollToBottomRequested?.Invoke(this, EventArgs.Empty);
+                _logger.LogError(ex, "Error updating UI with received data");
             }
         });
     }
 
     private void OnPortStateChanged(object? sender, PortStateChangedEventArgs e)
     {
+        // Capture values before dispatching to avoid closure issues
+        var portName = e.PortName;
+        var oldState = e.OldState;
+        var newState = e.NewState;
+        
         _dispatcherQueue.TryEnqueue(() =>
         {
-            StatusMessage = $"Port {e.PortName}: {e.NewState}";
-            _logger.LogInformation("Port {PortName} state changed: {OldState} -> {NewState}",
-                e.PortName, e.OldState, e.NewState);
+            try
+            {
+                StatusMessage = $"Port {portName}: {newState}";
+                _logger.LogInformation("Port {PortName} state changed: {OldState} -> {NewState}",
+                    portName, oldState, newState);
+            }
+            catch (Exception ex)
+            {
+                // Fallback logging if UI update fails
+                _logger.LogError(ex, "Failed to update UI with state change");
+            }
         });
     }
 
     private void OnErrorOccurred(object? sender, Services.ErrorEventArgs e)
     {
+        // Capture values before dispatching to avoid closure issues
+        var portName = e.PortName;
+        var errorMessage = e.ErrorMessage;
+        var exception = e.Exception;
+        
         _dispatcherQueue.TryEnqueue(() =>
         {
-            StatusMessage = $"Error on {e.PortName}: {e.ErrorMessage}";
-            _logger.LogError(e.Exception, "Error on port {PortName}", e.PortName);
+            try
+            {
+                StatusMessage = $"Error on {portName}: {errorMessage}";
+                _logger.LogError(exception, "Error on port {PortName}", portName);
+            }
+            catch (Exception ex)
+            {
+                // Fallback logging if UI update fails
+                _logger.LogError(ex, "Failed to update UI with error message");
+            }
         });
     }
 
