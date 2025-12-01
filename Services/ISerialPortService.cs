@@ -42,6 +42,11 @@ public interface ISerialPortService
     Task ClosePortAsync(string portName);
 
     /// <summary>
+    /// 打开所有可用串口
+    /// </summary>
+    Task<int> OpenAllPortsAsync(SerialPortConfig defaultConfig);
+
+    /// <summary>
     /// 关闭所有串口
     /// </summary>
     Task CloseAllPortsAsync();

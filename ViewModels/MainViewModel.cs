@@ -365,6 +365,104 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private async Task OpenAllPortsAsync()
+    {
+        if (AvailablePorts.Count == 0)
+        {
+            StatusMessage = "No available ports to open";
+            return;
+        }
+
+        try
+        {
+            // Determine which baud rate to use
+            int baudRateToUse = BaudRate;
+            if (UseCustomBaudRate && !string.IsNullOrWhiteSpace(CustomBaudRate))
+            {
+                if (int.TryParse(CustomBaudRate, out int customRate) && customRate > 0)
+                {
+                    baudRateToUse = customRate;
+                }
+                else
+                {
+                    StatusMessage = "Invalid custom baud rate";
+                    return;
+                }
+            }
+
+            var defaultConfig = new SerialPortConfig
+            {
+                BaudRate = baudRateToUse,
+                DataBits = DataBits,
+                StopBits = StopBits,
+                Parity = Parity
+            };
+
+            var openedCount = await _serialPortService.OpenAllPortsAsync(defaultConfig);
+
+            // Start file logging and create ViewModels for each opened port
+            foreach (var portName in _serialPortService.GetOpenPorts())
+            {
+                if (!OpenPorts.Any(p => p.PortName == portName))
+                {
+                    await _fileLoggerService.StartLoggingAsync(portName);
+                    
+                    var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue);
+                    var stats = _serialPortService.GetStatistics(portName);
+                    portViewModel.UpdateStatistics(stats);
+                    OpenPorts.Add(portViewModel);
+                }
+            }
+
+            StatusMessage = $"Opened {openedCount} port(s) successfully";
+            _logger.LogInformation("Batch opened {Count} ports", openedCount);
+
+            // Save the baud rate for next time
+            await _settingsService.SaveSettingAsync("BaudRate", BaudRate);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error opening ports: {ex.Message}";
+            _logger.LogError(ex, "Error during batch port open");
+        }
+    }
+
+    [RelayCommand]
+    private async Task CloseAllPortsAsync()
+    {
+        if (OpenPorts.Count == 0)
+        {
+            StatusMessage = "No open ports to close";
+            return;
+        }
+
+        try
+        {
+            var portCount = OpenPorts.Count;
+
+            // Stop file logging for all ports
+            foreach (var port in OpenPorts.ToList())
+            {
+                await _fileLoggerService.StopLoggingAsync(port.PortName);
+            }
+
+            // Close all ports
+            await _serialPortService.CloseAllPortsAsync();
+
+            // Clear the OpenPorts collection
+            OpenPorts.Clear();
+
+            StatusMessage = $"Closed {portCount} port(s) successfully";
+            _logger.LogInformation("Batch closed {Count} ports", portCount);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error closing ports: {ex.Message}";
+            _logger.LogError(ex, "Error during batch port close");
+        }
+    }
+
+    [RelayCommand]
     private void ClearLogs()
     {
         AllLogs.Clear();

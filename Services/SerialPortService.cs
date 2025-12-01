@@ -117,6 +117,51 @@ public class SerialPortService : ISerialPortService, IDisposable
         }
     }
 
+    public async Task<int> OpenAllPortsAsync(SerialPortConfig defaultConfig)
+    {
+        var availablePorts = await GetAvailablePortsAsync();
+        var openedCount = 0;
+
+        foreach (var portName in availablePorts)
+        {
+            // Skip ports that are already open
+            if (_ports.ContainsKey(portName))
+            {
+                _logger.LogInformation("Port {PortName} is already open, skipping", portName);
+                continue;
+            }
+
+            try
+            {
+                var config = new SerialPortConfig
+                {
+                    PortName = portName,
+                    BaudRate = defaultConfig.BaudRate,
+                    DataBits = defaultConfig.DataBits,
+                    StopBits = defaultConfig.StopBits,
+                    Parity = defaultConfig.Parity,
+                    ReadTimeout = defaultConfig.ReadTimeout,
+                    WriteTimeout = defaultConfig.WriteTimeout,
+                    AutoReconnect = defaultConfig.AutoReconnect,
+                    ReconnectInterval = defaultConfig.ReconnectInterval
+                };
+
+                var opened = await OpenPortAsync(config);
+                if (opened)
+                {
+                    openedCount++;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error opening port {PortName} during batch open", portName);
+            }
+        }
+
+        _logger.LogInformation("Opened {Count} ports out of {Total} available", openedCount, availablePorts.Count());
+        return openedCount;
+    }
+
     public async Task CloseAllPortsAsync()
     {
         var closeTasks = _ports.Keys.Select(ClosePortAsync).ToList();

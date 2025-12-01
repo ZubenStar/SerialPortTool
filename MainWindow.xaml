@@ -88,6 +88,11 @@
                                 Command="{x:Bind ViewModel.ScanPortsCommand}"
                                 HorizontalAlignment="Stretch"/>
                         
+                        <Button Content="📂 打开所有串口"
+                                Command="{x:Bind ViewModel.OpenAllPortsCommand}"
+                                HorizontalAlignment="Stretch"
+                                Background="{ThemeResource AccentFillColorDefaultBrush}"/>
+                        
                         <ListView x:Name="PortListView"
                                   ItemsSource="{x:Bind ViewModel.AvailablePorts, Mode=OneWay}"
                                   SelectionMode="Single"
@@ -105,9 +110,25 @@
 
                     <!-- Open Ports -->
                     <StackPanel Spacing="8">
-                        <TextBlock Text="已打开串口" 
-                                   Style="{StaticResource SubtitleTextBlockStyle}"
-                                   FontWeight="SemiBold"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            
+                            <TextBlock Grid.Column="0"
+                                       Text="已打开串口"
+                                       Style="{StaticResource SubtitleTextBlockStyle}"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center"/>
+                            
+                            <Button Grid.Column="1"
+                                    Content="❌"
+                                    ToolTipService.ToolTip="关闭所有串口"
+                                    Command="{x:Bind ViewModel.CloseAllPortsCommand}"
+                                    FontSize="14"
+                                    Padding="8,4"/>
+                        </Grid>
                         
                         <ListView x:Name="OpenPortListView"
                                   ItemsSource="{x:Bind ViewModel.OpenPorts, Mode=OneWay}"
