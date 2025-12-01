@@ -49,27 +49,41 @@ jobs:
         Write-Host "✓ Version verified: $jsonVersion"
     
     - name: Restore dependencies
-      run: dotnet restore -r win-${{ matrix.platform }}
+      run: dotnet restore SerialPortTool.csproj -r win-${{ matrix.platform }}
+      timeout-minutes: 10
+      env:
+        DOTNET_CLI_TELEMETRY_OPTOUT: 1
+        DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
     
     - name: Build application
       run: |
-        dotnet build --configuration ${{ matrix.configuration }} `
+        dotnet build SerialPortTool.csproj `
+          --configuration ${{ matrix.configuration }} `
           --runtime win-${{ matrix.platform }} `
           --self-contained true `
           --no-restore `
           -p:PublishSingleFile=true `
           -p:IncludeNativeLibrariesForSelfExtract=true `
           -p:EnableCompressionInSingleFile=true
+      timeout-minutes: 15
+      env:
+        DOTNET_CLI_TELEMETRY_OPTOUT: 1
+        DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
     
     - name: Publish application
       run: |
-        dotnet publish --configuration ${{ matrix.configuration }} `
+        dotnet publish SerialPortTool.csproj `
+          --configuration ${{ matrix.configuration }} `
           --runtime win-${{ matrix.platform }} `
           --self-contained true `
           --output publish/${{ matrix.platform }} `
           -p:PublishSingleFile=true `
           -p:IncludeNativeLibrariesForSelfExtract=true `
           -p:EnableCompressionInSingleFile=true
+      timeout-minutes: 15
+      env:
+        DOTNET_CLI_TELEMETRY_OPTOUT: 1
+        DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
     
     - name: Create release package
       shell: pwsh
