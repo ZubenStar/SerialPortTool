@@ -153,24 +153,40 @@
                 </Grid.RowDefinitions>
 
                 <!-- Search and Controls -->
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="8" Spacing="8">
-                    <TextBox x:Name="SearchBox"
-                             PlaceholderText="搜索日志..."
-                             TextChanged="SearchBox_TextChanged"
-                             Width="300"/>
-                    
-                    <Button Content="清空"
-                            Click="ClearLogs_Click"/>
-                    
-                    <Button Content="全选"
-                            Click="SelectAllLogs_Click"/>
-                    
-                    <Button Content="复制所选"
-                            Click="CopySelectedLogs_Click"/>
-                    
-                    <CheckBox Content="自动滚动"
-                              IsChecked="{x:Bind ViewModel.AutoScroll, Mode=TwoWay}"
-                              x:Name="AutoScrollCheckBox"/>
+                <StackPanel Grid.Row="0" Padding="8" Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <StackPanel Spacing="4">
+                            <TextBox x:Name="SearchBox"
+                                     PlaceholderText="正则表达式搜索..."
+                                     TextChanged="SearchBox_TextChanged"
+                                     Width="300"/>
+                            
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock x:Name="RegexErrorTextBlock"
+                                           Foreground="#C42B1C"
+                                           FontSize="11"
+                                           Visibility="Collapsed"/>
+                                
+                                <TextBlock x:Name="MatchCountTextBlock"
+                                           FontSize="11"
+                                           Opacity="0.7"
+                                           Visibility="Collapsed"/>
+                            </StackPanel>
+                        </StackPanel>
+                        
+                        <Button Content="清空"
+                                Click="ClearLogs_Click"/>
+                        
+                        <Button Content="全选"
+                                Click="SelectAllLogs_Click"/>
+                        
+                        <Button Content="复制所选"
+                                Click="CopySelectedLogs_Click"/>
+                        
+                        <CheckBox Content="自动滚动"
+                                  IsChecked="{x:Bind ViewModel.AutoScroll, Mode=TwoWay}"
+                                  x:Name="AutoScrollCheckBox"/>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- Logs Display - Using ItemsRepeater for Better Performance -->

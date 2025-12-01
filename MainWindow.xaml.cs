@@ -36,6 +36,35 @@ public sealed partial class MainWindow : Window
         
         // Disable auto-scroll when user manually scrolls
         LogScrollViewer.ViewChanged += LogScrollViewer_ViewChanged;
+        
+        // Subscribe to ViewModel property changes for match count
+        ViewModel.PropertyChanged += ViewModel_PropertyChanged;
+    }
+    
+    private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ViewModel.MatchCount))
+        {
+            MatchCountTextBlock.Text = $"匹配: {ViewModel.MatchCount} 条";
+            MatchCountTextBlock.Visibility = ViewModel.IsRegexValid && !string.IsNullOrEmpty(ViewModel.SearchText)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+        else if (e.PropertyName == nameof(ViewModel.IsRegexValid) || e.PropertyName == nameof(ViewModel.RegexErrorMessage))
+        {
+            if (ViewModel.IsRegexValid)
+            {
+                RegexErrorTextBlock.Visibility = Visibility.Collapsed;
+                SearchBox.BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Green);
+            }
+            else
+            {
+                RegexErrorTextBlock.Text = ViewModel.RegexErrorMessage;
+                RegexErrorTextBlock.Visibility = Visibility.Visible;
+                MatchCountTextBlock.Visibility = Visibility.Collapsed;
+                SearchBox.BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Red);
+            }
+        }
     }
     
     private bool _isAutoScrolling = false;

@@ -11,6 +11,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace SerialPortTool.ViewModels;
@@ -109,6 +110,9 @@ public partial class MainViewModel : ObservableObject
         {
             if (SetProperty(ref _searchText, value))
             {
+                // Validate regex pattern
+                ValidateSearchPattern();
+                
                 // Debounce filter updates to reduce UI thrashing
                 _filterDebounceTimer?.Dispose();
                 _filterDebounceTimer = new System.Threading.Timer(_ =>
@@ -120,6 +124,38 @@ public partial class MainViewModel : ObservableObject
     }
     
     private System.Threading.Timer? _filterDebounceTimer;
+
+    [ObservableProperty]
+    private bool _isRegexValid = true;
+
+    [ObservableProperty]
+    private string _regexErrorMessage = string.Empty;
+
+    [ObservableProperty]
+    private int _matchCount = 0;
+
+    private void ValidateSearchPattern()
+    {
+        if (string.IsNullOrEmpty(SearchText))
+        {
+            IsRegexValid = true;
+            RegexErrorMessage = string.Empty;
+            return;
+        }
+
+        try
+        {
+            _ = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            IsRegexValid = true;
+            RegexErrorMessage = string.Empty;
+        }
+        catch (ArgumentException ex)
+        {
+            IsRegexValid = false;
+            RegexErrorMessage = $"Invalid regex: {ex.Message}";
+            _logger.LogWarning(ex, "Invalid regex pattern: {Pattern}", SearchText);
+        }
+    }
 
     [ObservableProperty]
     private bool _autoScroll = true;
@@ -325,12 +361,37 @@ public partial class MainViewModel : ObservableObject
         // CRITICAL: Never replace DisplayLogs collection, only modify in place
         // This prevents ListView from rebinding and causing flicker
         
-        var filtered = (string.IsNullOrEmpty(SearchText)
-            ? AllLogs
-            : AllLogs.Where(log =>
-                log.Content.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
-                log.PortName.Contains(SearchText, StringComparison.OrdinalIgnoreCase)))
-            .ToList();
+        List<LogEntry> filtered;
+        
+        if (string.IsNullOrEmpty(SearchText))
+        {
+            filtered = AllLogs.ToList();
+            MatchCount = 0;
+        }
+        else if (!IsRegexValid)
+        {
+            // If regex is invalid, show no results
+            filtered = new List<LogEntry>();
+            MatchCount = 0;
+        }
+        else
+        {
+            try
+            {
+                var regex = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+                filtered = AllLogs.Where(log =>
+                    regex.IsMatch(log.Content) ||
+                    regex.IsMatch(log.PortName))
+                    .ToList();
+                MatchCount = filtered.Count;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error applying regex filter: {Pattern}", SearchText);
+                filtered = new List<LogEntry>();
+                MatchCount = 0;
+            }
+        }
 
         var filteredSet = new HashSet<LogEntry>(filtered);
         
@@ -418,11 +479,37 @@ public partial class MainViewModel : ObservableObject
         {
             try
             {
-                // Add to DisplayLogs for ItemsRepeater
+                // Add to AllLogs first
                 foreach (var logEntry in newLogs)
                 {
-                    DisplayLogs.Add(logEntry);
                     AllLogs.Add(logEntry);
+                }
+                
+                // Apply regex filter to new logs before adding to DisplayLogs
+                var logsToDisplay = newLogs;
+                if (!string.IsNullOrEmpty(SearchText) && IsRegexValid)
+                {
+                    try
+                    {
+                        var regex = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+                        logsToDisplay = newLogs.Where(log =>
+                            regex.IsMatch(log.Content) ||
+                            regex.IsMatch(log.PortName)).ToList();
+                        
+                        // Update match count
+                        MatchCount = DisplayLogs.Count + logsToDisplay.Count;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error applying regex filter to new logs: {Pattern}", SearchText);
+                        logsToDisplay = new List<LogEntry>();
+                    }
+                }
+                
+                // Add filtered logs to DisplayLogs
+                foreach (var logEntry in logsToDisplay)
+                {
+                    DisplayLogs.Add(logEntry);
                 }
 
                 // Trim DisplayLogs to prevent memory issues
