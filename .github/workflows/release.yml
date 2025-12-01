@@ -61,10 +61,7 @@ jobs:
           --configuration ${{ matrix.configuration }} `
           --runtime win-${{ matrix.platform }} `
           --self-contained true `
-          --no-restore `
-          -p:PublishSingleFile=true `
-          -p:IncludeNativeLibrariesForSelfExtract=true `
-          -p:EnableCompressionInSingleFile=true
+          --no-restore
       timeout-minutes: 15
       env:
         DOTNET_CLI_TELEMETRY_OPTOUT: 1
@@ -77,9 +74,8 @@ jobs:
           --runtime win-${{ matrix.platform }} `
           --self-contained true `
           --output publish/${{ matrix.platform }} `
-          -p:PublishSingleFile=true `
-          -p:IncludeNativeLibrariesForSelfExtract=true `
-          -p:EnableCompressionInSingleFile=true
+          -p:PublishTrimmed=false `
+          -p:PublishReadyToRun=true
       timeout-minutes: 15
       env:
         DOTNET_CLI_TELEMETRY_OPTOUT: 1
