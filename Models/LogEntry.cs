@@ -57,6 +57,11 @@ public partial class LogEntry : ObservableObject
     private bool _isReceived = true;
 
     /// <summary>
+    /// 格式化文本用于显示 (高性能访问)
+    /// </summary>
+    public string FormattedText => $"[{Timestamp:HH:mm:ss.fff}] [{Level}] [{PortName}] {Content}";
+
+    /// <summary>
     /// 转换为字符串表示
     /// </summary>
     public override string ToString()

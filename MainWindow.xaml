@@ -173,22 +173,28 @@
                               x:Name="AutoScrollCheckBox"/>
                 </StackPanel>
 
-                <!-- Logs Display - Using TextBox for Better Performance -->
+                <!-- Logs Display - Using ItemsRepeater for Better Performance -->
                 <ScrollViewer Grid.Row="1"
                               x:Name="LogScrollViewer"
                               VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Auto"
                               Background="{ThemeResource LayerFillColorDefaultBrush}"
                               Padding="8">
-                    <TextBox x:Name="LogsTextBox"
-                             IsReadOnly="True"
-                             AcceptsReturn="True"
-                             TextWrapping="Wrap"
-                             BorderThickness="0"
-                             Background="Transparent"
-                             FontFamily="Consolas"
-                             FontSize="12"
-                             Padding="0"/>
+                    <ItemsRepeater x:Name="LogsItemsRepeater"
+                                   ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}">
+                        <ItemsRepeater.Layout>
+                            <StackLayout Orientation="Vertical" Spacing="0"/>
+                        </ItemsRepeater.Layout>
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding FormattedText}"
+                                           FontFamily="Consolas"
+                                           FontSize="12"
+                                           TextWrapping="NoWrap"
+                                           Padding="0"/>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
                 </ScrollViewer>
 
                 <!-- Send Area -->

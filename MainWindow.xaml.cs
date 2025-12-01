@@ -31,84 +31,25 @@ public sealed partial class MainWindow : Window
             appWindow.Resize(new Windows.Graphics.SizeInt32(1200, 800));
         }
         
-        // Subscribe to log update events
-        ViewModel.LogsUpdated += OnLogsUpdated;
+        // Auto-scroll support for ItemsRepeater
+        ViewModel.PropertyChanged += ViewModel_PropertyChanged;
     }
     
-    private const int MaxTextBoxLength = 200000; // Reduced limit for better performance
-    private readonly System.Text.StringBuilder _pendingLogs = new();
-    private System.Threading.Timer? _updateTimer;
-    private readonly object _pendingLogsLock = new();
-    
-    private void OnLogsUpdated(object? sender, string newLogsText)
+    private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        // Batch log updates to reduce UI thread pressure
-        lock (_pendingLogsLock)
+        // Auto-scroll when new logs are added
+        if (e.PropertyName == nameof(ViewModel.DisplayLogs) && ViewModel.AutoScroll)
         {
-            _pendingLogs.Append(newLogsText);
-            
-            // Start or reset the update timer
-            if (_updateTimer == null)
+            DispatcherQueue.TryEnqueue(() =>
             {
-                _updateTimer = new System.Threading.Timer(_ =>
+                try
                 {
-                    FlushPendingLogs();
-                }, null, 100, System.Threading.Timeout.Infinite);
-            }
-            else
-            {
-                _updateTimer.Change(100, System.Threading.Timeout.Infinite);
-            }
-        }
-    }
-    
-    private void FlushPendingLogs()
-    {
-        string logsToAdd;
-        lock (_pendingLogsLock)
-        {
-            if (_pendingLogs.Length == 0)
-                return;
-                
-            logsToAdd = _pendingLogs.ToString();
-            _pendingLogs.Clear();
-        }
-        
-        // Ensure we're on the UI thread
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            try
-            {
-                // Append new logs to the TextBox
-                var currentText = LogsTextBox.Text;
-                var newText = currentText + logsToAdd;
-                
-                // Trim old text if it gets too long
-                if (newText.Length > MaxTextBoxLength)
-                {
-                    // Keep only the last 70% of content
-                    var startIndex = newText.Length - (int)(MaxTextBoxLength * 0.7);
-                    // Find the next newline to avoid cutting in the middle of a line
-                    var nextNewline = newText.IndexOf('\n', startIndex);
-                    if (nextNewline > 0)
-                    {
-                        newText = newText.Substring(nextNewline + 1);
-                    }
-                }
-                
-                LogsTextBox.Text = newText;
-                
-                // Auto-scroll if enabled
-                if (ViewModel.AutoScroll)
-                {
+                    // Scroll to bottom
                     LogScrollViewer.ChangeView(null, LogScrollViewer.ScrollableHeight, null, false);
                 }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error updating logs display: {ex.Message}");
-            }
-        });
+                catch { }
+            });
+        }
     }
 
     private void NewConnection_Click(object sender, RoutedEventArgs e)
@@ -162,7 +103,6 @@ public sealed partial class MainWindow : Window
     private void ClearLogs_Click(object sender, RoutedEventArgs e)
     {
         ViewModel.ClearLogsCommand.Execute(null);
-        LogsTextBox.Text = string.Empty;
     }
 
     private void OpenLogFolder_Click(object sender, RoutedEventArgs e)
@@ -189,29 +129,23 @@ public sealed partial class MainWindow : Window
 
     private void SelectAllLogs_Click(object sender, RoutedEventArgs e)
     {
-        // Select all text in the TextBox
-        LogsTextBox.SelectAll();
+        // Copy all logs to clipboard
+        var allText = string.Join("\n", ViewModel.DisplayLogs.Select(l => l.FormattedText));
+        
+        if (!string.IsNullOrEmpty(allText))
+        {
+            var dataPackage = new Windows.ApplicationModel.DataTransfer.DataPackage();
+            dataPackage.SetText(allText);
+            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dataPackage);
+            
+            ViewModel.StatusMessage = $"Copied {ViewModel.DisplayLogs.Count} logs to clipboard";
+        }
     }
 
     private void CopySelectedLogs_Click(object sender, RoutedEventArgs e)
     {
-        var selectedText = LogsTextBox.SelectedText;
-        
-        if (string.IsNullOrEmpty(selectedText))
-        {
-            // If nothing selected, copy all
-            selectedText = LogsTextBox.Text;
-        }
-
-        if (!string.IsNullOrEmpty(selectedText))
-        {
-            var dataPackage = new Windows.ApplicationModel.DataTransfer.DataPackage();
-            dataPackage.SetText(selectedText);
-            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dataPackage);
-
-            var lineCount = selectedText.Split('\n').Length;
-            ViewModel.StatusMessage = $"Copied {lineCount} lines to clipboard";
-        }
+        // Copy all visible logs (same as select all for now)
+        SelectAllLogs_Click(sender, e);
     }
 
     private void CustomBaudRateCheckBox_Changed(object sender, RoutedEventArgs e)

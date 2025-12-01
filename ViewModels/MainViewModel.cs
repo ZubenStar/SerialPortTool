@@ -81,11 +81,6 @@ public partial class MainViewModel : ObservableObject
     private readonly ISettingsService _settingsService;
     private readonly ILogger<MainViewModel> _logger;
     private readonly DispatcherQueue _dispatcherQueue;
-    
-    // Batching for UI updates
-    private readonly System.Collections.Concurrent.ConcurrentQueue<(string portName, List<LogEntry> logs, string formattedText)> _pendingUpdates = new();
-    private System.Threading.Timer? _uiUpdateTimer;
-    private readonly object _updateLock = new();
 
     [ObservableProperty]
     private string _title = "串口工具 - Multi-Port Serial Monitor";
@@ -100,7 +95,7 @@ public partial class MainViewModel : ObservableObject
     private ObservableCollection<LogEntry> _allLogs = new();
 
     [ObservableProperty]
-    private RangeObservableCollection<LogEntry> _displayLogs = new();
+    private ObservableCollection<LogEntry> _displayLogs = new();
 
     [ObservableProperty]
     private ObservableCollection<FilterRule> _filters = new();
@@ -129,9 +124,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private bool _autoScroll = true;
 
-    private const int MaxLogCount = 5000; // Limit logs to prevent freezing
-
-    public event EventHandler<string>? LogsUpdated;
+    private const int MaxDisplayLogs = 1000; // Limit displayed logs for performance
 
     [ObservableProperty]
     private string _statusMessage = "Ready";
@@ -389,13 +382,10 @@ public partial class MainViewModel : ObservableObject
     {
         // Capture data on background thread
         var text = Encoding.UTF8.GetString(e.Data);
-        var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
         var portName = e.PortName;
         
-        // Build formatted text and log entries on background thread
-        var formattedText = new StringBuilder();
+        // Build log entries on background thread
         var newLogs = new List<LogEntry>();
-        
         var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
         
         for (int i = 0; i < lines.Length; i++)
@@ -417,98 +407,53 @@ public partial class MainViewModel : ObservableObject
             
             newLogs.Add(logEntry);
             
-            // Format as text - always include the line even if empty
-            formattedText.AppendLine($"[{timestamp}] [Info] [{portName}] {line}");
-            
             // Write to log file asynchronously
             _ = _fileLoggerService.WriteLogAsync(portName, logEntry);
         }
 
         if (newLogs.Count == 0) return;
 
-        // Queue updates for batching
-        _pendingUpdates.Enqueue((portName, newLogs, formattedText.ToString()));
-        
-        // Start or reset the update timer
-        lock (_updateLock)
-        {
-            if (_uiUpdateTimer == null)
-            {
-                _uiUpdateTimer = new System.Threading.Timer(_ => ProcessPendingUpdates(), null, 50, System.Threading.Timeout.Infinite);
-            }
-            else
-            {
-                _uiUpdateTimer.Change(50, System.Threading.Timeout.Infinite);
-            }
-        }
-    }
-    
-    private void ProcessPendingUpdates()
-    {
-        var allLogs = new List<LogEntry>();
-        var portUpdates = new Dictionary<string, List<LogEntry>>();
-        var allFormattedText = new StringBuilder();
-        
-        // Drain the queue
-        while (_pendingUpdates.TryDequeue(out var update))
-        {
-            allLogs.AddRange(update.logs);
-            allFormattedText.Append(update.formattedText);
-            
-            if (!portUpdates.ContainsKey(update.portName))
-            {
-                portUpdates[update.portName] = new List<LogEntry>();
-            }
-            portUpdates[update.portName].AddRange(update.logs);
-        }
-        
-        if (allLogs.Count == 0) return;
-        
-        // Dispatch batched UI updates to UI thread
+        // Dispatch UI updates immediately to UI thread for real-time display
         _dispatcherQueue.TryEnqueue(() =>
         {
             try
             {
-                // Store logs on UI thread
-                foreach (var logEntry in allLogs)
+                // Add to DisplayLogs for ItemsRepeater
+                foreach (var logEntry in newLogs)
                 {
+                    DisplayLogs.Add(logEntry);
                     AllLogs.Add(logEntry);
                 }
 
-                // Limit log count
-                while (AllLogs.Count > MaxLogCount)
+                // Trim DisplayLogs to prevent memory issues
+                while (DisplayLogs.Count > MaxDisplayLogs)
+                {
+                    DisplayLogs.RemoveAt(0);
+                }
+                
+                // Trim AllLogs separately
+                while (AllLogs.Count > MaxDisplayLogs * 2)
                 {
                     AllLogs.RemoveAt(0);
                 }
 
                 // Update port-specific logs and statistics
-                foreach (var kvp in portUpdates)
+                var portVm = OpenPorts.FirstOrDefault(p => p.PortName == portName);
+                if (portVm != null)
                 {
-                    var portVm = OpenPorts.FirstOrDefault(p => p.PortName == kvp.Key);
-                    if (portVm != null)
+                    foreach (var logEntry in newLogs)
                     {
-                        foreach (var logEntry in kvp.Value)
-                        {
-                            portVm.AddLog(logEntry);
-                        }
-                        
-                        var stats = _serialPortService.GetStatistics(kvp.Key);
-                        portVm.UpdateStatistics(stats);
+                        portVm.AddLog(logEntry);
                     }
+                    
+                    var stats = _serialPortService.GetStatistics(portName);
+                    portVm.UpdateStatistics(stats);
                 }
-
-                // Fire text update event
-                var textToAdd = allFormattedText.ToString();
-                if (!string.IsNullOrEmpty(SearchText))
+                
+                // Auto-scroll to bottom
+                if (AutoScroll)
                 {
-                    var filteredLines = textToAdd.Split('\n')
-                        .Where(line => line.Contains(SearchText, StringComparison.OrdinalIgnoreCase));
-                    textToAdd = string.Join("\n", filteredLines);
-                }
-
-                if (!string.IsNullOrEmpty(textToAdd))
-                {
-                    LogsUpdated?.Invoke(this, textToAdd);
+                    // ItemsRepeater will handle scrolling via UI binding
                 }
             }
             catch (Exception ex)
