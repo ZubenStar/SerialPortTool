@@ -50,9 +50,24 @@
                         
                         <StackPanel Spacing="4">
                             <TextBlock Text="波特率:" FontSize="12"/>
-                            <ComboBox ItemsSource="{x:Bind ViewModel.AvailableBaudRates}"
+                            <ComboBox x:Name="BaudRateComboBox"
+                                      ItemsSource="{x:Bind ViewModel.AvailableBaudRates}"
                                       SelectedItem="{x:Bind ViewModel.BaudRate, Mode=TwoWay}"
                                       HorizontalAlignment="Stretch"/>
+                        </StackPanel>
+                        
+                        <StackPanel Spacing="4">
+                            <CheckBox Content="自定义波特率"
+                                      IsChecked="{x:Bind ViewModel.UseCustomBaudRate, Mode=TwoWay}"
+                                      FontSize="12"
+                                      Checked="CustomBaudRateCheckBox_Changed"
+                                      Unchecked="CustomBaudRateCheckBox_Changed"/>
+                            <TextBox x:Name="CustomBaudRateTextBox"
+                                     PlaceholderText="输入自定义波特率..."
+                                     Text="{x:Bind ViewModel.CustomBaudRate, Mode=TwoWay}"
+                                     HorizontalAlignment="Stretch"
+                                     InputScope="Number"
+                                     Visibility="Collapsed"/>
                         </StackPanel>
                         
                         <StackPanel Spacing="4">
@@ -147,31 +162,47 @@
                     <Button Content="清空"
                             Click="ClearLogs_Click"/>
                     
+                    <Button Content="全选"
+                            Click="SelectAllLogs_Click"/>
+                    
+                    <Button Content="复制所选"
+                            Click="CopySelectedLogs_Click"/>
+                    
                     <CheckBox Content="自动滚动"
                               IsChecked="{x:Bind ViewModel.AutoScroll, Mode=TwoWay}"
                               x:Name="AutoScrollCheckBox"/>
                 </StackPanel>
 
-                <!-- Logs Display with Virtualization -->
+                <!-- Logs Display with Optimized Virtualization -->
                 <ListView Grid.Row="1"
                           x:Name="LogsListView"
                           ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
-                          SelectionMode="Extended"
+                          SelectionMode="Multiple"
                           Background="{ThemeResource LayerFillColorDefaultBrush}"
-                          Padding="8">
+                          Padding="8"
+                          IncrementalLoadingTrigger="Edge"
+                          VirtualizingStackPanel.VirtualizationMode="Recycling">
                     <ListView.ItemContainerStyle>
                         <Style TargetType="ListViewItem">
-                            <Setter Property="Padding" Value="0,2"/>
+                            <Setter Property="Padding" Value="0,1"/>
                             <Setter Property="MinHeight" Value="0"/>
                             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                            <Setter Property="Margin" Value="0"/>
                         </Style>
                     </ListView.ItemContainerStyle>
+                    <ListView.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <ItemsStackPanel/>
+                        </ItemsPanelTemplate>
+                    </ListView.ItemsPanel>
                     <ListView.ItemTemplate>
                         <DataTemplate>
                             <TextBlock TextWrapping="Wrap"
                                        IsTextSelectionEnabled="True"
                                        Padding="0"
-                                       LineHeight="20">
+                                       Margin="0"
+                                       LineHeight="18"
+                                       LineStackingStrategy="BlockLineHeight">
                                 <Run Text="{Binding Timestamp, Mode=OneWay}"/>
                                 <Run Text=" ["/>
                                 <Run Text="{Binding Level, Mode=OneWay}"/>

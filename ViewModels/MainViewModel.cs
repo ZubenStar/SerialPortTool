@@ -16,7 +16,7 @@ using System.Threading.Tasks;
 namespace SerialPortTool.ViewModels;
 
 /// <summary>
-/// ObservableCollection that can suspend change notifications
+/// ObservableCollection that supports incremental batch operations without full resets
 /// </summary>
 public class RangeObservableCollection<T> : ObservableCollection<T>
 {
@@ -26,25 +26,38 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
     {
         if (items == null) return;
 
+        var itemsList = items.ToList();
+        if (itemsList.Count == 0) return;
+
         _suppressNotification = true;
-        foreach (var item in items)
+        foreach (var item in itemsList)
         {
-            Add(item);
+            Items.Add(item);
         }
         _suppressNotification = false;
-        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+
+        // Use Add action with multiple items instead of Reset for smoother UI updates
+        OnCollectionChanged(new NotifyCollectionChangedEventArgs(
+            NotifyCollectionChangedAction.Add,
+            itemsList,
+            Items.Count - itemsList.Count));
     }
 
     public void RemoveRange(IEnumerable<T> items)
     {
         if (items == null) return;
 
+        var itemsList = items.ToList();
+        if (itemsList.Count == 0) return;
+
         _suppressNotification = true;
-        foreach (var item in items)
+        foreach (var item in itemsList)
         {
-            Remove(item);
+            Items.Remove(item);
         }
         _suppressNotification = false;
+
+        // Notify with Reset for removals (less common operation)
         OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
     }
 
@@ -142,6 +155,25 @@ public partial class MainViewModel : ObservableObject
         1152000, 3000000, 6000000
     };
 
+    [ObservableProperty]
+    private string _customBaudRate = string.Empty;
+
+    [ObservableProperty]
+    private bool _useCustomBaudRate = false;
+
+    /// <summary>
+    /// Format bytes into human-readable units (B, KB, MB)
+    /// </summary>
+    public static string FormatDataSize(long bytes)
+    {
+        if (bytes < 1024)
+            return $"{bytes} B";
+        else if (bytes < 1024 * 1024)
+            return $"{bytes / 1024.0:F2} KB";
+        else
+            return $"{bytes / (1024.0 * 1024.0):F2} MB";
+    }
+
     public ObservableCollection<int> AvailableDataBits { get; } = new()
     {
         5, 6, 7, 8
@@ -226,10 +258,25 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
+            // Determine which baud rate to use
+            int baudRateToUse = BaudRate;
+            if (UseCustomBaudRate && !string.IsNullOrWhiteSpace(CustomBaudRate))
+            {
+                if (int.TryParse(CustomBaudRate, out int customRate) && customRate > 0)
+                {
+                    baudRateToUse = customRate;
+                }
+                else
+                {
+                    StatusMessage = "Invalid custom baud rate";
+                    return;
+                }
+            }
+
             var config = new SerialPortConfig
             {
                 PortName = portName,
-                BaudRate = BaudRate,
+                BaudRate = baudRateToUse,
                 DataBits = DataBits,
                 StopBits = StopBits,
                 Parity = Parity
@@ -366,8 +413,8 @@ public partial class MainViewModel : ObservableObject
 
         if (newLogs.Count == 0) return;
 
-        // Update AllLogs and DisplayLogs on UI thread using batch operations
-        _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        // Update AllLogs and DisplayLogs on UI thread with Normal priority for smoother updates
+        _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Normal, () =>
         {
             // Handle log count limit for AllLogs
             if (AllLogs.Count + newLogs.Count > MaxLogCount)
@@ -398,19 +445,20 @@ public partial class MainViewModel : ObservableObject
                 }
             }
 
-            // Add to AllLogs
-            foreach (var logEntry in newLogs)
-            {
-                AllLogs.Add(logEntry);
-            }
-
-            // Filter and batch add to DisplayLogs
+            // Filter logs before adding
             var logsToAdd = newLogs.Where(logEntry =>
                 string.IsNullOrEmpty(SearchText) ||
                 logEntry.Content.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
                 logEntry.PortName.Contains(SearchText, StringComparison.OrdinalIgnoreCase)
             ).ToList();
 
+            // Add to AllLogs in batch
+            foreach (var logEntry in newLogs)
+            {
+                AllLogs.Add(logEntry);
+            }
+
+            // Add to DisplayLogs using single batch operation
             if (logsToAdd.Count > 0)
             {
                 DisplayLogs.AddRange(logsToAdd);
@@ -500,7 +548,7 @@ public partial class PortViewModel : ObservableObject
 
     public void UpdateStatistics(PortStatistics stats)
     {
-        StatisticsDisplay = $"↓ {stats.ReceivedBytes} bytes | ↑ {stats.SentBytes} bytes";
+        StatisticsDisplay = $"↓ {MainViewModel.FormatDataSize(stats.ReceivedBytes)} | ↑ {MainViewModel.FormatDataSize(stats.SentBytes)}";
     }
 
     public void AddLog(LogEntry entry)

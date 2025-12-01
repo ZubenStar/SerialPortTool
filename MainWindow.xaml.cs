@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using SerialPortTool.ViewModels;
 using System;
+using System.Linq;
 
 namespace SerialPortTool;
 
@@ -120,6 +121,41 @@ public sealed partial class MainWindow : Window
         {
             // Log error - you may want to show a dialog to the user
             System.Diagnostics.Debug.WriteLine($"Error opening log folder: {ex.Message}");
+        }
+    }
+
+    private void SelectAllLogs_Click(object sender, RoutedEventArgs e)
+    {
+        // Select all items in the current display
+        LogsListView.SelectAll();
+    }
+
+    private void CopySelectedLogs_Click(object sender, RoutedEventArgs e)
+    {
+        if (LogsListView.SelectedItems.Count == 0)
+            return;
+
+        var selectedLogs = LogsListView.SelectedItems
+            .Cast<Models.LogEntry>()
+            .OrderBy(log => log.Timestamp)
+            .Select(log => log.ToString());
+
+        var text = string.Join(Environment.NewLine, selectedLogs);
+
+        var dataPackage = new Windows.ApplicationModel.DataTransfer.DataPackage();
+        dataPackage.SetText(text);
+        Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dataPackage);
+
+        ViewModel.StatusMessage = $"Copied {LogsListView.SelectedItems.Count} log entries to clipboard";
+    }
+
+    private void CustomBaudRateCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (sender is CheckBox checkBox)
+        {
+            bool isChecked = checkBox.IsChecked ?? false;
+            BaudRateComboBox.Visibility = isChecked ? Visibility.Collapsed : Visibility.Visible;
+            CustomBaudRateTextBox.Visibility = isChecked ? Visibility.Visible : Visibility.Collapsed;
         }
     }
 }
