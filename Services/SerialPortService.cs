@@ -106,6 +106,9 @@ public class SerialPortService : ISerialPortService, IDisposable
                 portInstance.DataReceived -= OnPortDataReceived;
                 portInstance.ErrorOccurred -= OnPortError;
                 portInstance.Dispose();
+                
+                // Wait for OS to fully release the port resources
+                await Task.Delay(100);
             }
             catch (Exception ex)
             {
@@ -399,6 +402,9 @@ public class SerialPortService : ISerialPortService, IDisposable
                             _logger.LogDebug(ex, "Error closing port");
                         }
                     }
+                    
+                    // Give the port time to fully close before disposing
+                    Thread.Sleep(50);
                 }
                 catch (Exception ex)
                 {
@@ -429,7 +435,7 @@ public class SerialPortService : ISerialPortService, IDisposable
         public async Task ReconnectAsync()
         {
             await CloseAsync();
-            await Task.Delay(500); // Wait before reconnecting
+            await Task.Delay(200); // Wait for OS to release port resources
             await OpenAsync();
         }
 
