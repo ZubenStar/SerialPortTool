@@ -93,10 +93,18 @@ public sealed partial class MainWindow : Window
         // Auto-scroll when new logs are added
         if (ViewModel.AutoScroll && e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)
         {
+            // Ensure LogScrollViewer is loaded before attempting to scroll
+            if (LogScrollViewer == null)
+                return;
+                
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
                 try
                 {
+                    // Double-check in case it's still null on the dispatcher thread
+                    if (LogScrollViewer == null)
+                        return;
+                        
                     _isAutoScrolling = true;
                     // Small delay to ensure layout is updated
                     LogScrollViewer.UpdateLayout();
