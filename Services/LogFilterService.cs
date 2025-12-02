@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -9,19 +10,48 @@ using SerialPortTool.Models;
 namespace SerialPortTool.Services;
 
 /// <summary>
-/// 日志过滤服务实现
+/// 日志过滤服务实现 - 优化正则表达式缓存
 /// </summary>
 public class LogFilterService : ILogFilterService
 {
     private readonly ILogger<LogFilterService> _logger;
     private readonly List<FilterRule> _filters = new();
     private readonly object _lock = new();
+    private readonly ConcurrentDictionary<string, Regex> _regexCache = new();
+    private const int MaxCacheSize = 50;
 
     public event EventHandler? FiltersChanged;
 
     public LogFilterService(ILogger<LogFilterService> logger)
     {
         _logger = logger;
+    }
+
+    private Regex GetOrCreateRegex(string pattern, bool caseSensitive)
+    {
+        var cacheKey = $"{pattern}|{caseSensitive}";
+        
+        return _regexCache.GetOrAdd(cacheKey, _ =>
+        {
+            // 限制缓存大小
+            if (_regexCache.Count >= MaxCacheSize)
+            {
+                // 清除一半的缓存
+                var keysToRemove = _regexCache.Keys.Take(MaxCacheSize / 2).ToList();
+                foreach (var key in keysToRemove)
+                {
+                    _regexCache.TryRemove(key, out var _);
+                }
+            }
+
+            var options = RegexOptions.Compiled;
+            if (!caseSensitive)
+            {
+                options |= RegexOptions.IgnoreCase;
+            }
+
+            return new Regex(pattern, options, TimeSpan.FromMilliseconds(100));
+        });
     }
 
     public void AddFilter(FilterRule rule)
@@ -66,6 +96,7 @@ public class LogFilterService : ILogFilterService
         lock (_lock)
         {
             _filters.Clear();
+            _regexCache.Clear();
             _logger.LogInformation("All filters cleared");
             OnFiltersChanged();
         }
@@ -156,22 +187,25 @@ public class LogFilterService : ILogFilterService
                 }
                 else if (filter.Type == FilterType.Regex)
                 {
-                    var options = filter.CaseSensitive 
-                        ? RegexOptions.None 
-                        : RegexOptions.IgnoreCase;
-                    
-                    var regex = new Regex(filter.Pattern, options);
-                    var matches = regex.Matches(text);
-                    
-                    foreach (Match match in matches)
+                    try
                     {
-                        highlights.Add(new HighlightSpan
+                        var regex = GetOrCreateRegex(filter.Pattern, filter.CaseSensitive);
+                        var matches = regex.Matches(text);
+                        
+                        foreach (Match match in matches)
                         {
-                            Start = match.Index,
-                            Length = match.Length,
-                            Text = match.Value,
-                            RuleId = filter.Id
-                        });
+                            highlights.Add(new HighlightSpan
+                            {
+                                Start = match.Index,
+                                Length = match.Length,
+                                Text = match.Value,
+                                RuleId = filter.Id
+                            });
+                        }
+                    }
+                    catch (RegexMatchTimeoutException)
+                    {
+                        _logger.LogWarning("Regex match timeout for pattern: {Pattern}", filter.Pattern);
                     }
                 }
             }
@@ -242,12 +276,13 @@ public class LogFilterService : ILogFilterService
         
         try
         {
-            var options = caseSensitive 
-                ? RegexOptions.None 
-                : RegexOptions.IgnoreCase;
-            
-            var regex = new Regex(pattern, options);
+            var regex = GetOrCreateRegex(pattern, caseSensitive);
             return regex.IsMatch(content);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            _logger.LogWarning("Regex match timeout for pattern: {Pattern}", pattern);
+            return false;
         }
         catch
         {

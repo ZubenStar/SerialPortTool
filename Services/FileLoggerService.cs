@@ -10,7 +10,7 @@ using SerialPortTool.Models;
 namespace SerialPortTool.Services;
 
 /// <summary>
-/// 文件日志服务实现
+/// 文件日志服务实现 - 优化批量写入性能
 /// </summary>
 public class FileLoggerService : IFileLoggerService, IDisposable
 {
@@ -96,13 +96,19 @@ public class FileLoggerService : IFileLoggerService, IDisposable
     }
 
     /// <summary>
-    /// 单个串口的日志记录器实例
+    /// 单个串口的日志记录器实例 - 带批量写入优化
     /// </summary>
     private class LoggerInstance : IAsyncDisposable
     {
         private readonly StreamWriter _writer;
         private readonly SemaphoreSlim _writeLock = new(1, 1);
         private readonly ILogger _logger;
+        private readonly ConcurrentQueue<LogEntry> _writeQueue = new();
+        private readonly Timer _flushTimer;
+        private readonly StringBuilder _batchBuffer = new(4096);
+        private const int MaxBatchSize = 100;
+        private const int FlushIntervalMs = 100;
+        private int _queuedCount = 0;
 
         public string LogFilePath { get; }
 
@@ -115,10 +121,10 @@ public class FileLoggerService : IFileLoggerService, IDisposable
             var fileName = $"{portName}_{timestamp}.log";
             LogFilePath = Path.Combine(logDirectory, fileName);
 
-            // Create StreamWriter with UTF-8 encoding
-            _writer = new StreamWriter(LogFilePath, append: true, Encoding.UTF8)
+            // Create StreamWriter with UTF-8 encoding and larger buffer
+            _writer = new StreamWriter(LogFilePath, append: true, Encoding.UTF8, bufferSize: 65536)
             {
-                AutoFlush = true
+                AutoFlush = false  // 手动刷新以提高性能
             };
 
             // Write header
@@ -127,22 +133,73 @@ public class FileLoggerService : IFileLoggerService, IDisposable
             _writer.WriteLine($"Started: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
             _writer.WriteLine($"========================");
             _writer.WriteLine();
+            _writer.Flush();
+
+            // Start background flush timer
+            _flushTimer = new Timer(FlushCallback, null, FlushIntervalMs, FlushIntervalMs);
 
             _logger.LogInformation("Created log file: {LogFilePath}", LogFilePath);
         }
 
         public async Task WriteLogAsync(LogEntry entry)
         {
-            await _writeLock.WaitAsync();
+            // 快速入队,避免阻塞
+            _writeQueue.Enqueue(entry);
+            var count = Interlocked.Increment(ref _queuedCount);
+
+            // 如果累积了足够多的日志,立即触发批量写入
+            if (count >= MaxBatchSize)
+            {
+                await FlushQueueAsync();
+            }
+        }
+
+        private void FlushCallback(object? state)
+        {
+            // 定期刷新队列
+            if (_queuedCount > 0)
+            {
+                _ = FlushQueueAsync();
+            }
+        }
+
+        private async Task FlushQueueAsync()
+        {
+            if (!_writeLock.Wait(0))
+            {
+                // 如果锁被占用,跳过此次刷新
+                return;
+            }
+
             try
             {
-                var direction = entry.IsReceived ? "RX" : "TX";
-                var logLine = $"[{entry.Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{direction}] {entry.Content}";
-                await _writer.WriteLineAsync(logLine);
+                _batchBuffer.Clear();
+                var processed = 0;
+
+                // 批量从队列中取出日志
+                while (processed < MaxBatchSize && _writeQueue.TryDequeue(out var entry))
+                {
+                    var direction = entry.IsReceived ? "RX" : "TX";
+                    _batchBuffer.Append('[')
+                        .Append(entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff"))
+                        .Append("] [")
+                        .Append(direction)
+                        .Append("] ")
+                        .AppendLine(entry.Content);
+                    
+                    processed++;
+                    Interlocked.Decrement(ref _queuedCount);
+                }
+
+                if (processed > 0)
+                {
+                    await _writer.WriteAsync(_batchBuffer.ToString());
+                    await _writer.FlushAsync();
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error writing to log file");
+                _logger.LogError(ex, "Error flushing log queue");
             }
             finally
             {
@@ -152,6 +209,12 @@ public class FileLoggerService : IFileLoggerService, IDisposable
 
         public async ValueTask DisposeAsync()
         {
+            // Stop timer
+            await _flushTimer.DisposeAsync();
+
+            // Flush remaining logs
+            await FlushQueueAsync();
+
             await _writeLock.WaitAsync();
             try
             {
@@ -160,6 +223,7 @@ public class FileLoggerService : IFileLoggerService, IDisposable
                 await _writer.WriteLineAsync($"========================");
                 await _writer.WriteLineAsync($"Stopped: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
                 await _writer.WriteLineAsync($"========================");
+                await _writer.FlushAsync();
 
                 _writer.Dispose();
                 _writeLock.Dispose();

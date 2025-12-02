@@ -210,7 +210,7 @@
                     </StackPanel>
                 </StackPanel>
 
-                <!-- Logs Display - Using ItemsRepeater for Better Performance -->
+                <!-- Logs Display - Using ItemsRepeater with Virtualization for High Performance -->
                 <ScrollViewer Grid.Row="1"
                               x:Name="LogScrollViewer"
                               VerticalScrollBarVisibility="Auto"
@@ -223,15 +223,17 @@
                                    ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
                                    VerticalAlignment="Top">
                         <ItemsRepeater.Layout>
-                            <StackLayout Orientation="Vertical" Spacing="0"/>
+                            <!-- StackLayout with better spacing for readability -->
+                            <StackLayout Orientation="Vertical" Spacing="2"/>
                         </ItemsRepeater.Layout>
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate>
+                                <!-- Larger font and better spacing for readability -->
                                 <TextBlock Text="{Binding FormattedText}"
                                            FontFamily="Consolas"
-                                           FontSize="12"
+                                           FontSize="14"
                                            TextWrapping="NoWrap"
-                                           Padding="0"
+                                           Padding="2,3,2,3"
                                            IsTextSelectionEnabled="True"/>
                             </DataTemplate>
                         </ItemsRepeater.ItemTemplate>

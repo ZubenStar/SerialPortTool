@@ -5,7 +5,7 @@ using SerialPortTool.Core.Enums;
 namespace SerialPortTool.Models;
 
 /// <summary>
-/// 日志条目模型
+/// 日志条目模型 - 优化版本用于高性能日志处理
 /// </summary>
 public partial class LogEntry : ObservableObject
 {
@@ -50,10 +50,23 @@ public partial class LogEntry : ObservableObject
     [ObservableProperty]
     private bool _isReceived = true;
 
+    // 缓存格式化文本以避免重复字符串分配
+    private string? _cachedFormattedText;
+
     /// <summary>
-    /// 格式化文本用于显示 (高性能访问)
+    /// 格式化文本用于显示 (高性能访问,带缓存)
     /// </summary>
-    public string FormattedText => $"[{Timestamp:HH:mm:ss.fff}] [{PortName}] {Content}";
+    public string FormattedText
+    {
+        get
+        {
+            if (_cachedFormattedText == null)
+            {
+                _cachedFormattedText = $"[{Timestamp:HH:mm:ss.fff}] [{PortName}] {Content}";
+            }
+            return _cachedFormattedText;
+        }
+    }
 
     /// <summary>
     /// 转换为字符串表示
@@ -63,4 +76,11 @@ public partial class LogEntry : ObservableObject
         var direction = IsReceived ? "RX" : "TX";
         return $"[{Timestamp:HH:mm:ss.fff}] [{PortName}] [{direction}] {Content}";
     }
+
+    /// <summary>
+    /// 清除缓存的格式化文本(当属性变化时调用)
+    /// </summary>
+    partial void OnContentChanged(string value) => _cachedFormattedText = null;
+    partial void OnPortNameChanged(string value) => _cachedFormattedText = null;
+    partial void OnTimestampChanged(DateTime value) => _cachedFormattedText = null;
 }

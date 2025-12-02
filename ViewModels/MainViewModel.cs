@@ -109,10 +109,10 @@ public partial class MainViewModel : ObservableObject
     private ObservableCollection<PortViewModel> _openPorts = new();
 
     [ObservableProperty]
-    private ObservableCollection<LogEntry> _allLogs = new();
+    private RangeObservableCollection<LogEntry> _allLogs = new();
 
     [ObservableProperty]
-    private ObservableCollection<LogEntry> _displayLogs = new();
+    private RangeObservableCollection<LogEntry> _displayLogs = new();
 
     [ObservableProperty]
     private ObservableCollection<FilterRule> _filters = new();
@@ -176,7 +176,8 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private bool _autoScroll = true;
 
-    private const int MaxDisplayLogs = 1000; // Limit displayed logs for performance
+    private const int MaxDisplayLogs = 2000; // Increased limit with optimizations
+    private const int BatchProcessSize = 50; // Process logs in batches
 
     [ObservableProperty]
     private string _statusMessage = "Ready";
@@ -559,9 +560,17 @@ public partial class MainViewModel : ObservableObject
         var text = Encoding.UTF8.GetString(e.Data);
         var portName = e.PortName;
         
-        // Build log entries on background thread
+        // Build log entries on background thread with optimized string operations
         var newLogs = new List<LogEntry>();
         var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+        
+        // Pre-allocate to reduce reallocations
+        if (lines.Length > 1)
+        {
+            newLogs.Capacity = lines.Length;
+        }
+        
+        var now = DateTime.Now;
         
         for (int i = 0; i < lines.Length; i++)
         {
@@ -575,72 +584,121 @@ public partial class MainViewModel : ObservableObject
             {
                 PortName = portName,
                 Content = line,
-                RawData = Encoding.UTF8.GetBytes(line),
+                Timestamp = now,
                 IsReceived = true
             };
             
             newLogs.Add(logEntry);
             
-            // Write to log file asynchronously
+            // Write to log file asynchronously (batched internally)
             _ = _fileLoggerService.WriteLogAsync(portName, logEntry);
         }
 
         if (newLogs.Count == 0) return;
 
-        // Dispatch UI updates immediately to UI thread for real-time display
+        // Cached regex for better performance
+        Regex? filterRegex = null;
+        if (!string.IsNullOrEmpty(SearchText) && IsRegexValid)
+        {
+            try
+            {
+                filterRegex = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
+            }
+            catch
+            {
+                filterRegex = null;
+            }
+        }
+
+        // Dispatch UI updates with batching for smoother performance
         _dispatcherQueue.TryEnqueue(() =>
         {
             try
             {
-                // Add to AllLogs first
-                foreach (var logEntry in newLogs)
+                // Batch add to AllLogs
+                if (AllLogs is RangeObservableCollection<LogEntry> rangeAllLogsAdd)
                 {
-                    AllLogs.Add(logEntry);
+                    rangeAllLogsAdd.AddRange(newLogs);
+                }
+                else
+                {
+                    foreach (var log in newLogs)
+                    {
+                        AllLogs.Add(log);
+                    }
                 }
                 
-                // Apply regex filter to new logs before adding to DisplayLogs
+                // Apply regex filter to new logs
                 var logsToDisplay = newLogs;
-                if (!string.IsNullOrEmpty(SearchText) && IsRegexValid)
+                if (filterRegex != null)
                 {
                     try
                     {
-                        var regex = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled);
                         logsToDisplay = newLogs.Where(log =>
-                            regex.IsMatch(log.Content) ||
-                            regex.IsMatch(log.PortName)).ToList();
+                            filterRegex.IsMatch(log.Content) ||
+                            filterRegex.IsMatch(log.PortName)).ToList();
                         
-                        // Update match count
                         MatchCount = DisplayLogs.Count + logsToDisplay.Count;
                     }
-                    catch (Exception ex)
+                    catch (RegexMatchTimeoutException)
                     {
-                        _logger.LogError(ex, "Error applying regex filter to new logs: {Pattern}", SearchText);
+                        _logger.LogWarning("Regex match timeout during filter");
                         logsToDisplay = new List<LogEntry>();
                     }
                 }
                 
-                // Add filtered logs to DisplayLogs
-                foreach (var logEntry in logsToDisplay)
+                // Batch add to DisplayLogs
+                if (DisplayLogs is RangeObservableCollection<LogEntry> rangeDisplayLogsAdd && logsToDisplay.Count > 5)
                 {
-                    DisplayLogs.Add(logEntry);
+                    rangeDisplayLogsAdd.AddRange(logsToDisplay);
+                }
+                else
+                {
+                    foreach (var log in logsToDisplay)
+                    {
+                        DisplayLogs.Add(log);
+                    }
                 }
 
-                // Trim DisplayLogs to prevent memory issues
-                while (DisplayLogs.Count > MaxDisplayLogs)
+                // Trim logs in batches to reduce UI updates
+                var removeCount = DisplayLogs.Count - MaxDisplayLogs;
+                if (removeCount > 0)
                 {
-                    DisplayLogs.RemoveAt(0);
+                    if (DisplayLogs is RangeObservableCollection<LogEntry> rangeDisplayLogsRemove)
+                    {
+                        rangeDisplayLogsRemove.RemoveRange(DisplayLogs.Take(removeCount));
+                    }
+                    else
+                    {
+                        for (int i = 0; i < removeCount; i++)
+                        {
+                            DisplayLogs.RemoveAt(0);
+                        }
+                    }
                 }
                 
-                // Trim AllLogs separately
-                while (AllLogs.Count > MaxDisplayLogs * 2)
+                // Trim AllLogs
+                var removeAllCount = AllLogs.Count - MaxDisplayLogs * 2;
+                if (removeAllCount > 0)
                 {
-                    AllLogs.RemoveAt(0);
+                    if (AllLogs is RangeObservableCollection<LogEntry> rangeAllLogsRemove)
+                    {
+                        rangeAllLogsRemove.RemoveRange(AllLogs.Take(removeAllCount));
+                    }
+                    else
+                    {
+                        for (int i = 0; i < removeAllCount; i++)
+                        {
+                            AllLogs.RemoveAt(0);
+                        }
+                    }
                 }
 
                 // Update port-specific logs and statistics
                 var portVm = OpenPorts.FirstOrDefault(p => p.PortName == portName);
                 if (portVm != null)
                 {
+                    // Batch add logs to port
                     foreach (var logEntry in newLogs)
                     {
                         portVm.AddLog(logEntry);
@@ -648,12 +706,6 @@ public partial class MainViewModel : ObservableObject
                     
                     var stats = _serialPortService.GetStatistics(portName);
                     portVm.UpdateStatistics(stats);
-                }
-                
-                // Auto-scroll to bottom
-                if (AutoScroll)
-                {
-                    // ItemsRepeater will handle scrolling via UI binding
                 }
             }
             catch (Exception ex)
