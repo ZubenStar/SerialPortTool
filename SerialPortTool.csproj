@@ -14,11 +14,11 @@
     <LangVersion>12</LangVersion>
     
     <!-- Version Information - Edit version.json to update -->
-    <Version>1.0.2</Version>
-    <AssemblyVersion>1.0.2.0</AssemblyVersion>
-    <FileVersion>1.0.2.0</FileVersion>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
     <!-- Auto-generate build time -->
-    <InformationalVersion>1.0.2+$([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))</InformationalVersion>
+    <InformationalVersion>1.1.0+$([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))</InformationalVersion>
   </PropertyGroup>
   
   <ItemGroup>
