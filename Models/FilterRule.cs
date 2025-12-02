@@ -39,11 +39,6 @@ public class FilterRule
     public bool IsInclude { get; set; } = true;
 
     /// <summary>
-    /// 日志级别过滤(仅当Type=LogLevel时有效)
-    /// </summary>
-    public LogLevel? LogLevel { get; set; }
-
-    /// <summary>
     /// 串口名称过滤(仅当Type=PortName时有效)
     /// </summary>
     public string? PortName { get; set; }
@@ -71,7 +66,6 @@ public class FilterRule
             Pattern = Pattern,
             IsEnabled = IsEnabled,
             IsInclude = IsInclude,
-            LogLevel = LogLevel,
             PortName = PortName,
             CaseSensitive = CaseSensitive,
             CreatedAt = DateTime.Now

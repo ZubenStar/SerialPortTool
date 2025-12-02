@@ -16,11 +16,6 @@ public enum FilterType
     Regex,
 
     /// <summary>
-    /// 日志级别过滤
-    /// </summary>
-    LogLevel,
-
-    /// <summary>
     /// 串口名称过滤
     /// </summary>
     PortName

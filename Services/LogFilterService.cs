@@ -210,9 +210,6 @@ public class LogFilterService : ILogFilterService
                 case FilterType.Regex:
                     return MatchesRegex(entry.Content, filter.Pattern, filter.CaseSensitive);
 
-                case FilterType.LogLevel:
-                    return filter.LogLevel.HasValue && entry.Level == filter.LogLevel.Value;
-
                 case FilterType.PortName:
                     return !string.IsNullOrEmpty(filter.PortName) && 
                            entry.PortName.Equals(filter.PortName, StringComparison.OrdinalIgnoreCase);

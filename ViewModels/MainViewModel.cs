@@ -575,7 +575,6 @@ public partial class MainViewModel : ObservableObject
             {
                 PortName = portName,
                 Content = line,
-                Level = Core.Enums.LogLevel.Info,
                 RawData = Encoding.UTF8.GetBytes(line),
                 IsReceived = true
             };
@@ -791,7 +790,6 @@ public partial class PortViewModel : ObservableObject
             {
                 PortName = PortName,
                 Content = SendText,
-                Level = Core.Enums.LogLevel.Info,
                 IsReceived = false
             };
 

@@ -27,12 +27,6 @@ public partial class LogEntry : ObservableObject
     private string _portName = string.Empty;
 
     /// <summary>
-    /// 日志级别
-    /// </summary>
-    [ObservableProperty]
-    private LogLevel _level = LogLevel.Info;
-
-    /// <summary>
     /// 日志内容
     /// </summary>
     [ObservableProperty]
@@ -59,7 +53,7 @@ public partial class LogEntry : ObservableObject
     /// <summary>
     /// 格式化文本用于显示 (高性能访问)
     /// </summary>
-    public string FormattedText => $"[{Timestamp:HH:mm:ss.fff}] [{Level}] [{PortName}] {Content}";
+    public string FormattedText => $"[{Timestamp:HH:mm:ss.fff}] [{PortName}] {Content}";
 
     /// <summary>
     /// 转换为字符串表示
@@ -67,6 +61,6 @@ public partial class LogEntry : ObservableObject
     public override string ToString()
     {
         var direction = IsReceived ? "RX" : "TX";
-        return $"[{Timestamp:HH:mm:ss.fff}] [{Level}] [{PortName}] [{direction}] {Content}";
+        return $"[{Timestamp:HH:mm:ss.fff}] [{PortName}] [{direction}] {Content}";
     }
 }
