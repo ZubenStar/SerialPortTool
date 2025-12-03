@@ -17,8 +17,6 @@
         <!-- Menu Bar -->
         <MenuBar Grid.Row="0">
             <MenuBarItem Title="文件">
-                <MenuFlyoutItem Text="新建连接" Click="NewConnection_Click"/>
-                <MenuFlyoutSeparator/>
                 <MenuFlyoutItem Text="退出" Click="Exit_Click"/>
             </MenuBarItem>
             <MenuBarItem Title="工具">

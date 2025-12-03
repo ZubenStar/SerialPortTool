@@ -119,11 +119,6 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void NewConnection_Click(object sender, RoutedEventArgs e)
-    {
-        // TODO: Show new connection dialog
-    }
-
     private void Exit_Click(object sender, RoutedEventArgs e)
     {
         Application.Current.Exit();
