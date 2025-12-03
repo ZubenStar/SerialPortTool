@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using SerialPortTool.Helpers;
 using SerialPortTool.ViewModels;
 using System;
 using System.Linq;
@@ -117,6 +118,97 @@ public sealed partial class MainWindow : Window
                 }
             });
         }
+    }
+
+    private async void About_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "关于 SerialPortTool",
+            CloseButtonText = "确定",
+            DefaultButton = ContentDialogButton.Close
+        };
+
+        var stackPanel = new StackPanel
+        {
+            Spacing = 12,
+            Margin = new Microsoft.UI.Xaml.Thickness(0, 8, 0, 0)
+        };
+
+        // App Icon/Title
+        var titleText = new TextBlock
+        {
+            Text = "串口工具 - Multi-Port Serial Monitor",
+            FontSize = 18,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center
+        };
+        stackPanel.Children.Add(titleText);
+
+        // Version
+        var versionText = new TextBlock
+        {
+            Text = $"版本: {VersionInfo.Version}",
+            FontSize = 14,
+            TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center
+        };
+        stackPanel.Children.Add(versionText);
+
+        // Build Time
+        var buildText = new TextBlock
+        {
+            Text = $"构建时间: {VersionInfo.BuildTime}",
+            FontSize = 12,
+            Opacity = 0.8,
+            TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center
+        };
+        stackPanel.Children.Add(buildText);
+
+        // Separator
+        var separator = new Microsoft.UI.Xaml.Shapes.Rectangle
+        {
+            Height = 1,
+            Fill = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Gray),
+            Opacity = 0.3,
+            Margin = new Microsoft.UI.Xaml.Thickness(0, 8, 0, 8)
+        };
+        stackPanel.Children.Add(separator);
+
+        // Description
+        var descText = new TextBlock
+        {
+            Text = "一个功能强大的多端口串口监视工具\n支持高速数据传输和实时日志记录",
+            FontSize = 12,
+            TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
+            TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap
+        };
+        stackPanel.Children.Add(descText);
+
+        // Features
+        var featuresText = new TextBlock
+        {
+            Text = "✓ 多端口同时监控\n✓ 支持高达6Mbps波特率\n✓ 正则表达式搜索\n✓ 自动文件日志记录\n✓ 实时数据统计",
+            FontSize = 11,
+            Opacity = 0.8,
+            TextAlignment = Microsoft.UI.Xaml.TextAlignment.Left,
+            Margin = new Microsoft.UI.Xaml.Thickness(0, 8, 0, 0)
+        };
+        stackPanel.Children.Add(featuresText);
+
+        // Copyright
+        var copyrightText = new TextBlock
+        {
+            Text = $"© {DateTime.Now.Year} SerialPortTool",
+            FontSize = 10,
+            Opacity = 0.6,
+            TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
+            Margin = new Microsoft.UI.Xaml.Thickness(0, 12, 0, 0)
+        };
+        stackPanel.Children.Add(copyrightText);
+
+        dialog.Content = stackPanel;
+        await dialog.ShowAsync();
     }
 
     private void Exit_Click(object sender, RoutedEventArgs e)
