@@ -1,7 +1,19 @@
 ﻿{
-    "version":  "1.1.0",
+    "version":  "1.2.0",
     "description":  "SerialPortTool Version Configuration",
     "changelog":  [
+                      {
+                          "date":  "2025-12-03",
+                          "version":  "1.2.0",
+                          "changes":  [
+                                          "Added comprehensive About dialog with version and build information",
+                                          "Implemented VersionInfo helper for centralized version display",
+                                          "Enhanced About dialog with app features and copyright information",
+                                          "Removed unused 'New Connection' menu item for cleaner UI",
+                                          "Connected About menu item to functional About dialog",
+                                          "UI improvements for better user experience"
+                                      ]
+                      },
                       {
                           "date":  "2025-12-02",
                           "version":  "1.1.0",
