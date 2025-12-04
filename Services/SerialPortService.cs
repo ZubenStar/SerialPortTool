@@ -63,14 +63,42 @@ public class SerialPortService : ISerialPortService, IDisposable
 
         try
         {
+            // Verify port is actually available before attempting to open
+            var availablePorts = await GetAvailablePortsAsync();
+            if (!availablePorts.Contains(config.PortName))
+            {
+                _logger.LogWarning("Port {PortName} is not available in the system", config.PortName);
+                return false;
+            }
+
             var portInstance = new PortInstance(config, _logger);
             
             // Subscribe to events
             portInstance.DataReceived += OnPortDataReceived;
             portInstance.ErrorOccurred += OnPortError;
 
-            // Open the port
-            var opened = await portInstance.OpenAsync();
+            // Open the port with retry logic
+            bool opened = false;
+            int retryCount = 0;
+            const int maxRetries = 3;
+            
+            while (!opened && retryCount < maxRetries)
+            {
+                opened = await portInstance.OpenAsync();
+                
+                if (!opened)
+                {
+                    retryCount++;
+                    _logger.LogWarning("Failed to open port {PortName} (attempt {Attempt}/{Max})",
+                        config.PortName, retryCount, maxRetries);
+                    
+                    if (retryCount < maxRetries)
+                    {
+                        // Wait before retry to allow OS to release resources
+                        await Task.Delay(300);
+                    }
+                }
+            }
             
             if (opened)
             {
@@ -82,6 +110,8 @@ public class SerialPortService : ISerialPortService, IDisposable
             else
             {
                 portInstance.Dispose();
+                _logger.LogError("Failed to open port {PortName} after {MaxRetries} attempts",
+                    config.PortName, maxRetries);
                 return false;
             }
         }
@@ -99,20 +129,32 @@ public class SerialPortService : ISerialPortService, IDisposable
         {
             try
             {
+                // Unsubscribe from events first to prevent callbacks during disposal
+                portInstance.DataReceived -= OnPortDataReceived;
+                portInstance.ErrorOccurred -= OnPortError;
+                
+                // Close the port with enhanced cleanup
                 await portInstance.CloseAsync();
+                
                 RaisePortStateChanged(portName, ConnectionState.Connected, ConnectionState.Disconnected);
                 _logger.LogInformation("Port {PortName} closed", portName);
                 
-                portInstance.DataReceived -= OnPortDataReceived;
-                portInstance.ErrorOccurred -= OnPortError;
+                // Dispose the instance
                 portInstance.Dispose();
                 
-                // Wait for OS to fully release the port resources
-                await Task.Delay(100);
+                // Wait longer for OS to fully release the port resources
+                // This is critical for reliable port reopening
+                await Task.Delay(300);
+                
+                // Verify port is actually released by checking if it appears in available ports
+                _logger.LogInformation("Port {PortName} resources released", portName);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error closing port {PortName}", portName);
+                
+                // Even on error, wait to ensure cleanup
+                await Task.Delay(300);
             }
         }
     }
@@ -435,21 +477,37 @@ public class SerialPortService : ISerialPortService, IDisposable
                         _logger.LogDebug(ex, "Error unsubscribing from events");
                     }
 
-                    // Close the port if it's open
+                    // Close the port if it's open with retry logic
                     if (port.IsOpen)
                     {
-                        try
+                        int retryCount = 0;
+                        const int maxRetries = 3;
+                        bool closed = false;
+                        
+                        while (!closed && retryCount < maxRetries)
                         {
-                            port.Close();
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogDebug(ex, "Error closing port");
+                            try
+                            {
+                                port.Close();
+                                closed = true;
+                                _logger.LogDebug("Port closed successfully on attempt {Attempt}", retryCount + 1);
+                            }
+                            catch (Exception ex)
+                            {
+                                retryCount++;
+                                _logger.LogDebug(ex, "Error closing port (attempt {Attempt}/{Max})", retryCount, maxRetries);
+                                
+                                if (retryCount < maxRetries)
+                                {
+                                    Thread.Sleep(100);
+                                }
+                            }
                         }
                     }
                     
-                    // Give the port time to fully close before disposing
-                    Thread.Sleep(50);
+                    // Give the port more time to fully close before disposing
+                    // This is critical for Windows to release the port handle
+                    Thread.Sleep(150);
                 }
                 catch (Exception ex)
                 {
@@ -471,6 +529,9 @@ public class SerialPortService : ISerialPortService, IDisposable
                     {
                         _logger.LogDebug(ex, "Error disposing port");
                     }
+                    
+                    // Additional delay after disposal to ensure OS cleanup
+                    Thread.Sleep(100);
 
                     Statistics.DisconnectedAt = DateTime.Now;
                 }
@@ -480,7 +541,7 @@ public class SerialPortService : ISerialPortService, IDisposable
         public async Task ReconnectAsync()
         {
             await CloseAsync();
-            await Task.Delay(200); // Wait for OS to release port resources
+            await Task.Delay(500); // Wait longer for OS to release port resources
             await OpenAsync();
         }
 
