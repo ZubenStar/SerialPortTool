@@ -28,7 +28,7 @@
   </ItemGroup>
   
   <!-- Target to generate build timestamp at compile time -->
-  <Target Name="GenerateBuildInfo" BeforeTargets="BeforeBuild;CoreCompile">
+  <Target Name="GenerateBuildInfo" BeforeTargets="BeforeBuild">
     <PropertyGroup>
       <BuildInfoPath>$(ProjectDir)Helpers\BuildInfo.g.cs</BuildInfoPath>
     </PropertyGroup>
