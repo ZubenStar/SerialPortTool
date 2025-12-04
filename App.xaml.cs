@@ -35,13 +35,22 @@ public partial class App : Application
         InitializeComponent();
 
         // Configure Serilog
+        var logsPath = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            "SerialPortTool", "DebugLogs", "app-.log");
+
         Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Debug()
+            .MinimumLevel.Verbose()  // Capture all levels including Trace
             .WriteTo.File(
-                path: "Logs/serialport-.log",
+                path: logsPath,
                 rollingInterval: RollingInterval.Day,
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+                retainedFileCountLimit: 7,  // Keep last 7 days
+                fileSizeLimitBytes: 50_000_000,  // 50MB per file
+                rollOnFileSizeLimit: true,
+                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
+
+        Log.Information("Application started. Logs will be saved to: {LogPath}", logsPath);
 
         // Build host
         _host = Host.CreateDefaultBuilder()

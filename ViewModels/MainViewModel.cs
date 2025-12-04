@@ -557,17 +557,28 @@ public partial class MainViewModel : ObservableObject
 
     private int _pendingUpdates = 0;
     private const int MaxPendingUpdates = 50; // Rate limit UI updates
+    private long _totalDataReceived = 0;
+    private long _totalDropped = 0;
     
     private void OnDataReceived(object? sender, DataReceivedEventArgs e)
     {
+        var dataSize = e.Data?.Length ?? 0;
+        Interlocked.Increment(ref _totalDataReceived);
+        
+        _logger.LogTrace("OnDataReceived called: Port={Port}, Size={Size}bytes, Pending={Pending}",
+            e.PortName, dataSize, _pendingUpdates);
+        
         // Rate limiting: Skip if too many pending updates
         if (Interlocked.CompareExchange(ref _pendingUpdates, 0, 0) > MaxPendingUpdates)
         {
-            _logger.LogWarning("Dropping data update due to high pending count: {Count}", _pendingUpdates);
+            Interlocked.Increment(ref _totalDropped);
+            _logger.LogWarning("⚠️ Dropping data update due to high pending count: Pending={Pending}, Port={Port}, TotalReceived={Total}, TotalDropped={Dropped}",
+                _pendingUpdates, e.PortName, _totalDataReceived, _totalDropped);
             return;
         }
 
         Interlocked.Increment(ref _pendingUpdates);
+        _logger.LogTrace("Processing data: Pending now {Pending}", _pendingUpdates);
 
         try
         {
@@ -575,9 +586,13 @@ public partial class MainViewModel : ObservableObject
             var text = Encoding.UTF8.GetString(e.Data);
             var portName = e.PortName;
             
+            _logger.LogTrace("Decoded text: Length={Length} chars, Port={Port}", text.Length, portName);
+            
             // Build log entries on background thread with optimized string operations
             var newLogs = new List<LogEntry>();
             var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            
+            _logger.LogTrace("Split into {LineCount} lines, Port={Port}", lines.Length, portName);
             
             // Pre-allocate to reduce reallocations
             if (lines.Length > 1)
@@ -589,6 +604,13 @@ public partial class MainViewModel : ObservableObject
             
             // Limit lines to prevent memory overflow
             var maxLines = Math.Min(lines.Length, 1000);
+            
+            if (lines.Length > maxLines)
+            {
+                _logger.LogWarning("⚠️ Line count exceeds limit: Got {Count} lines, capping at {Max}, Port={Port}",
+                    lines.Length, maxLines, portName);
+            }
+            
             for (int i = 0; i < maxLines; i++)
             {
                 var line = lines[i];
@@ -613,9 +635,12 @@ public partial class MainViewModel : ObservableObject
 
             if (newLogs.Count == 0)
             {
+                _logger.LogTrace("No logs generated after processing, Port={Port}", portName);
                 Interlocked.Decrement(ref _pendingUpdates);
                 return;
             }
+            
+            _logger.LogTrace("Generated {Count} log entries, Port={Port}", newLogs.Count, portName);
 
             // Cached regex for better performance
             Regex? filterRegex = null;
@@ -624,24 +649,35 @@ public partial class MainViewModel : ObservableObject
                 try
                 {
                     filterRegex = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromMilliseconds(50));
+                    _logger.LogTrace("Created regex filter: Pattern={Pattern}", SearchText);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    _logger.LogWarning(ex, "Failed to create regex filter: Pattern={Pattern}", SearchText);
                     filterRegex = null;
                 }
             }
 
             // Dispatch UI updates with batching for smoother performance
+            _logger.LogTrace("Enqueueing UI update: LogCount={Count}, Port={Port}", newLogs.Count, portName);
+            
             var enqueued = _dispatcherQueue.TryEnqueue(() =>
             {
+                var updateStartTime = DateTime.Now;
+                _logger.LogTrace("🔄 UI update started: Port={Port}", portName);
+                
                 try
                 {
                     // Batch add to AllLogs with error handling
                     try
                     {
+                        var beforeCount = AllLogs.Count;
+                        
                         if (AllLogs is RangeObservableCollection<LogEntry> rangeAllLogsAdd)
                         {
                             rangeAllLogsAdd.AddRange(newLogs);
+                            _logger.LogTrace("Added {Count} logs to AllLogs using AddRange: Before={Before}, After={After}",
+                                newLogs.Count, beforeCount, AllLogs.Count);
                         }
                         else
                         {
@@ -649,11 +685,14 @@ public partial class MainViewModel : ObservableObject
                             {
                                 AllLogs.Add(log);
                             }
+                            _logger.LogTrace("Added {Count} logs to AllLogs individually: Before={Before}, After={After}",
+                                newLogs.Count, beforeCount, AllLogs.Count);
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error adding to AllLogs");
+                        _logger.LogError(ex, "❌ Error adding to AllLogs: Count={Count}, Port={Port}",
+                            newLogs.Count, portName);
                     }
                     
                     // Apply regex filter to new logs
@@ -662,28 +701,34 @@ public partial class MainViewModel : ObservableObject
                     {
                         try
                         {
+                            var filterStartTime = DateTime.Now;
                             logsToDisplay = newLogs.Where(log =>
                             {
                                 try
                                 {
                                     return filterRegex.IsMatch(log.Content) || filterRegex.IsMatch(log.PortName);
                                 }
-                                catch
+                                catch (Exception matchEx)
                                 {
+                                    _logger.LogTrace("Regex match failed for log: {Error}", matchEx.Message);
                                     return false;
                                 }
                             }).ToList();
                             
+                            var filterDuration = (DateTime.Now - filterStartTime).TotalMilliseconds;
+                            _logger.LogTrace("Filtered {Input} logs to {Output} logs in {Duration}ms",
+                                newLogs.Count, logsToDisplay.Count, filterDuration);
+                            
                             MatchCount = DisplayLogs.Count + logsToDisplay.Count;
                         }
-                        catch (RegexMatchTimeoutException)
+                        catch (RegexMatchTimeoutException ex)
                         {
-                            _logger.LogWarning("Regex match timeout during filter");
+                            _logger.LogWarning(ex, "⚠️ Regex match timeout during filter: Pattern={Pattern}", SearchText);
                             logsToDisplay = new List<LogEntry>();
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "Error filtering logs");
+                            _logger.LogError(ex, "❌ Error filtering logs: Pattern={Pattern}", SearchText);
                             logsToDisplay = newLogs; // Fallback to showing all
                         }
                     }
@@ -691,9 +736,13 @@ public partial class MainViewModel : ObservableObject
                     // Batch add to DisplayLogs with error handling
                     try
                     {
+                        var beforeDisplayCount = DisplayLogs.Count;
+                        
                         if (DisplayLogs is RangeObservableCollection<LogEntry> rangeDisplayLogsAdd && logsToDisplay.Count > 5)
                         {
                             rangeDisplayLogsAdd.AddRange(logsToDisplay);
+                            _logger.LogTrace("Added {Count} logs to DisplayLogs using AddRange: Before={Before}, After={After}",
+                                logsToDisplay.Count, beforeDisplayCount, DisplayLogs.Count);
                         }
                         else
                         {
@@ -701,11 +750,14 @@ public partial class MainViewModel : ObservableObject
                             {
                                 DisplayLogs.Add(log);
                             }
+                            _logger.LogTrace("Added {Count} logs to DisplayLogs individually: Before={Before}, After={After}",
+                                logsToDisplay.Count, beforeDisplayCount, DisplayLogs.Count);
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error adding to DisplayLogs");
+                        _logger.LogError(ex, "❌ Error adding to DisplayLogs: Count={Count}, Port={Port}",
+                            logsToDisplay.Count, portName);
                     }
 
                     // Trim logs in batches to reduce UI updates
@@ -714,9 +766,13 @@ public partial class MainViewModel : ObservableObject
                         var removeCount = DisplayLogs.Count - MaxDisplayLogs;
                         if (removeCount > 0)
                         {
+                            _logger.LogTrace("Trimming DisplayLogs: Removing {Count} items, Current={Current}, Max={Max}",
+                                removeCount, DisplayLogs.Count, MaxDisplayLogs);
+                            
                             if (DisplayLogs is RangeObservableCollection<LogEntry> rangeDisplayLogsRemove)
                             {
                                 rangeDisplayLogsRemove.RemoveRange(DisplayLogs.Take(removeCount).ToList());
+                                _logger.LogTrace("Trimmed DisplayLogs using RemoveRange: New count={Count}", DisplayLogs.Count);
                             }
                             else
                             {
@@ -724,12 +780,14 @@ public partial class MainViewModel : ObservableObject
                                 {
                                     DisplayLogs.RemoveAt(0);
                                 }
+                                _logger.LogTrace("Trimmed DisplayLogs individually: New count={Count}", DisplayLogs.Count);
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error trimming DisplayLogs");
+                        _logger.LogError(ex, "❌ Error trimming DisplayLogs: RemoveCount={Count}, CurrentCount={Current}",
+                            DisplayLogs.Count - MaxDisplayLogs, DisplayLogs.Count);
                     }
                     
                     // Trim AllLogs
@@ -738,9 +796,13 @@ public partial class MainViewModel : ObservableObject
                         var removeAllCount = AllLogs.Count - MaxDisplayLogs * 2;
                         if (removeAllCount > 0)
                         {
+                            _logger.LogTrace("Trimming AllLogs: Removing {Count} items, Current={Current}, Max={Max}",
+                                removeAllCount, AllLogs.Count, MaxDisplayLogs * 2);
+                            
                             if (AllLogs is RangeObservableCollection<LogEntry> rangeAllLogsRemove)
                             {
                                 rangeAllLogsRemove.RemoveRange(AllLogs.Take(removeAllCount).ToList());
+                                _logger.LogTrace("Trimmed AllLogs using RemoveRange: New count={Count}", AllLogs.Count);
                             }
                             else
                             {
@@ -748,12 +810,14 @@ public partial class MainViewModel : ObservableObject
                                 {
                                     AllLogs.RemoveAt(0);
                                 }
+                                _logger.LogTrace("Trimmed AllLogs individually: New count={Count}", AllLogs.Count);
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error trimming AllLogs");
+                        _logger.LogError(ex, "❌ Error trimming AllLogs: RemoveCount={Count}, CurrentCount={Current}",
+                            AllLogs.Count - MaxDisplayLogs * 2, AllLogs.Count);
                     }
 
                     // Update port-specific logs and statistics
@@ -770,33 +834,52 @@ public partial class MainViewModel : ObservableObject
                             
                             var stats = _serialPortService.GetStatistics(portName);
                             portVm.UpdateStatistics(stats);
+                            
+                            _logger.LogTrace("Updated port statistics: Port={Port}, RxBytes={Rx}, TxBytes={Tx}",
+                                portName, stats.ReceivedBytes, stats.SentBytes);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("⚠️ Port ViewModel not found: Port={Port}", portName);
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error updating port statistics");
+                        _logger.LogError(ex, "❌ Error updating port statistics: Port={Port}", portName);
+                    }
+                    
+                    var updateDuration = (DateTime.Now - updateStartTime).TotalMilliseconds;
+                    _logger.LogTrace("✅ UI update completed: Port={Port}, Duration={Duration}ms", portName, updateDuration);
+                    
+                    if (updateDuration > 100)
+                    {
+                        _logger.LogWarning("⚠️ Slow UI update detected: Duration={Duration}ms, Port={Port}",
+                            updateDuration, portName);
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Critical error updating UI with received data");
+                    _logger.LogError(ex, "❌ Critical error updating UI with received data: Port={Port}", portName);
                 }
                 finally
                 {
                     Interlocked.Decrement(ref _pendingUpdates);
+                    _logger.LogTrace("UI update finished: Pending now {Pending}", _pendingUpdates);
                 }
             });
 
             if (!enqueued)
             {
                 Interlocked.Decrement(ref _pendingUpdates);
-                _logger.LogWarning("Failed to enqueue UI update");
+                _logger.LogError("❌ Failed to enqueue UI update: Port={Port}, Pending={Pending}",
+                    portName, _pendingUpdates);
             }
         }
         catch (Exception ex)
         {
             Interlocked.Decrement(ref _pendingUpdates);
-            _logger.LogError(ex, "Error in OnDataReceived");
+            _logger.LogError(ex, "❌ Critical error in OnDataReceived: Port={Port}, Size={Size}bytes",
+                e.PortName, e.Data?.Length ?? 0);
         }
     }
 
