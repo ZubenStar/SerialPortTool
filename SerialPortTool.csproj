@@ -17,8 +17,7 @@
     <Version>1.2.0</Version>
     <AssemblyVersion>1.2.0.0</AssemblyVersion>
     <FileVersion>1.2.0.0</FileVersion>
-    <!-- Auto-generate build time -->
-    <InformationalVersion>1.2.0+$([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))</InformationalVersion>
+    <InformationalVersion>1.2.0</InformationalVersion>
   </PropertyGroup>
   
   <ItemGroup>
@@ -27,6 +26,19 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+  
+  <!-- Target to generate build timestamp at compile time -->
+  <Target Name="GenerateBuildInfo" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <BuildTimestampUtc>$([System.DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))</BuildTimestampUtc>
+      <BuildInfoPath>$(ProjectDir)Helpers\BuildInfo.g.cs</BuildInfoPath>
+    </PropertyGroup>
+    
+    <!-- Generate BuildInfo.g.cs with actual build timestamp -->
+    <WriteLinesToFile File="$(BuildInfoPath)" Lines="// This file is auto-generated during build%0A// DO NOT EDIT MANUALLY%0A%0Ausing System%3B%0A%0Anamespace SerialPortTool.Helpers%3B%0A%0Ainternal static class BuildInfo%0A{%0A    public const string BuildTimeUtc = &quot;$(BuildTimestampUtc)&quot;%3B%0A}" Overwrite="true" Encoding="UTF-8" />
+    
+    <Message Text="✓ Generated build timestamp: $(BuildTimestampUtc)" Importance="high" />
+  </Target>
   
   <!-- Target to read version from version.json before build -->
   <Target Name="ReadVersionFromJson" BeforeTargets="BeforeBuild">
