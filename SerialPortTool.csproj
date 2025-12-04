@@ -25,37 +25,16 @@
     <None Include="version.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    
-    <!-- Include generated BuildInfo.g.cs in compilation -->
-    <Compile Include="Helpers\BuildInfo.g.cs" />
   </ItemGroup>
   
   <!-- Target to generate build timestamp at compile time -->
   <Target Name="GenerateBuildInfo" BeforeTargets="BeforeBuild;CoreCompile">
     <PropertyGroup>
-      <BuildTimestampUtc>$([System.DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))</BuildTimestampUtc>
       <BuildInfoPath>$(ProjectDir)Helpers\BuildInfo.g.cs</BuildInfoPath>
-      <Line1>// This file is auto-generated during build</Line1>
-      <Line2>// DO NOT EDIT MANUALLY</Line2>
-      <Line3></Line3>
-      <Line4>using System;</Line4>
-      <Line5></Line5>
-      <Line6>namespace SerialPortTool.Helpers;</Line6>
-      <Line7></Line7>
-      <Line8>internal static class BuildInfo</Line8>
-      <Line9>{</Line9>
-      <Line10>    public const string BuildTimeUtc = "$(BuildTimestampUtc)";</Line10>
-      <Line11>}</Line11>
     </PropertyGroup>
     
-    <!-- Generate BuildInfo.g.cs with actual build timestamp -->
-    <WriteLinesToFile 
-      File="$(BuildInfoPath)" 
-      Lines="$(Line1);$(Line2);$(Line3);$(Line4);$(Line5);$(Line6);$(Line7);$(Line8);$(Line9);$(Line10);$(Line11)" 
-      Overwrite="true" 
-      Encoding="UTF-8" />
-    
-    <Message Text="✓ Generated build timestamp: $(BuildTimestampUtc)" Importance="high" />
+    <!-- Generate BuildInfo.g.cs using PowerShell script -->
+    <Exec Command="powershell -ExecutionPolicy Bypass -File &quot;$(ProjectDir)scripts\generate-buildinfo.ps1&quot; -OutputPath &quot;$(BuildInfoPath)&quot;" />
   </Target>
   
   <!-- Target to read version from version.json before build -->
