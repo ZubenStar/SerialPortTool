@@ -583,6 +583,13 @@ public partial class MainViewModel : ObservableObject
         try
         {
             // Capture data on background thread
+            if (e.Data == null || e.Data.Length == 0)
+            {
+                Interlocked.Decrement(ref _pendingUpdates);
+                _logger.LogTrace("Received null or empty data, skipping: Port={Port}", e.PortName);
+                return;
+            }
+            
             var text = Encoding.UTF8.GetString(e.Data);
             var portName = e.PortName;
             
