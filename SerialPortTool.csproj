@@ -28,7 +28,7 @@
   </ItemGroup>
   
   <!-- Target to generate build timestamp at compile time -->
-  <Target Name="GenerateBuildInfo" BeforeTargets="BeforeBuild">
+  <Target Name="GenerateBuildInfo" BeforeTargets="BeforeCompile">
     <PropertyGroup>
       <BuildInfoPath>$(ProjectDir)Helpers\BuildInfo.g.cs</BuildInfoPath>
     </PropertyGroup>
@@ -36,6 +36,13 @@
     <!-- Generate BuildInfo.g.cs using PowerShell script -->
     <Exec Command="powershell -ExecutionPolicy Bypass -File &quot;$(ProjectDir)scripts\generate-buildinfo.ps1&quot; -OutputPath &quot;$(BuildInfoPath)&quot;" />
   </Target>
+  
+  <!-- Include the generated file, overriding auto-discovery -->
+  <ItemGroup>
+    <Compile Update="Helpers\BuildInfo.g.cs">
+      <AutoGen>True</AutoGen>
+    </Compile>
+  </ItemGroup>
   
   <!-- Target to read version from version.json before build -->
   <Target Name="ReadVersionFromJson" BeforeTargets="BeforeBuild">
