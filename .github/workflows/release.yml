@@ -48,6 +48,30 @@ jobs:
         }
         Write-Host "✓ Version verified: $jsonVersion"
     
+    - name: Generate BuildInfo
+      shell: pwsh
+      run: |
+        $timestamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $buildInfoPath = "Helpers/BuildInfo.g.cs"
+        
+        $content = @"
+        // This file is auto-generated during build
+        // DO NOT EDIT MANUALLY
+        
+        using System;
+        
+        namespace SerialPortTool.Helpers;
+        
+        internal static class BuildInfo
+        {
+            public const string BuildTimeUtc = "$timestamp";
+        }
+        "@
+        
+        New-Item -ItemType Directory -Force -Path (Split-Path $buildInfoPath -Parent) | Out-Null
+        [System.IO.File]::WriteAllText($buildInfoPath, $content, [System.Text.Encoding]::UTF8)
+        Write-Host "✓ Generated BuildInfo.g.cs with timestamp: $timestamp"
+    
     - name: Restore dependencies
       run: dotnet restore SerialPortTool.csproj -r win-${{ matrix.platform }}
       timeout-minutes: 10
