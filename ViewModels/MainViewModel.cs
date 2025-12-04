@@ -13,6 +13,7 @@ using System.ComponentModel;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace SerialPortTool.ViewModels;
@@ -554,165 +555,249 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    private int _pendingUpdates = 0;
+    private const int MaxPendingUpdates = 50; // Rate limit UI updates
+    
     private void OnDataReceived(object? sender, DataReceivedEventArgs e)
     {
-        // Capture data on background thread
-        var text = Encoding.UTF8.GetString(e.Data);
-        var portName = e.PortName;
-        
-        // Build log entries on background thread with optimized string operations
-        var newLogs = new List<LogEntry>();
-        var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-        
-        // Pre-allocate to reduce reallocations
-        if (lines.Length > 1)
+        // Rate limiting: Skip if too many pending updates
+        if (Interlocked.CompareExchange(ref _pendingUpdates, 0, 0) > MaxPendingUpdates)
         {
-            newLogs.Capacity = lines.Length;
-        }
-        
-        var now = DateTime.Now;
-        
-        for (int i = 0; i < lines.Length; i++)
-        {
-            var line = lines[i];
-            
-            // Skip only the last line if it's empty (common from splitting)
-            if (i == lines.Length - 1 && string.IsNullOrEmpty(line))
-                continue;
-            
-            var logEntry = new LogEntry
-            {
-                PortName = portName,
-                Content = line,
-                Timestamp = now,
-                IsReceived = true
-            };
-            
-            newLogs.Add(logEntry);
-            
-            // Write to log file asynchronously (batched internally)
-            _ = _fileLoggerService.WriteLogAsync(portName, logEntry);
+            _logger.LogWarning("Dropping data update due to high pending count: {Count}", _pendingUpdates);
+            return;
         }
 
-        if (newLogs.Count == 0) return;
+        Interlocked.Increment(ref _pendingUpdates);
 
-        // Cached regex for better performance
-        Regex? filterRegex = null;
-        if (!string.IsNullOrEmpty(SearchText) && IsRegexValid)
+        try
         {
-            try
+            // Capture data on background thread
+            var text = Encoding.UTF8.GetString(e.Data);
+            var portName = e.PortName;
+            
+            // Build log entries on background thread with optimized string operations
+            var newLogs = new List<LogEntry>();
+            var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            
+            // Pre-allocate to reduce reallocations
+            if (lines.Length > 1)
             {
-                filterRegex = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
+                newLogs.Capacity = Math.Min(lines.Length, 1000); // Cap to prevent excessive allocation
             }
-            catch
+            
+            var now = DateTime.Now;
+            
+            // Limit lines to prevent memory overflow
+            var maxLines = Math.Min(lines.Length, 1000);
+            for (int i = 0; i < maxLines; i++)
             {
-                filterRegex = null;
-            }
-        }
-
-        // Dispatch UI updates with batching for smoother performance
-        _dispatcherQueue.TryEnqueue(() =>
-        {
-            try
-            {
-                // Batch add to AllLogs
-                if (AllLogs is RangeObservableCollection<LogEntry> rangeAllLogsAdd)
-                {
-                    rangeAllLogsAdd.AddRange(newLogs);
-                }
-                else
-                {
-                    foreach (var log in newLogs)
-                    {
-                        AllLogs.Add(log);
-                    }
-                }
+                var line = lines[i];
                 
-                // Apply regex filter to new logs
-                var logsToDisplay = newLogs;
-                if (filterRegex != null)
+                // Skip only the last line if it's empty (common from splitting)
+                if (i == maxLines - 1 && string.IsNullOrEmpty(line))
+                    continue;
+                
+                var logEntry = new LogEntry
                 {
+                    PortName = portName,
+                    Content = line,
+                    Timestamp = now,
+                    IsReceived = true
+                };
+                
+                newLogs.Add(logEntry);
+                
+                // Write to log file asynchronously (batched internally)
+                _ = _fileLoggerService.WriteLogAsync(portName, logEntry);
+            }
+
+            if (newLogs.Count == 0)
+            {
+                Interlocked.Decrement(ref _pendingUpdates);
+                return;
+            }
+
+            // Cached regex for better performance
+            Regex? filterRegex = null;
+            if (!string.IsNullOrEmpty(SearchText) && IsRegexValid)
+            {
+                try
+                {
+                    filterRegex = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromMilliseconds(50));
+                }
+                catch
+                {
+                    filterRegex = null;
+                }
+            }
+
+            // Dispatch UI updates with batching for smoother performance
+            var enqueued = _dispatcherQueue.TryEnqueue(() =>
+            {
+                try
+                {
+                    // Batch add to AllLogs with error handling
                     try
                     {
-                        logsToDisplay = newLogs.Where(log =>
-                            filterRegex.IsMatch(log.Content) ||
-                            filterRegex.IsMatch(log.PortName)).ToList();
-                        
-                        MatchCount = DisplayLogs.Count + logsToDisplay.Count;
-                    }
-                    catch (RegexMatchTimeoutException)
-                    {
-                        _logger.LogWarning("Regex match timeout during filter");
-                        logsToDisplay = new List<LogEntry>();
-                    }
-                }
-                
-                // Batch add to DisplayLogs
-                if (DisplayLogs is RangeObservableCollection<LogEntry> rangeDisplayLogsAdd && logsToDisplay.Count > 5)
-                {
-                    rangeDisplayLogsAdd.AddRange(logsToDisplay);
-                }
-                else
-                {
-                    foreach (var log in logsToDisplay)
-                    {
-                        DisplayLogs.Add(log);
-                    }
-                }
-
-                // Trim logs in batches to reduce UI updates
-                var removeCount = DisplayLogs.Count - MaxDisplayLogs;
-                if (removeCount > 0)
-                {
-                    if (DisplayLogs is RangeObservableCollection<LogEntry> rangeDisplayLogsRemove)
-                    {
-                        rangeDisplayLogsRemove.RemoveRange(DisplayLogs.Take(removeCount));
-                    }
-                    else
-                    {
-                        for (int i = 0; i < removeCount; i++)
+                        if (AllLogs is RangeObservableCollection<LogEntry> rangeAllLogsAdd)
                         {
-                            DisplayLogs.RemoveAt(0);
+                            rangeAllLogsAdd.AddRange(newLogs);
+                        }
+                        else
+                        {
+                            foreach (var log in newLogs)
+                            {
+                                AllLogs.Add(log);
+                            }
                         }
                     }
-                }
-                
-                // Trim AllLogs
-                var removeAllCount = AllLogs.Count - MaxDisplayLogs * 2;
-                if (removeAllCount > 0)
-                {
-                    if (AllLogs is RangeObservableCollection<LogEntry> rangeAllLogsRemove)
+                    catch (Exception ex)
                     {
-                        rangeAllLogsRemove.RemoveRange(AllLogs.Take(removeAllCount));
-                    }
-                    else
-                    {
-                        for (int i = 0; i < removeAllCount; i++)
-                        {
-                            AllLogs.RemoveAt(0);
-                        }
-                    }
-                }
-
-                // Update port-specific logs and statistics
-                var portVm = OpenPorts.FirstOrDefault(p => p.PortName == portName);
-                if (portVm != null)
-                {
-                    // Batch add logs to port
-                    foreach (var logEntry in newLogs)
-                    {
-                        portVm.AddLog(logEntry);
+                        _logger.LogError(ex, "Error adding to AllLogs");
                     }
                     
-                    var stats = _serialPortService.GetStatistics(portName);
-                    portVm.UpdateStatistics(stats);
+                    // Apply regex filter to new logs
+                    var logsToDisplay = newLogs;
+                    if (filterRegex != null)
+                    {
+                        try
+                        {
+                            logsToDisplay = newLogs.Where(log =>
+                            {
+                                try
+                                {
+                                    return filterRegex.IsMatch(log.Content) || filterRegex.IsMatch(log.PortName);
+                                }
+                                catch
+                                {
+                                    return false;
+                                }
+                            }).ToList();
+                            
+                            MatchCount = DisplayLogs.Count + logsToDisplay.Count;
+                        }
+                        catch (RegexMatchTimeoutException)
+                        {
+                            _logger.LogWarning("Regex match timeout during filter");
+                            logsToDisplay = new List<LogEntry>();
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Error filtering logs");
+                            logsToDisplay = newLogs; // Fallback to showing all
+                        }
+                    }
+                    
+                    // Batch add to DisplayLogs with error handling
+                    try
+                    {
+                        if (DisplayLogs is RangeObservableCollection<LogEntry> rangeDisplayLogsAdd && logsToDisplay.Count > 5)
+                        {
+                            rangeDisplayLogsAdd.AddRange(logsToDisplay);
+                        }
+                        else
+                        {
+                            foreach (var log in logsToDisplay)
+                            {
+                                DisplayLogs.Add(log);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error adding to DisplayLogs");
+                    }
+
+                    // Trim logs in batches to reduce UI updates
+                    try
+                    {
+                        var removeCount = DisplayLogs.Count - MaxDisplayLogs;
+                        if (removeCount > 0)
+                        {
+                            if (DisplayLogs is RangeObservableCollection<LogEntry> rangeDisplayLogsRemove)
+                            {
+                                rangeDisplayLogsRemove.RemoveRange(DisplayLogs.Take(removeCount).ToList());
+                            }
+                            else
+                            {
+                                for (int i = 0; i < removeCount && i < DisplayLogs.Count; i++)
+                                {
+                                    DisplayLogs.RemoveAt(0);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error trimming DisplayLogs");
+                    }
+                    
+                    // Trim AllLogs
+                    try
+                    {
+                        var removeAllCount = AllLogs.Count - MaxDisplayLogs * 2;
+                        if (removeAllCount > 0)
+                        {
+                            if (AllLogs is RangeObservableCollection<LogEntry> rangeAllLogsRemove)
+                            {
+                                rangeAllLogsRemove.RemoveRange(AllLogs.Take(removeAllCount).ToList());
+                            }
+                            else
+                            {
+                                for (int i = 0; i < removeAllCount && i < AllLogs.Count; i++)
+                                {
+                                    AllLogs.RemoveAt(0);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error trimming AllLogs");
+                    }
+
+                    // Update port-specific logs and statistics
+                    try
+                    {
+                        var portVm = OpenPorts.FirstOrDefault(p => p.PortName == portName);
+                        if (portVm != null)
+                        {
+                            // Batch add logs to port
+                            foreach (var logEntry in newLogs)
+                            {
+                                portVm.AddLog(logEntry);
+                            }
+                            
+                            var stats = _serialPortService.GetStatistics(portName);
+                            portVm.UpdateStatistics(stats);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error updating port statistics");
+                    }
                 }
-            }
-            catch (Exception ex)
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Critical error updating UI with received data");
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _pendingUpdates);
+                }
+            });
+
+            if (!enqueued)
             {
-                _logger.LogError(ex, "Error updating UI with received data");
+                Interlocked.Decrement(ref _pendingUpdates);
+                _logger.LogWarning("Failed to enqueue UI update");
             }
-        });
+        }
+        catch (Exception ex)
+        {
+            Interlocked.Decrement(ref _pendingUpdates);
+            _logger.LogError(ex, "Error in OnDataReceived");
+        }
     }
 
     private void OnPortStateChanged(object? sender, PortStateChangedEventArgs e)
