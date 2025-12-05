@@ -12,6 +12,7 @@
     <WindowsPackageType>None</WindowsPackageType>
     <Nullable>enable</Nullable>
     <LangVersion>12</LangVersion>
+    <ApplicationIcon>Assets\Images\logo.ico</ApplicationIcon>
     
     <!-- Version Information - Edit version.json to update -->
     <Version>1.3.0</Version>
@@ -87,4 +88,5 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+
 </Project>

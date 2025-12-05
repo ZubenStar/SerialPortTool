@@ -25,6 +25,13 @@ public sealed partial class MainWindow : Window
         // Set window properties
         Title = ViewModel.Title;
         
+        // Set window icon
+        var iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "Images", "logo.ico");
+        if (System.IO.File.Exists(iconPath))
+        {
+            this.AppWindow.SetIcon(iconPath);
+        }
+        
         // Set window size
         var appWindow = this.AppWindow;
         if (appWindow != null)
