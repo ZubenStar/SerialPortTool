@@ -1,7 +1,18 @@
 ﻿{
-    "version":  "1.3.0",
+    "version":  "1.3.1",
     "description":  "SerialPortTool Version Configuration",
     "changelog":  [
+                      {
+                          "date":  "2025-12-05",
+                          "version":  "1.3.1",
+                          "changes":  [
+                                          "Added application icon integration to main window",
+                                          "Added logo.ico and logo.png assets to Assets/Images directory",
+                                          "Configured ApplicationIcon property in project file",
+                                          "Implemented icon loading with existence validation",
+                                          "Enhanced visual branding and professional appearance"
+                                      ]
+                      },
                       {
                           "date":  "2025-12-04",
                           "version":  "1.3.0",
