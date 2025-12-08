@@ -78,12 +78,18 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
 /// </summary>
 public partial class MainViewModel : ObservableObject
 {
+/// <summary>
+/// 波特率检测建议事件
+/// </summary>
+public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     private readonly ISerialPortService _serialPortService;
     private readonly ILogFilterService _logFilterService;
     private readonly IFileLoggerService _fileLoggerService;
     private readonly ISettingsService _settingsService;
     private readonly ILogger<MainViewModel> _logger;
     private readonly DispatcherQueue _dispatcherQueue;
+    private readonly Services.IBaudRateDetectorService? _baudRateDetectorService;
+    private readonly Services.IDataValidationService? _dataValidationService;
 
     [ObservableProperty]
     private string _title = $"串口工具 - Multi-Port Serial Monitor {VersionInfo.VersionString}";
@@ -236,7 +242,9 @@ public partial class MainViewModel : ObservableObject
         ILogFilterService logFilterService,
         IFileLoggerService fileLoggerService,
         ISettingsService settingsService,
-        ILogger<MainViewModel> logger)
+        ILogger<MainViewModel> logger,
+        Services.IBaudRateDetectorService? baudRateDetectorService = null,
+        Services.IDataValidationService? dataValidationService = null)
     {
         _serialPortService = serialPortService;
         _logFilterService = logFilterService;
@@ -244,11 +252,19 @@ public partial class MainViewModel : ObservableObject
         _settingsService = settingsService;
         _logger = logger;
         _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
+        _baudRateDetectorService = baudRateDetectorService;
+        _dataValidationService = dataValidationService;
 
         // Subscribe to events
         _serialPortService.DataReceived += OnDataReceived;
         _serialPortService.PortStateChanged += OnPortStateChanged;
         _serialPortService.ErrorOccurred += OnErrorOccurred;
+        
+        // Subscribe to baud rate detection requests
+        if (_serialPortService is SerialPortService serialPortServiceInstance)
+        {
+            serialPortServiceInstance.BaudRateDetectionRequested += OnBaudRateDetectionRequested;
+        }
 
         // Initialize
         _ = InitializeAsync();
@@ -568,12 +584,21 @@ public partial class MainViewModel : ObservableObject
         _logger.LogTrace("OnDataReceived called: Port={Port}, Size={Size}bytes, Pending={Pending}",
             e.PortName, dataSize, _pendingUpdates);
         
-        // Rate limiting: Skip if too many pending updates
+        // Enhanced rate limiting: Skip if too many pending updates
         if (Interlocked.CompareExchange(ref _pendingUpdates, 0, 0) > MaxPendingUpdates)
         {
             Interlocked.Increment(ref _totalDropped);
             _logger.LogWarning("⚠️ Dropping data update due to high pending count: Pending={Pending}, Port={Port}, TotalReceived={Total}, TotalDropped={Dropped}",
                 _pendingUpdates, e.PortName, _totalDataReceived, _totalDropped);
+            return;
+        }
+
+        // Additional protection: Skip if data size is too large (potential garbage data)
+        if (dataSize > 16384) // 16KB limit
+        {
+            Interlocked.Increment(ref _totalDropped);
+            _logger.LogWarning("⚠️ Dropping oversized data packet: Size={Size}bytes, Port={Port}, Limit=16384",
+                dataSize, e.PortName);
             return;
         }
 
@@ -590,7 +615,27 @@ public partial class MainViewModel : ObservableObject
                 return;
             }
             
-            var text = Encoding.UTF8.GetString(e.Data);
+            // Safe text decoding with fallback
+            string text;
+            try
+            {
+                text = Encoding.UTF8.GetString(e.Data);
+            }
+            catch
+            {
+                try
+                {
+                    text = Encoding.ASCII.GetString(e.Data);
+                    _logger.LogDebug("UTF-8 decoding failed for {Port}, using ASCII fallback", e.PortName);
+                }
+                catch
+                {
+                    // If both decodings fail, create a safe representation
+                    text = $"[Binary data: {dataSize} bytes]";
+                    _logger.LogWarning("Both UTF-8 and ASCII decoding failed for {Port}, using binary representation", e.PortName);
+                }
+            }
+            
             var portName = e.PortName;
             
             _logger.LogTrace("Decoded text: Length={Length} chars, Port={Port}", text.Length, portName);
@@ -601,22 +646,24 @@ public partial class MainViewModel : ObservableObject
             
             _logger.LogTrace("Split into {LineCount} lines, Port={Port}", lines.Length, portName);
             
-            // Pre-allocate to reduce reallocations
-            if (lines.Length > 1)
-            {
-                newLogs.Capacity = Math.Min(lines.Length, 1000); // Cap to prevent excessive allocation
-            }
-            
-            var now = DateTime.Now;
-            
-            // Limit lines to prevent memory overflow
-            var maxLines = Math.Min(lines.Length, 1000);
+            // Enhanced protection: Limit lines to prevent memory overflow and UI freezing
+            var maxLines = Math.Min(lines.Length, 500); // Reduced from 1000 to 500 for better performance
             
             if (lines.Length > maxLines)
             {
                 _logger.LogWarning("⚠️ Line count exceeds limit: Got {Count} lines, capping at {Max}, Port={Port}",
                     lines.Length, maxLines, portName);
             }
+            
+            // Pre-allocate to reduce reallocations
+            if (maxLines > 1)
+            {
+                newLogs.Capacity = maxLines;
+            }
+            
+            var now = DateTime.Now;
+            var validLineCount = 0;
+            var garbageLineCount = 0;
             
             for (int i = 0; i < maxLines; i++)
             {
@@ -625,6 +672,34 @@ public partial class MainViewModel : ObservableObject
                 // Skip only the last line if it's empty (common from splitting)
                 if (i == maxLines - 1 && string.IsNullOrEmpty(line))
                     continue;
+                
+                // Enhanced garbage detection
+                if (GarbageDataDetector.IsGarbageLine(line))
+                {
+                    garbageLineCount++;
+                    
+                    // Skip garbage lines to prevent UI pollution
+                    if (garbageLineCount > 10) // If too many garbage lines, skip the rest
+                    {
+                        _logger.LogWarning("⚠️ Too many garbage lines detected, skipping remaining lines: Port={Port}, Skipped={Skipped}",
+                            portName, maxLines - i - 1);
+                        break;
+                    }
+                    
+                    // Replace garbage line with indicator
+                    line = "[Garbage data filtered]";
+                }
+                else
+                {
+                    validLineCount++;
+                }
+                
+                // Limit line length to prevent UI issues
+                if (line.Length > 1000)
+                {
+                    line = line.Substring(0, 1000) + "...[truncated]";
+                    _logger.LogDebug("Truncated long line: Port={Port}, OriginalLength={Original}", portName, line.Length);
+                }
                 
                 var logEntry = new LogEntry
                 {
@@ -638,6 +713,13 @@ public partial class MainViewModel : ObservableObject
                 
                 // Write to log file asynchronously (batched internally)
                 _ = _fileLoggerService.WriteLogAsync(portName, logEntry);
+            }
+            
+            // Log statistics about data quality
+            if (garbageLineCount > 0)
+            {
+                _logger.LogInformation("Data quality stats for {Port}: Valid={Valid}, Garbage={Garbage}, Total={Total}",
+                    portName, validLineCount, garbageLineCount, newLogs.Count);
             }
 
             if (newLogs.Count == 0)
@@ -935,10 +1017,135 @@ public partial class MainViewModel : ObservableObject
         });
     }
 
+    private void OnBaudRateDetectionRequested(object? sender, Services.BaudRateDetectionRequestedEventArgs e)
+    {
+        // Capture values before dispatching to avoid closure issues
+        var portName = e.PortName;
+        var currentBaudRate = e.CurrentBaudRate;
+        var reason = e.Reason;
+        
+        _dispatcherQueue.TryEnqueue(async () =>
+        {
+            try
+            {
+                StatusMessage = $"检测到 {portName} 波特率可能不正确: {reason}";
+                _logger.LogWarning("Baud rate detection requested for {PortName}: {Reason}", portName, reason);
+                
+                if (_baudRateDetectorService != null)
+                {
+                    StatusMessage = $"正在为 {portName} 检测最佳波特率...";
+                    
+                    try
+                    {
+                        var detectionResults = await _baudRateDetectorService.DetectOptimalBaudRateAsync(portName);
+                        
+                        if (detectionResults.Count > 0 && detectionResults[0].ConfidenceScore > 0.5)
+                        {
+                            var bestBaudRate = detectionResults[0].BaudRate;
+                            StatusMessage = $"建议将 {portName} 波特率设置为 {bestBaudRate} (置信度: {detectionResults[0].ConfidenceScore:F2})";
+                            
+                            // 触发波特率建议事件，让UI显示警告
+                            BaudRateSuggested?.Invoke(this, new BaudRateSuggestionEventArgs
+                            {
+                                PortName = portName,
+                                CurrentBaudRate = currentBaudRate,
+                                SuggestedBaudRate = bestBaudRate,
+                                Reason = $"检测到数据质量不佳，建议波特率: {bestBaudRate}",
+                                Confidence = detectionResults[0].ConfidenceScore,
+                                ShouldAutoSwitch = detectionResults[0].ConfidenceScore > 0.8
+                            });
+                            
+                            // 如果置信度很高，可以自动切换
+                            if (detectionResults[0].ConfidenceScore > 0.8)
+                            {
+                                StatusMessage = $"自动将 {portName} 波特率从 {currentBaudRate} 切换到 {bestBaudRate}";
+                                await SwitchPortBaudRateAsync(portName, bestBaudRate);
+                            }
+                        }
+                        else
+                        {
+                            StatusMessage = $"无法为 {portName} 确定最佳波特率，请手动检查";
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error during baud rate detection for {PortName}", portName);
+                        StatusMessage = $"波特率检测失败: {ex.Message}";
+                    }
+                }
+                else
+                {
+                    StatusMessage = $"波特率检测服务不可用，请手动调整 {portName} 的波特率";
+                }
+            }
+            catch (Exception ex)
+            {
+                // Fallback logging if UI update fails
+                _logger.LogError(ex, "Failed to handle baud rate detection request");
+                StatusMessage = $"处理波特率检测请求时出错";
+            }
+        });
+    }
+
+    public async Task SwitchPortBaudRateAsync(string portName, int newBaudRate)
+    {
+        try
+        {
+            // 关闭当前端口
+            await _serialPortService.ClosePortAsync(portName);
+            
+            // 等待一段时间确保端口完全释放
+            await Task.Delay(500);
+            
+            // 创建新配置
+            var newConfig = new SerialPortConfig
+            {
+                PortName = portName,
+                BaudRate = newBaudRate,
+                DataBits = DataBits,
+                StopBits = StopBits,
+                Parity = Parity
+            };
+            
+            // 重新打开端口
+            var opened = await _serialPortService.OpenPortAsync(newConfig);
+            
+            if (opened)
+            {
+                // 重置验证状态
+                _dataValidationService?.ResetValidationState(portName);
+                
+                _logger.LogInformation("Successfully switched {PortName} to baud rate {BaudRate}", portName, newBaudRate);
+            }
+            else
+            {
+                _logger.LogError("Failed to reopen {PortName} with new baud rate {BaudRate}", portName, newBaudRate);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error switching baud rate for {PortName}", portName);
+            throw;
+        }
+    }
+
     public string GetLogDirectory()
     {
         var documentsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
         return System.IO.Path.Combine(documentsPath, "SerialPortTool", "Logs");
+    }
+    
+    /// <summary>
+    /// 波特率建议事件参数
+    /// </summary>
+    public class BaudRateSuggestionEventArgs : EventArgs
+    {
+        public string PortName { get; set; } = string.Empty;
+        public int CurrentBaudRate { get; set; }
+        public int SuggestedBaudRate { get; set; }
+        public string Reason { get; set; } = string.Empty;
+        public double Confidence { get; set; }
+        public bool ShouldAutoSwitch { get; set; }
     }
 }
 
@@ -1034,5 +1241,58 @@ public partial class PortViewModel : ObservableObject
     {
         Logs.Clear();
         FilteredLogs.Clear();
+    }
+}
+
+/// <summary>
+/// 垃圾数据检测工具类
+/// </summary>
+public static class GarbageDataDetector
+{
+    /// <summary>
+    /// 检测是否为垃圾数据行
+    /// </summary>
+    /// <param name="line">要检查的文本行</param>
+    /// <returns>是否为垃圾数据</returns>
+    public static bool IsGarbageLine(string line)
+    {
+        if (string.IsNullOrEmpty(line))
+            return false;
+
+        // 检查是否包含过多不可打印字符
+        var unprintableCount = line.Count(c => c < 32 && c != '\r' && c != '\n' && c != '\t');
+        if (line.Length > 0 && (double)unprintableCount / line.Length > 0.5)
+            return true;
+
+        // 检查是否为大量重复字符
+        if (line.Length > 10)
+        {
+            var distinctChars = line.Distinct().Count();
+            if (distinctChars <= 2) // 只有1-2种不同字符
+                return true;
+        }
+
+        // 检查是否为典型的乱码模式
+        if (line.Length > 20)
+        {
+            var patternCount = 0;
+            // 检查连续的不可读字符序列
+            for (int i = 0; i < line.Length - 3; i++)
+            {
+                if (line[i] < 32 || line[i] > 126)
+                {
+                    patternCount++;
+                    if (patternCount > line.Length * 0.3)
+                        return true;
+                }
+            }
+        }
+
+        // 检查是否包含过多的扩展ASCII字符（可能是编码错误的UTF-8）
+        var extendedAsciiCount = line.Count(c => c > 127 && c < 256);
+        if (line.Length > 0 && (double)extendedAsciiCount / line.Length > 0.7)
+            return true;
+
+        return false;
     }
 }

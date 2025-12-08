@@ -171,8 +171,60 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
+                <!-- Baud Rate Detection Alert -->
+                <Border x:Name="BaudRateAlertBorder"
+                        Grid.Row="0"
+                        Background="#FFF3CD"
+                        BorderBrush="#FFEEA4"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Padding="12,8"
+                        Margin="8,8,8,4"
+                        Visibility="Collapsed">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <TextBlock Grid.Column="0"
+                                   Text="⚠️"
+                                   FontSize="16"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,8,0"/>
+                        
+                        <StackPanel Grid.Column="1" Spacing="4">
+                            <TextBlock x:Name="BaudRateAlertTitle"
+                                       Text="检测到波特率可能不匹配"
+                                       FontWeight="SemiBold"
+                                       FontSize="14"/>
+                            <TextBlock x:Name="BaudRateAlertMessage"
+                                       Text="建议切换到正确的波特率以获得更好的数据质量"
+                                       FontSize="12"
+                                       Opacity="0.8"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                        
+                        <StackPanel Grid.Column="2"
+                                    Orientation="Horizontal"
+                                    Spacing="8"
+                                    VerticalAlignment="Center">
+                            <Button x:Name="AutoFixBaudRateButton"
+                                    Content="自动修复"
+                                    Style="{StaticResource AccentButtonStyle}"
+                                    Click="AutoFixBaudRate_Click"
+                                    FontSize="12"/>
+                            <Button x:Name="DismissAlertButton"
+                                    Content="忽略"
+                                    Click="DismissAlert_Click"
+                                    FontSize="12"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
                 <!-- Search and Controls -->
-                <StackPanel Grid.Row="0" Padding="8" Spacing="8">
+                <StackPanel Grid.Row="0" Padding="8" Spacing="8" Margin="8,4,8,8">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <StackPanel Spacing="4">
                             <TextBox x:Name="SearchBox"

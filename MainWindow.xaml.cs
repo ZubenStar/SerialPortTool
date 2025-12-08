@@ -47,6 +47,12 @@ public sealed partial class MainWindow : Window
         
         // Subscribe to ViewModel property changes for match count
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
+        
+        // Subscribe to baud rate suggestion events
+        ViewModel.BaudRateSuggested += ViewModel_BaudRateSuggested;
+        
+        // Initialize baud rate alert UI
+        InitializeBaudRateAlert();
     }
     
     private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -318,4 +324,75 @@ public sealed partial class MainWindow : Window
             CustomBaudRateTextBox.Visibility = isChecked ? Visibility.Visible : Visibility.Collapsed;
         }
     }
+    
+    #region Baud Rate Alert Handling
+    
+    private string? _suggestedPortName;
+    private int _suggestedBaudRate;
+    
+    private void InitializeBaudRateAlert()
+    {
+        // Initially hide the alert
+        BaudRateAlertBorder.Visibility = Visibility.Collapsed;
+    }
+    
+    private void ViewModel_BaudRateSuggested(object? sender, MainViewModel.BaudRateSuggestionEventArgs e)
+    {
+        _suggestedPortName = e.PortName;
+        _suggestedBaudRate = e.SuggestedBaudRate;
+        
+        BaudRateAlertTitle.Text = $"检测到 {e.PortName} 波特率可能不匹配";
+        BaudRateAlertMessage.Text = $"当前: {e.CurrentBaudRate}, 建议: {e.SuggestedBaudRate}\n原因: {e.Reason}\n置信度: {e.Confidence:F2}";
+        
+        // 如果置信度很高，显示自动修复按钮
+        AutoFixBaudRateButton.Visibility = e.ShouldAutoSwitch ? Visibility.Visible : Visibility.Collapsed;
+        
+        BaudRateAlertBorder.Visibility = Visibility.Visible;
+    }
+    
+    private void ShowBaudRateAlert(string portName, int currentBaudRate, int suggestedBaudRate, string reason)
+    {
+        _suggestedPortName = portName;
+        _suggestedBaudRate = suggestedBaudRate;
+        
+        BaudRateAlertTitle.Text = $"检测到 {portName} 波特率可能不匹配";
+        BaudRateAlertMessage.Text = $"当前: {currentBaudRate}, 建议: {suggestedBaudRate}\n原因: {reason}";
+        
+        BaudRateAlertBorder.Visibility = Visibility.Visible;
+    }
+    
+    private void HideBaudRateAlert()
+    {
+        BaudRateAlertBorder.Visibility = Visibility.Collapsed;
+        _suggestedPortName = null;
+    }
+    
+    private async void AutoFixBaudRate_Click(object sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(_suggestedPortName))
+        {
+            try
+            {
+                ViewModel.StatusMessage = $"正在自动修复 {_suggestedPortName} 的波特率...";
+                
+                // Use the ViewModel's existing method to switch baud rate
+                await ViewModel.SwitchPortBaudRateAsync(_suggestedPortName, _suggestedBaudRate);
+                
+                HideBaudRateAlert();
+                ViewModel.StatusMessage = $"已成功将 {_suggestedPortName} 波特率切换到 {_suggestedBaudRate}";
+            }
+            catch (Exception ex)
+            {
+                ViewModel.StatusMessage = $"自动修复失败: {ex.Message}";
+            }
+        }
+    }
+    
+    private void DismissAlert_Click(object sender, RoutedEventArgs e)
+    {
+        HideBaudRateAlert();
+        ViewModel.StatusMessage = "已忽略波特率建议";
+    }
+    
+    #endregion
 }

@@ -69,6 +69,8 @@ public partial class App : Application
     private void ConfigureServices(IServiceCollection services)
     {
         // Register Services
+        services.AddSingleton<IBaudRateDetectorService, BaudRateDetectorService>();
+        services.AddSingleton<IDataValidationService, DataValidationService>();
         services.AddSingleton<ISerialPortService, SerialPortService>();
         services.AddSingleton<ILogFilterService, LogFilterService>();
         services.AddSingleton<IFileLoggerService, FileLoggerService>();

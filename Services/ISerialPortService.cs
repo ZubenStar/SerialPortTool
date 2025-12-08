@@ -113,3 +113,14 @@ public class ErrorEventArgs : EventArgs
     public string ErrorMessage { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; } = DateTime.Now;
 }
+
+/// <summary>
+/// 波特率检测请求事件参数
+/// </summary>
+public class BaudRateDetectionRequestedEventArgs : EventArgs
+{
+    public string PortName { get; set; } = string.Empty;
+    public int CurrentBaudRate { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public DateTime Timestamp { get; set; } = DateTime.Now;
+}

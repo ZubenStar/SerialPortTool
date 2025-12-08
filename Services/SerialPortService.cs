@@ -19,14 +19,21 @@ public class SerialPortService : ISerialPortService, IDisposable
 {
     private readonly ILogger<SerialPortService> _logger;
     private readonly ConcurrentDictionary<string, PortInstance> _ports = new();
+    private readonly IDataValidationService? _dataValidationService;
+    private readonly IBaudRateDetectorService? _baudRateDetectorService;
 
     public event EventHandler<DataReceivedEventArgs>? DataReceived;
     public event EventHandler<PortStateChangedEventArgs>? PortStateChanged;
     public event EventHandler<ErrorEventArgs>? ErrorOccurred;
+    public event EventHandler<BaudRateDetectionRequestedEventArgs>? BaudRateDetectionRequested;
 
-    public SerialPortService(ILogger<SerialPortService> logger)
+    public SerialPortService(ILogger<SerialPortService> logger,
+        IDataValidationService? dataValidationService = null,
+        IBaudRateDetectorService? baudRateDetectorService = null)
     {
         _logger = logger;
+        _dataValidationService = dataValidationService;
+        _baudRateDetectorService = baudRateDetectorService;
     }
 
     public Task<IEnumerable<string>> GetAvailablePortsAsync()
@@ -71,7 +78,7 @@ public class SerialPortService : ISerialPortService, IDisposable
                 return false;
             }
 
-            var portInstance = new PortInstance(config, _logger);
+            var portInstance = new PortInstance(config, _logger, _dataValidationService, _baudRateDetectorService, this);
             
             // Subscribe to events
             portInstance.DataReceived += OnPortDataReceived;
@@ -336,6 +343,9 @@ public class SerialPortService : ISerialPortService, IDisposable
         private SerialPort? _serialPort;
         private readonly SemaphoreSlim _writeLock = new(1, 1);
         private readonly ILogger _logger;
+        private readonly IDataValidationService? _dataValidationService;
+        private readonly IBaudRateDetectorService? _baudRateDetectorService;
+        private readonly SerialPortService _parentService;
 
         public SerialPortConfig Config { get; }
         public PortStatistics Statistics { get; } = new();
@@ -344,10 +354,16 @@ public class SerialPortService : ISerialPortService, IDisposable
         public event EventHandler<DataReceivedEventArgs>? DataReceived;
         public event EventHandler<ErrorEventArgs>? ErrorOccurred;
 
-        public PortInstance(SerialPortConfig config, ILogger logger)
+        public PortInstance(SerialPortConfig config, ILogger logger,
+            IDataValidationService? dataValidationService,
+            IBaudRateDetectorService? baudRateDetectorService,
+            SerialPortService parentService)
         {
             Config = config;
             _logger = logger;
+            _dataValidationService = dataValidationService;
+            _baudRateDetectorService = baudRateDetectorService;
+            _parentService = parentService;
             Statistics.PortName = config.PortName;
         }
 
@@ -579,17 +595,107 @@ public class SerialPortService : ISerialPortService, IDisposable
                     Statistics.ReceivedBytes += bytesRead;
                     Statistics.ReceivedMessages++;
 
-                    DataReceived?.Invoke(this, new DataReceivedEventArgs
+                    // 如果有数据验证服务，先验证数据
+                    if (_dataValidationService != null)
                     {
-                        PortName = Config.PortName,
-                        Data = buffer
-                    });
+                        ProcessDataWithValidation(buffer);
+                    }
+                    else
+                    {
+                        // 传统处理方式
+                        DataReceived?.Invoke(this, new DataReceivedEventArgs
+                        {
+                            PortName = Config.PortName,
+                            Data = buffer
+                        });
+                    }
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error reading data from {PortName}", Config.PortName);
                 RaiseError(ex);
+            }
+        }
+
+        private async void ProcessDataWithValidation(byte[] buffer)
+        {
+            try
+            {
+                var validationResult = await _dataValidationService!.ValidateDataAsync(buffer, Config.PortName);
+                
+                _logger.LogTrace("Data validation for {PortName}: Valid={IsValid}, Score={Score}, Action={Action}",
+                    Config.PortName, validationResult.IsValid, validationResult.QualityScore, validationResult.SuggestedAction);
+
+                switch (validationResult.SuggestedAction)
+                {
+                    case ValidationAction.Normal:
+                        DataReceived?.Invoke(this, new DataReceivedEventArgs
+                        {
+                            PortName = Config.PortName,
+                            Data = buffer
+                        });
+                        break;
+
+                    case ValidationAction.CleanAndProcess:
+                        if (validationResult.ProcessedData != null)
+                        {
+                            DataReceived?.Invoke(this, new DataReceivedEventArgs
+                            {
+                                PortName = Config.PortName,
+                                Data = validationResult.ProcessedData
+                            });
+                        }
+                        break;
+
+                    case ValidationAction.Discard:
+                        _logger.LogDebug("Discarding invalid data from {PortName}: {Message}",
+                            Config.PortName, validationResult.Message);
+                        break;
+
+                    case ValidationAction.TriggerBaudRateDetection:
+                        _logger.LogWarning("Triggering baud rate detection for {PortName}: {Message}",
+                            Config.PortName, validationResult.Message);
+                        
+                        // 触发波特率检测事件
+                        _parentService.BaudRateDetectionRequested?.Invoke(_parentService, new BaudRateDetectionRequestedEventArgs
+                        {
+                            PortName = Config.PortName,
+                            CurrentBaudRate = Config.BaudRate,
+                            Reason = validationResult.Message
+                        });
+                        break;
+
+                    case ValidationAction.PauseProcessing:
+                        _logger.LogWarning("Pausing data processing for {PortName}: {Message}",
+                            Config.PortName, validationResult.Message);
+                        
+                        // 暂停一段时间后恢复
+                        await Task.Delay(1000);
+                        break;
+                }
+
+                // 检查是否需要触发波特率检测
+                if (await _dataValidationService.ShouldTriggerBaudRateDetectionAsync(Config.PortName))
+                {
+                    _parentService.BaudRateDetectionRequested?.Invoke(_parentService, new BaudRateDetectionRequestedEventArgs
+                    {
+                        PortName = Config.PortName,
+                        CurrentBaudRate = Config.BaudRate,
+                        Reason = "数据质量持续较差，建议重新检测波特率"
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in data validation for {PortName}", Config.PortName);
+                
+                // 验证失败时，仍然发送原始数据以确保不丢失数据
+                DataReceived?.Invoke(this, new DataReceivedEventArgs
+                {
+                    PortName = Config.PortName,
+                    Data = buffer
+                });
             }
         }
 
