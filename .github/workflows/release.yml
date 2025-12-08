@@ -11,7 +11,7 @@ jobs:
     
     strategy:
       matrix:
-        platform: [x64, arm64]
+        platform: [x64]
         configuration: [Release]
     
     steps:
@@ -178,11 +178,7 @@ jobs:
         
         ## Downloads
         
-        Choose the appropriate package for your system:
-        - **x64**: For standard 64-bit Windows PCs
-        - **ARM64**: For ARM-based Windows devices (Surface Pro X, etc.)
-        
-        Each package is self-contained and requires no additional dependencies.
+        Download the package for 64-bit Windows PCs. The package is self-contained and requires no additional dependencies.
         
         ## Installation
         
