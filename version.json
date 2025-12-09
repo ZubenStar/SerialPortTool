@@ -1,78 +1,95 @@
 ﻿{
-    "version":  "1.3.1",
-    "description":  "SerialPortTool Version Configuration",
-    "changelog":  [
-                      {
-                          "date":  "2025-12-05",
-                          "version":  "1.3.1",
-                          "changes":  [
-                                          "Added application icon integration to main window",
-                                          "Added logo.ico and logo.png assets to Assets/Images directory",
-                                          "Configured ApplicationIcon property in project file",
-                                          "Implemented icon loading with existence validation",
-                                          "Enhanced visual branding and professional appearance"
-                                      ]
-                      },
-                      {
-                          "date":  "2025-12-04",
-                          "version":  "1.3.0",
-                          "changes":  [
-                                          "Bug fixes and performance improvements"
-                                      ]
-                      },
-                      {
-                          "date":  "2025-12-03",
-                          "version":  "1.2.0",
-                          "changes":  [
-                                          "Added comprehensive About dialog with version and build information",
-                                          "Implemented VersionInfo helper for centralized version display",
-                                          "Enhanced About dialog with app features and copyright information",
-                                          "Removed unused 'New Connection' menu item for cleaner UI",
-                                          "Connected About menu item to functional About dialog",
-                                          "UI improvements for better user experience"
-                                      ]
-                      },
-                      {
-                          "date":  "2025-12-02",
-                          "version":  "1.1.0",
-                          "changes":  [
-                                          "Major performance optimizations for high-throughput scenarios (10-20x improvement)",
-                                          "Added LogEntry formatted text caching (50-70% reduction in string allocations)",
-                                          "Implemented batch file writing with async queue (10-20x faster file I/O)",
-                                          "Added regex compilation caching with smart memory management (5-10x faster filtering)",
-                                          "Implemented RangeObservableCollection for batch UI updates (50-80% improvement)",
-                                          "Optimized data reception with pre-allocated capacity and batch processing",
-                                          "Added PerformanceMonitor helper for operation profiling and slow operation warnings",
-                                          "Increased MaxDisplayLogs from 1000 to 2000 for better data visibility",
-                                          "Enhanced UI virtualization with TextBlock optimizations",
-                                          "Reduced GC pressure by 40-60% through memory allocation optimizations",
-                                          "Added comprehensive performance documentation in PERFORMANCE_OPTIMIZATIONS.md"
-                                      ]
-                      },
-                      {
-                          "date":  "2025-12-01",
-                          "version":  "1.0.2",
-                          "changes":  [
-                                          "Fixed GitHub Actions workflow .NET setup issues",
-                                          "Corrected RuntimeIdentifier format for ARM64 builds",
-                                          "Updated build configuration for better cross-platform support"
-                                      ]
-                      },
-                      {
-                          "date":  "2025-12-01",
-                          "version":  "1.0.1",
-                          "changes":  [
-                                          "Bug fixes"
-                                      ]
-                      },
-                      {
-                          "version":  "1.0.0",
-                          "date":  "2025-12-01",
-                          "changes":  [
-                                          "Initial release",
-                                          "Multi-port serial monitor support",
-                                          "Automatic version and build time display"
-                                      ]
-                      }
-                  ]
+    "version": "1.4.0",
+    "description": "SerialPortTool Version Configuration",
+    "changelog": [
+        {
+            "date": "2025-12-09",
+            "version": "1.4.0",
+            "changes": [
+                "Added automatic baud rate detection with BaudRateDetectorService",
+                "Implemented DataValidationService for real-time data quality assessment",
+                "Added baud rate mismatch alert UI with auto-fix functionality",
+                "Integrated validation services into SerialPortService for enhanced data processing",
+                "Added garbage data detection and filtering to prevent UI issues",
+                "Implemented automatic baud rate switching with high confidence detection",
+                "Added data quality statistics and trend analysis",
+                "Enhanced error handling with fallback encoding support (UTF-8/ASCII/binary)",
+                "Added rate limiting and memory protection for large data packets",
+                "Removed ARM64 platform support, simplified to x64-only builds",
+                "Updated CI/CD pipeline to streamline x64-only releases"
+            ]
+        },
+        {
+            "date": "2025-12-05",
+            "version": "1.3.1",
+            "changes": [
+                "Added application icon integration to main window",
+                "Added logo.ico and logo.png assets to Assets/Images directory",
+                "Configured ApplicationIcon property in project file",
+                "Implemented icon loading with existence validation",
+                "Enhanced visual branding and professional appearance"
+            ]
+        },
+        {
+            "date": "2025-12-04",
+            "version": "1.3.0",
+            "changes": [
+                "Bug fixes and performance improvements"
+            ]
+        },
+        {
+            "date": "2025-12-03",
+            "version": "1.2.0",
+            "changes": [
+                "Added comprehensive About dialog with version and build information",
+                "Implemented VersionInfo helper for centralized version display",
+                "Enhanced About dialog with app features and copyright information",
+                "Removed unused 'New Connection' menu item for cleaner UI",
+                "Connected About menu item to functional About dialog",
+                "UI improvements for better user experience"
+            ]
+        },
+        {
+            "date": "2025-12-02",
+            "version": "1.1.0",
+            "changes": [
+                "Major performance optimizations for high-throughput scenarios (10-20x improvement)",
+                "Added LogEntry formatted text caching (50-70% reduction in string allocations)",
+                "Implemented batch file writing with async queue (10-20x faster file I/O)",
+                "Added regex compilation caching with smart memory management (5-10x faster filtering)",
+                "Implemented RangeObservableCollection for batch UI updates (50-80% improvement)",
+                "Optimized data reception with pre-allocated capacity and batch processing",
+                "Added PerformanceMonitor helper for operation profiling and slow operation warnings",
+                "Increased MaxDisplayLogs from 1000 to 2000 for better data visibility",
+                "Enhanced UI virtualization with TextBlock optimizations",
+                "Reduced GC pressure by 40-60% through memory allocation optimizations",
+                "Added comprehensive performance documentation in PERFORMANCE_OPTIMIZATIONS.md"
+            ]
+        },
+        {
+            "date": "2025-12-01",
+            "version": "1.0.2",
+            "changes": [
+                "Fixed GitHub Actions workflow .NET setup issues",
+                "Corrected RuntimeIdentifier format for ARM64 builds",
+                "Updated build configuration for better cross-platform support"
+            ]
+        },
+        {
+            "date": "2025-12-01",
+            "version": "1.0.1",
+            "changes": [
+                "Bug fixes"
+            ]
+        },
+        {
+            "version": "1.0.0",
+            "date": "2025-12-01",
+            "changes": [
+                "Initial release",
+                "Multi-port serial monitor support",
+                "Automatic version and build time display"
+            ]
+        }
+    ]
 }
