@@ -21,7 +21,6 @@
             </MenuBarItem>
             <MenuBarItem Title="工具">
                 <MenuFlyoutItem Text="扫描串口" Command="{x:Bind ViewModel.ScanPortsCommand}"/>
-                <MenuFlyoutItem Text="清空日志"/>
                 <MenuFlyoutSeparator/>
                 <MenuFlyoutItem Text="打开日志文件夹" Click="OpenLogFolder_Click"/>
             </MenuBarItem>
@@ -245,14 +244,8 @@
                             </StackPanel>
                         </StackPanel>
                         
-                        <Button Content="清空"
-                                Click="ClearLogs_Click"/>
-                        
                         <Button Content="全选"
                                 Click="SelectAllLogs_Click"/>
-                        
-                        <Button Content="复制所选"
-                                Click="CopySelectedLogs_Click"/>
                         
                         <CheckBox Content="自动滚动"
                                   IsChecked="{x:Bind ViewModel.AutoScroll, Mode=TwoWay}"

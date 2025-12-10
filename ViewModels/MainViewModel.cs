@@ -480,14 +480,6 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         }
     }
 
-    [RelayCommand]
-    private void ClearLogs()
-    {
-        AllLogs.Clear();
-        DisplayLogs.Clear();
-        _logger.LogInformation("All logs cleared");
-    }
-
     public void FilterLogs()
     {
         // CRITICAL: Never replace DisplayLogs collection, only modify in place
@@ -1236,12 +1228,6 @@ public partial class PortViewModel : ObservableObject
         }
     }
 
-    [RelayCommand]
-    private void ClearLogs()
-    {
-        Logs.Clear();
-        FilteredLogs.Clear();
-    }
 }
 
 /// <summary>

@@ -267,11 +267,6 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void ClearLogs_Click(object sender, RoutedEventArgs e)
-    {
-        ViewModel.ClearLogsCommand.Execute(null);
-    }
-
     private void OpenLogFolder_Click(object sender, RoutedEventArgs e)
     {
         try
@@ -307,12 +302,6 @@ public sealed partial class MainWindow : Window
             
             ViewModel.StatusMessage = $"Copied {ViewModel.DisplayLogs.Count} logs to clipboard";
         }
-    }
-
-    private void CopySelectedLogs_Click(object sender, RoutedEventArgs e)
-    {
-        // Copy all visible logs (same as select all for now)
-        SelectAllLogs_Click(sender, e);
     }
 
     private void CustomBaudRateCheckBox_Changed(object sender, RoutedEventArgs e)
