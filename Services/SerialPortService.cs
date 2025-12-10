@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.IO.Ports;
 using System.Linq;
 using System.Text;
@@ -136,33 +137,74 @@ public class SerialPortService : ISerialPortService, IDisposable
         {
             try
             {
+                _logger.LogInformation("Starting close sequence for port {PortName}", portName);
+                
                 // Unsubscribe from events first to prevent callbacks during disposal
-                portInstance.DataReceived -= OnPortDataReceived;
-                portInstance.ErrorOccurred -= OnPortError;
+                try
+                {
+                    portInstance.DataReceived -= OnPortDataReceived;
+                    portInstance.ErrorOccurred -= OnPortError;
+                    _logger.LogDebug("Unsubscribed from port {PortName} events", portName);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error unsubscribing from port {PortName} events", portName);
+                }
                 
                 // Close the port with enhanced cleanup
                 await portInstance.CloseAsync();
                 
                 RaisePortStateChanged(portName, ConnectionState.Connected, ConnectionState.Disconnected);
-                _logger.LogInformation("Port {PortName} closed", portName);
+                _logger.LogInformation("Port {PortName} closed successfully", portName);
                 
                 // Dispose the instance
-                portInstance.Dispose();
+                try
+                {
+                    portInstance.Dispose();
+                    _logger.LogDebug("Port {PortName} instance disposed", portName);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error disposing port {PortName} instance", portName);
+                }
                 
-                // Wait longer for OS to fully release the port resources
-                // This is critical for reliable port reopening
-                await Task.Delay(300);
+                // Critical: Wait longer for Windows to fully release the COM port handle
+                // Windows can take 500-1000ms to fully release serial port resources
+                await Task.Delay(500);
                 
-                // Verify port is actually released by checking if it appears in available ports
-                _logger.LogInformation("Port {PortName} resources released", portName);
+                // Verify port is actually released by attempting to check its availability
+                try
+                {
+                    var availablePorts = await GetAvailablePortsAsync();
+                    var isAvailable = availablePorts.Contains(portName);
+                    _logger.LogInformation("Port {PortName} release verified: Available={IsAvailable}",
+                        portName, isAvailable);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not verify port {PortName} availability", portName);
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error closing port {PortName}", portName);
                 
-                // Even on error, wait to ensure cleanup
-                await Task.Delay(300);
+                // Critical: Even on error, ensure we wait for OS cleanup
+                // This prevents the port from being stuck in a bad state
+                await Task.Delay(500);
+                
+                // Try to force cleanup by triggering garbage collection
+                // This can help release unmanaged resources
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                
+                _logger.LogWarning("Forced garbage collection after error closing port {PortName}", portName);
             }
+        }
+        else
+        {
+            _logger.LogWarning("Attempted to close port {PortName} but it was not in the open ports collection", portName);
         }
     }
 
@@ -475,43 +517,92 @@ public class SerialPortService : ISerialPortService, IDisposable
             return Task.Run(() =>
             {
                 if (_serialPort == null)
+                {
+                    _logger.LogDebug("CloseAsync called but _serialPort is already null");
                     return;
+                }
 
                 var port = _serialPort;
                 _serialPort = null;
 
                 try
                 {
-                    // Unsubscribe from events first to prevent callbacks during disposal
+                    _logger.LogDebug("Starting close sequence for port {PortName}", Config.PortName);
+                    
+                    // Step 1: Unsubscribe from events first to prevent callbacks during disposal
                     try
                     {
                         port.DataReceived -= SerialPort_DataReceived;
                         port.ErrorReceived -= SerialPort_ErrorReceived;
+                        _logger.LogDebug("Unsubscribed from events for port {PortName}", Config.PortName);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogDebug(ex, "Error unsubscribing from events");
+                        _logger.LogDebug(ex, "Error unsubscribing from events for port {PortName}", Config.PortName);
                     }
 
-                    // Close the port if it's open with retry logic
+                    // Step 2: Discard any buffered data to prevent blocking
+                    try
+                    {
+                        if (port.IsOpen)
+                        {
+                            port.DiscardInBuffer();
+                            port.DiscardOutBuffer();
+                            _logger.LogDebug("Discarded buffers for port {PortName}", Config.PortName);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Error discarding buffers for port {PortName}", Config.PortName);
+                    }
+
+                    // Step 3: Close the port if it's open with enhanced retry logic
                     if (port.IsOpen)
                     {
                         int retryCount = 0;
-                        const int maxRetries = 3;
+                        const int maxRetries = 5; // Increased from 3 to 5
                         bool closed = false;
                         
                         while (!closed && retryCount < maxRetries)
                         {
                             try
                             {
+                                // Try to close the port
                                 port.Close();
                                 closed = true;
-                                _logger.LogDebug("Port closed successfully on attempt {Attempt}", retryCount + 1);
+                                _logger.LogDebug("Port {PortName} closed successfully on attempt {Attempt}",
+                                    Config.PortName, retryCount + 1);
+                            }
+                            catch (UnauthorizedAccessException ex)
+                            {
+                                // Port is locked by another process or thread
+                                retryCount++;
+                                _logger.LogWarning(ex, "Port {PortName} is locked (attempt {Attempt}/{Max})",
+                                    Config.PortName, retryCount, maxRetries);
+                                
+                                if (retryCount < maxRetries)
+                                {
+                                    // Wait longer between retries for locked ports
+                                    Thread.Sleep(200);
+                                }
+                            }
+                            catch (IOException ex)
+                            {
+                                // I/O error during close
+                                retryCount++;
+                                _logger.LogWarning(ex, "I/O error closing port {PortName} (attempt {Attempt}/{Max})",
+                                    Config.PortName, retryCount, maxRetries);
+                                
+                                if (retryCount < maxRetries)
+                                {
+                                    Thread.Sleep(150);
+                                }
                             }
                             catch (Exception ex)
                             {
                                 retryCount++;
-                                _logger.LogDebug(ex, "Error closing port (attempt {Attempt}/{Max})", retryCount, maxRetries);
+                                _logger.LogWarning(ex, "Error closing port {PortName} (attempt {Attempt}/{Max})",
+                                    Config.PortName, retryCount, maxRetries);
                                 
                                 if (retryCount < maxRetries)
                                 {
@@ -519,37 +610,51 @@ public class SerialPortService : ISerialPortService, IDisposable
                                 }
                             }
                         }
+                        
+                        if (!closed)
+                        {
+                            _logger.LogError("Failed to close port {PortName} after {MaxRetries} attempts",
+                                Config.PortName, maxRetries);
+                        }
                     }
                     
-                    // Give the port more time to fully close before disposing
-                    // This is critical for Windows to release the port handle
-                    Thread.Sleep(150);
+                    // Step 4: Critical delay - Give Windows time to release the COM port handle
+                    // Windows needs 200-300ms to fully release serial port resources
+                    Thread.Sleep(250);
+                    
+                    _logger.LogDebug("Port {PortName} close operations completed", Config.PortName);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogDebug(ex, "Error during port close operations");
+                    _logger.LogError(ex, "Critical error during port {PortName} close operations", Config.PortName);
                 }
                 finally
                 {
-                    // Always try to dispose, catching the known .NET SerialPort bug
+                    // Step 5: Always try to dispose, catching the known .NET SerialPort bug
                     try
                     {
                         port.Dispose();
+                        _logger.LogDebug("Port {PortName} disposed successfully", Config.PortName);
                     }
                     catch (NullReferenceException)
                     {
                         // Known .NET bug in SerialPort.Dispose() - safe to ignore
                         // The port resources are still released despite the exception
+                        _logger.LogDebug("Caught known NullReferenceException in SerialPort.Dispose() for port {PortName}",
+                            Config.PortName);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogDebug(ex, "Error disposing port");
+                        _logger.LogWarning(ex, "Error disposing port {PortName}", Config.PortName);
                     }
                     
-                    // Additional delay after disposal to ensure OS cleanup
-                    Thread.Sleep(100);
+                    // Step 6: Final delay after disposal to ensure complete OS cleanup
+                    // This is critical for reliable port reopening
+                    Thread.Sleep(150);
 
                     Statistics.DisconnectedAt = DateTime.Now;
+                    
+                    _logger.LogInformation("Port {PortName} fully closed and resources released", Config.PortName);
                 }
             });
         }
@@ -725,15 +830,33 @@ public class SerialPortService : ISerialPortService, IDisposable
                     var port = _serialPort;
                     _serialPort = null;
 
+                    _logger.LogDebug("Disposing port {PortName}", Config.PortName);
+
                     // Unsubscribe from events
                     try
                     {
                         port.DataReceived -= SerialPort_DataReceived;
                         port.ErrorReceived -= SerialPort_ErrorReceived;
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // Ignore event unsubscription errors
+                        _logger.LogDebug(ex, "Error unsubscribing events during dispose for port {PortName}",
+                            Config.PortName);
+                    }
+                    
+                    // Discard buffers before closing
+                    try
+                    {
+                        if (port.IsOpen)
+                        {
+                            port.DiscardInBuffer();
+                            port.DiscardOutBuffer();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Error discarding buffers during dispose for port {PortName}",
+                            Config.PortName);
                     }
                     
                     // Try to close if still open
@@ -742,10 +865,13 @@ public class SerialPortService : ISerialPortService, IDisposable
                         try
                         {
                             port.Close();
+                            // Give time for close to complete
+                            Thread.Sleep(100);
                         }
-                        catch
+                        catch (Exception ex)
                         {
-                            // Ignore close errors during dispose
+                            _logger.LogDebug(ex, "Error closing port during dispose for port {PortName}",
+                                Config.PortName);
                         }
                     }
                     
@@ -757,20 +883,33 @@ public class SerialPortService : ISerialPortService, IDisposable
                     catch (NullReferenceException)
                     {
                         // Known .NET bug in SerialPort.Dispose() - safe to ignore
+                        _logger.LogDebug("Caught known NullReferenceException in SerialPort.Dispose() for port {PortName}",
+                            Config.PortName);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogDebug(ex, "Exception during port disposal");
+                        _logger.LogDebug(ex, "Exception during port disposal for port {PortName}",
+                            Config.PortName);
                     }
+                    
+                    // Final delay to ensure cleanup
+                    Thread.Sleep(50);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Exception during Dispose");
+                _logger.LogWarning(ex, "Exception during Dispose for port {PortName}", Config.PortName);
             }
             finally
             {
-                _writeLock.Dispose();
+                try
+                {
+                    _writeLock.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Error disposing write lock for port {PortName}", Config.PortName);
+                }
             }
         }
     }
