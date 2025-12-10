@@ -1,7 +1,23 @@
 ﻿{
-    "version": "1.4.0",
+    "version": "1.4.1",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2025-12-10",
+            "version": "1.4.1",
+            "changes": [
+                "Removed clear logs functionality to simplify log management",
+                "Enhanced port closing and disposal reliability with comprehensive logging",
+                "Increased retry count from 3 to 5 for port close operations",
+                "Added specific handling for UnauthorizedAccessException and IOException",
+                "Improved buffer discarding before closing to prevent blocking",
+                "Extended delays for Windows COM port handle release (500ms, 250ms, 150ms)",
+                "Added garbage collection fallback on close errors to free resources",
+                "Enhanced error handling in Dispose method with proper cleanup steps",
+                "Added detailed debug logging for close and dispose process",
+                "Improved edge case handling for null ports and missing ports"
+            ]
+        },
         {
             "date": "2025-12-09",
             "version": "1.4.0",
