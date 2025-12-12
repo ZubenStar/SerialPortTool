@@ -258,13 +258,19 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    private void SearchBox_TextSubmitted(ComboBox sender, ComboBoxTextSubmittedEventArgs args)
     {
-        if (sender is TextBox textBox)
+        // When user presses Enter or selects from dropdown
+        var searchText = args.Text;
+        
+        if (!string.IsNullOrWhiteSpace(searchText))
         {
-            ViewModel.SearchText = textBox.Text;
-            ViewModel.FilterLogs();
+            // Add to recent searches
+            ViewModel.AddToRecentSearches(searchText);
         }
+        
+        // Filter logs
+        ViewModel.FilterLogs();
     }
 
     private void OpenLogFolder_Click(object sender, RoutedEventArgs e)

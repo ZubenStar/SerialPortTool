@@ -123,6 +123,9 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
 
     [ObservableProperty]
     private ObservableCollection<FilterRule> _filters = new();
+    
+    [ObservableProperty]
+    private ObservableCollection<string> _recentSearchTexts = new();
 
     private string _searchText = string.Empty;
     
@@ -143,6 +146,67 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                     _dispatcherQueue.TryEnqueue(() => FilterLogs());
                 }, null, 150, System.Threading.Timeout.Infinite);
             }
+        }
+    }
+    
+    /// <summary>
+    /// Add a search text to recent history
+    /// </summary>
+    public void AddToRecentSearches(string searchText)
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+            return;
+            
+        // Remove if already exists
+        if (RecentSearchTexts.Contains(searchText))
+        {
+            RecentSearchTexts.Remove(searchText);
+        }
+        
+        // Add to beginning
+        RecentSearchTexts.Insert(0, searchText);
+        
+        // Keep only last 5
+        while (RecentSearchTexts.Count > 5)
+        {
+            RecentSearchTexts.RemoveAt(RecentSearchTexts.Count - 1);
+        }
+        
+        // Save to settings
+        _ = SaveRecentSearchesAsync();
+    }
+    
+    private async Task SaveRecentSearchesAsync()
+    {
+        try
+        {
+            var searchHistory = string.Join("|", RecentSearchTexts);
+            await _settingsService.SaveSettingAsync("RecentSearchTexts", searchHistory);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to save recent search texts");
+        }
+    }
+    
+    private async Task LoadRecentSearchesAsync()
+    {
+        try
+        {
+            var searchHistory = await _settingsService.LoadSettingAsync("RecentSearchTexts", string.Empty);
+            if (!string.IsNullOrEmpty(searchHistory))
+            {
+                var searches = searchHistory.Split('|', StringSplitOptions.RemoveEmptyEntries);
+                RecentSearchTexts.Clear();
+                foreach (var search in searches.Take(5))
+                {
+                    RecentSearchTexts.Add(search);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load recent search texts");
         }
     }
     
@@ -275,6 +339,9 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         // Load saved baud rate
         BaudRate = await _settingsService.LoadSettingAsync("BaudRate", 3000000);
         _logger.LogInformation("Loaded baud rate: {BaudRate}", BaudRate);
+        
+        // Load recent search texts
+        await LoadRecentSearchesAsync();
 
         // Scan ports
         await ScanPortsAsync();
