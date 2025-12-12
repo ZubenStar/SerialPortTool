@@ -1,7 +1,16 @@
 ﻿{
-    "version": "1.4.1",
+    "version": "1.5.0",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2025-12-12",
+            "version": "1.5.0",
+            "changes": [
+                "Added recent search history with combobox for quick access to previous searches",
+                "Enhanced search functionality with dropdown history selection",
+                "Improved user experience with search term persistence"
+            ]
+        },
         {
             "date": "2025-12-10",
             "version": "1.4.1",
