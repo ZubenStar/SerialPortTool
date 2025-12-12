@@ -250,6 +250,10 @@
                         <Button Content="全选"
                                 Click="SelectAllLogs_Click"/>
                         
+                        <Button Content="🗑️ 清空日志"
+                                Command="{x:Bind ViewModel.ClearLogsCommand}"
+                                ToolTipService.ToolTip="清空所有日志记录"/>
+                        
                         <CheckBox Content="自动滚动"
                                   IsChecked="{x:Bind ViewModel.AutoScroll, Mode=TwoWay}"
                                   x:Name="AutoScrollCheckBox"/>

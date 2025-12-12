@@ -607,6 +607,30 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     }
 
     [RelayCommand]
+    private void ClearLogs()
+    {
+        try
+        {
+            _logger.LogInformation("Clearing all logs");
+            
+            // Clear both AllLogs and DisplayLogs collections
+            AllLogs.Clear();
+            DisplayLogs.Clear();
+            
+            // Reset match count
+            MatchCount = 0;
+            
+            StatusMessage = "Logs cleared";
+            _logger.LogInformation("All logs cleared successfully");
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error clearing logs: {ex.Message}";
+            _logger.LogError(ex, "Error clearing logs");
+        }
+    }
+
+    [RelayCommand]
     private async Task ClosePortAsync(string portName)
     {
         try
