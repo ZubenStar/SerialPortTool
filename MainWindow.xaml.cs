@@ -258,19 +258,46 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void SearchBox_TextSubmitted(ComboBox sender, ComboBoxTextSubmittedEventArgs args)
+    private void SearchBox_DropDownClosed(object sender, object e)
     {
-        // When user presses Enter or selects from dropdown
-        var searchText = args.Text;
-        
-        if (!string.IsNullOrWhiteSpace(searchText))
+        // When dropdown closes (after user may have selected an item)
+        if (sender is ComboBox comboBox)
         {
-            // Add to recent searches
-            ViewModel.AddToRecentSearches(searchText);
+            // Clear the selection to prevent auto-selection behavior
+            comboBox.SelectedIndex = -1;
+            
+            // The Text binding updates ViewModel.SearchText automatically
+            // Just trigger filter
+            ViewModel.FilterLogs();
         }
-        
-        // Filter logs
-        ViewModel.FilterLogs();
+    }
+    
+    private void SearchBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        // When the ComboBox loses focus
+        if (sender is ComboBox comboBox)
+        {
+            // Ensure selection is cleared
+            comboBox.SelectedIndex = -1;
+        }
+    }
+    
+    private void SearchBox_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        // When user presses Enter key
+        if (e.Key == Windows.System.VirtualKey.Enter && sender is ComboBox comboBox)
+        {
+            var searchText = comboBox.Text?.Trim();
+            
+            // Only add to recent searches if text is not empty
+            if (!string.IsNullOrWhiteSpace(searchText))
+            {
+                ViewModel.AddToRecentSearches(searchText);
+            }
+            
+            // Mark event as handled to prevent further processing
+            e.Handled = true;
+        }
     }
 
     private void OpenLogFolder_Click(object sender, RoutedEventArgs e)

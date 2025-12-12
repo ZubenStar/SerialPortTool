@@ -231,7 +231,9 @@
                                      IsEditable="True"
                                      ItemsSource="{x:Bind ViewModel.RecentSearchTexts, Mode=OneWay}"
                                      Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                     TextSubmitted="SearchBox_TextSubmitted"
+                                     DropDownClosed="SearchBox_DropDownClosed"
+                                     LostFocus="SearchBox_LostFocus"
+                                     KeyDown="SearchBox_KeyDown"
                                      Width="300"/>
                             
                             <StackPanel Orientation="Horizontal" Spacing="8">
