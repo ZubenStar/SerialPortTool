@@ -14,11 +14,16 @@
     <LangVersion>12</LangVersion>
     <ApplicationIcon>Assets\Images\logo.ico</ApplicationIcon>
     
-    <!-- Version Information - Edit version.json to update -->
-    <Version>1.4.1</Version>
-    <AssemblyVersion>1.4.1.0</AssemblyVersion>
-    <FileVersion>1.4.1.0</FileVersion>
-    <InformationalVersion>1.4.1</InformationalVersion>
+    <!-- Version Information - Automatically read from version.json -->
+    <!-- Default fallback version if not yet loaded -->
+    <Version Condition="'$(VersionFromJson)' == ''">1.5.0</Version>
+    <Version Condition="'$(VersionFromJson)' != ''">$(VersionFromJson)</Version>
+    <AssemblyVersion Condition="'$(VersionFromJson)' == ''">1.5.0.0</AssemblyVersion>
+    <AssemblyVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson).0</AssemblyVersion>
+    <FileVersion Condition="'$(VersionFromJson)' == ''">1.5.0.0</FileVersion>
+    <FileVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson).0</FileVersion>
+    <InformationalVersion Condition="'$(VersionFromJson)' == ''">1.5.0</InformationalVersion>
+    <InformationalVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson)</InformationalVersion>
     
     <!-- Publishing Configuration -->
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
@@ -51,13 +56,24 @@
     <Exec Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\scripts\generate-buildinfo.ps1&quot; -OutputPath &quot;$(BuildInfoPath)&quot;" />
   </Target>
   
-  <!-- Target to read version from version.json before build -->
-  <Target Name="ReadVersionFromJson" BeforeTargets="BeforeBuild">
+  <!-- Target to update Package.appxmanifest version before build -->
+  <Target Name="UpdateManifestVersion" BeforeTargets="BeforeBuild">
     <PropertyGroup>
-      <VersionJsonContent>$([System.IO.File]::ReadAllText('$(ProjectDir)version.json'))</VersionJsonContent>
+      <ManifestPath>$(MSBuildProjectDirectory)\Package.appxmanifest</ManifestPath>
+      <ManifestContent>$([System.IO.File]::ReadAllText('$(ManifestPath)'))</ManifestContent>
+      <!-- Replace version in manifest with version from JSON (add .0 for 4-part version) -->
+      <UpdatedManifestContent>$([System.Text.RegularExpressions.Regex]::Replace($(ManifestContent), 'Version="[\d\.]+"', 'Version="$(VersionFromJson).0"'))</UpdatedManifestContent>
     </PropertyGroup>
-    <Message Text="Version configuration loaded from version.json" Importance="high" />
+    <WriteLinesToFile File="$(ManifestPath)" Lines="$(UpdatedManifestContent)" Overwrite="true" Encoding="UTF-8" />
+    <Message Text="Updated Package.appxmanifest version to $(VersionFromJson).0" Importance="high" />
   </Target>
+  
+  <!-- Target to read version from version.json at evaluation time -->
+  <PropertyGroup>
+    <VersionJsonContent>$([System.IO.File]::ReadAllText('$(ProjectDir)version.json'))</VersionJsonContent>
+    <!-- Extract version using regex -->
+    <VersionFromJson>$([System.Text.RegularExpressions.Regex]::Match($(VersionJsonContent), '"version"\s*:\s*"([^"]+)"').Groups[1].Value)</VersionFromJson>
+  </PropertyGroup>
   
   <!-- Target to prevent duplicate assemblies in publish output -->
   <Target Name="DeduplicateBundleFiles" BeforeTargets="GenerateBundle" Condition="'@(FilesToBundle)' != ''">

@@ -86,22 +86,7 @@ $versionJson.changelog = $newChangelog
 # Save version.json
 $versionJson | ConvertTo-Json -Depth 10 | Set-Content $versionJsonPath -Encoding UTF8
 Write-Host "✓ Updated version.json" -ForegroundColor Green
-
-# Update .csproj file
-if (-not (Test-Path $csprojPath)) {
-    Write-Error "SerialPortTool.csproj not found at $csprojPath"
-    exit 1
-}
-
-$csprojContent = Get-Content $csprojPath -Raw
-
-# Update version numbers in .csproj
-$csprojContent = $csprojContent -replace '<Version>[\d\.]+</Version>', "<Version>$newVersion</Version>"
-$csprojContent = $csprojContent -replace '<AssemblyVersion>[\d\.]+</AssemblyVersion>', "<AssemblyVersion>$newVersion.0</AssemblyVersion>"
-$csprojContent = $csprojContent -replace '<FileVersion>[\d\.]+</FileVersion>', "<FileVersion>$newVersion.0</FileVersion>"
-
-$csprojContent | Set-Content $csprojPath -Encoding UTF8
-Write-Host "✓ Updated SerialPortTool.csproj" -ForegroundColor Green
+Write-Host "✓ Version will be automatically read by build system" -ForegroundColor Green
 
 # Git operations
 if (-not $NoCommit) {
@@ -117,8 +102,8 @@ if (-not $NoCommit) {
     # Stage the changed files
     Push-Location $projectRoot
     try {
-        git add version.json SerialPortTool.csproj
-        Write-Host "✓ Staged version files" -ForegroundColor Green
+        git add version.json
+        Write-Host "✓ Staged version.json" -ForegroundColor Green
         
         # Commit the changes
         $commitMessage = "Bump version to $newVersion"
@@ -148,8 +133,8 @@ if (-not $NoCommit) {
 } else {
     Write-Host "`nSkipped git operations (--NoCommit flag used)" -ForegroundColor Yellow
     Write-Host "`nManual Steps Required:" -ForegroundColor Yellow
-    Write-Host "1. Review the changes in version.json and SerialPortTool.csproj" -ForegroundColor White
-    Write-Host "2. Commit: git add version.json SerialPortTool.csproj && git commit -m 'Bump version to $newVersion'" -ForegroundColor White
+    Write-Host "1. Review the changes in version.json" -ForegroundColor White
+    Write-Host "2. Commit: git add version.json && git commit -m 'Bump version to $newVersion'" -ForegroundColor White
     Write-Host "3. Tag: git tag -a v$newVersion -m 'Release $newVersion'" -ForegroundColor White
     Write-Host "4. Push: git push && git push origin v$newVersion" -ForegroundColor White
 }
