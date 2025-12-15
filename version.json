@@ -1,7 +1,15 @@
 ﻿{
-    "version": "1.6.0",
+    "version": "1.6.1",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2025-12-15",
+            "version": "1.6.1",
+            "changes": [
+                "Disabled ReadyToRun (R2R) compilation in release workflow for better compatibility",
+                "Disabled single-file publishing to resolve deployment issues"
+            ]
+        },
         {
             "date": "2025-12-15",
             "version": "1.6.0",

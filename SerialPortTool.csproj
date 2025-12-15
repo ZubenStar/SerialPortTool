@@ -16,13 +16,13 @@
     
     <!-- Version Information - Automatically read from version.json -->
     <!-- Default fallback version if not yet loaded -->
-    <Version Condition="'$(VersionFromJson)' == ''">1.6.0</Version>
+    <Version Condition="'$(VersionFromJson)' == ''">1.6.1</Version>
     <Version Condition="'$(VersionFromJson)' != ''">$(VersionFromJson)</Version>
-    <AssemblyVersion Condition="'$(VersionFromJson)' == ''">1.6.0.0</AssemblyVersion>
+    <AssemblyVersion Condition="'$(VersionFromJson)' == ''">1.6.1.0</AssemblyVersion>
     <AssemblyVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson).0</AssemblyVersion>
-    <FileVersion Condition="'$(VersionFromJson)' == ''">1.6.0.0</FileVersion>
+    <FileVersion Condition="'$(VersionFromJson)' == ''">1.6.1.0</FileVersion>
     <FileVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson).0</FileVersion>
-    <InformationalVersion Condition="'$(VersionFromJson)' == ''">1.6.0</InformationalVersion>
+    <InformationalVersion Condition="'$(VersionFromJson)' == ''">1.6.1</InformationalVersion>
     <InformationalVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson)</InformationalVersion>
     
     <!-- Publishing Configuration -->
