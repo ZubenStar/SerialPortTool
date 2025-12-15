@@ -99,7 +99,8 @@ jobs:
           --self-contained true `
           --output publish/${{ matrix.platform }} `
           -p:PublishTrimmed=false `
-          -p:PublishReadyToRun=true
+          -p:PublishReadyToRun=false `
+          -p:PublishSingleFile=false
       timeout-minutes: 15
       env:
         DOTNET_CLI_TELEMETRY_OPTOUT: 1
