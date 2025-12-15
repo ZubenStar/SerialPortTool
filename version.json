@@ -1,7 +1,23 @@
 ﻿{
-    "version": "1.5.0",
+    "version": "1.6.0",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2025-12-15",
+            "version": "1.6.0",
+            "changes": [
+                "Implemented simplified version management with single source of truth in version.json",
+                "Added automatic version synchronization between version.json, .csproj, and Package.appxmanifest",
+                "Added clear logs functionality with dedicated button and command",
+                "Refactored search event handlers for better reliability (replaced TextSubmitted with separate handlers)",
+                "Added SearchBox_DropDownClosed, SearchBox_LostFocus, and SearchBox_KeyDown event handlers",
+                "Fixed Package.appxmanifest encoding with BOM for UTF-8 support",
+                "Updated Package.appxmanifest MinVersion to use app version instead of Windows version",
+                "Enhanced build process with UpdateManifestVersion MSBuild target",
+                "Improved version extraction using regex at MSBuild evaluation time",
+                "Simplified bump-version.ps1 script to only modify version.json"
+            ]
+        },
         {
             "date": "2025-12-12",
             "version": "1.5.0",
