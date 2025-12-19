@@ -176,6 +176,34 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         _ = SaveRecentSearchesAsync();
     }
     
+    /// <summary>
+    /// Remove a search text from recent history
+    /// </summary>
+    public void RemoveFromRecentSearches(string searchText)
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+            return;
+            
+        if (RecentSearchTexts.Contains(searchText))
+        {
+            RecentSearchTexts.Remove(searchText);
+            
+            // Save to settings
+            _ = SaveRecentSearchesAsync();
+        }
+    }
+    
+    /// <summary>
+    /// Clear all recent searches
+    /// </summary>
+    public void ClearRecentSearches()
+    {
+        RecentSearchTexts.Clear();
+        
+        // Save to settings
+        _ = SaveRecentSearchesAsync();
+    }
+    
     private async Task SaveRecentSearchesAsync()
     {
         try
@@ -524,6 +552,7 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         try
         {
             var portCount = OpenPorts.Count;
+            StatusMessage = $"Closing {portCount} port(s)...";
 
             // Stop file logging for all ports
             foreach (var port in OpenPorts.ToList())
@@ -531,18 +560,18 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 await _fileLoggerService.StopLoggingAsync(port.PortName);
             }
 
-            // Close all ports
+            // Close all ports with enhanced cleanup
             await _serialPortService.CloseAllPortsAsync();
 
             // Clear the OpenPorts collection
             OpenPorts.Clear();
 
-            StatusMessage = $"Closed {portCount} port(s) successfully";
+            StatusMessage = $"✅ Closed {portCount} port(s) successfully. Wait 1-2 seconds before reopening.";
             _logger.LogInformation("Batch closed {Count} ports", portCount);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Error closing ports: {ex.Message}";
+            StatusMessage = $"❌ Error closing ports: {ex.Message}. If ports won't reopen, restart the application.";
             _logger.LogError(ex, "Error during batch port close");
         }
     }
@@ -635,21 +664,27 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     {
         try
         {
+            StatusMessage = $"Closing port {portName}...";
+            _logger.LogInformation("User requested to close port {PortName}", portName);
+            
             // Stop file logging
             await _fileLoggerService.StopLoggingAsync(portName);
             
+            // Close the port with enhanced cleanup
             await _serialPortService.ClosePortAsync(portName);
+            
             var portVm = OpenPorts.FirstOrDefault(p => p.PortName == portName);
             if (portVm != null)
             {
                 OpenPorts.Remove(portVm);
             }
-            StatusMessage = $"Port {portName} closed";
-            _logger.LogInformation("Port {PortName} closed", portName);
+            
+            StatusMessage = $"✅ Port {portName} closed successfully. Wait 1-2 seconds before reopening.";
+            _logger.LogInformation("Port {PortName} closed successfully", portName);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Error closing port {portName}: {ex.Message}";
+            StatusMessage = $"❌ Error closing port {portName}: {ex.Message}. If port won't reopen, restart the application.";
             _logger.LogError(ex, "Error closing port {PortName}", portName);
         }
     }

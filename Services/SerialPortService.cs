@@ -137,7 +137,7 @@ public class SerialPortService : ISerialPortService, IDisposable
         {
             try
             {
-                _logger.LogInformation("Starting close sequence for port {PortName}", portName);
+                _logger.LogInformation("Starting ENHANCED close sequence for port {PortName}", portName);
                 
                 // Unsubscribe from events first to prevent callbacks during disposal
                 try
@@ -151,13 +151,13 @@ public class SerialPortService : ISerialPortService, IDisposable
                     _logger.LogWarning(ex, "Error unsubscribing from port {PortName} events", portName);
                 }
                 
-                // Close the port with enhanced cleanup
+                // Close the port with ENHANCED cleanup for incorrect baud rate scenarios
                 await portInstance.CloseAsync();
                 
                 RaisePortStateChanged(portName, ConnectionState.Connected, ConnectionState.Disconnected);
                 _logger.LogInformation("Port {PortName} closed successfully", portName);
                 
-                // Dispose the instance
+                // Dispose the instance with error handling
                 try
                 {
                     portInstance.Dispose();
@@ -168,17 +168,39 @@ public class SerialPortService : ISerialPortService, IDisposable
                     _logger.LogWarning(ex, "Error disposing port {PortName} instance", portName);
                 }
                 
-                // Critical: Wait longer for Windows to fully release the COM port handle
-                // Windows can take 500-1000ms to fully release serial port resources
-                await Task.Delay(500);
+                // CRITICAL: Extended wait for Windows to fully release the COM port handle
+                // When baud rate is incorrect, Windows needs MORE time to release resources
+                // Increased from 500ms to 800ms for stubborn ports
+                await Task.Delay(800);
+                
+                // Force garbage collection to ensure handle release
+                try
+                {
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect();
+                    _logger.LogDebug("Forced GC after closing port {PortName}", portName);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Error during forced GC for port {PortName}", portName);
+                }
+                
+                // Additional delay after GC
+                await Task.Delay(200);
                 
                 // Verify port is actually released by attempting to check its availability
                 try
                 {
                     var availablePorts = await GetAvailablePortsAsync();
                     var isAvailable = availablePorts.Contains(portName);
-                    _logger.LogInformation("Port {PortName} release verified: Available={IsAvailable}",
+                    _logger.LogInformation("✅ Port {PortName} release verified: Available={IsAvailable}",
                         portName, isAvailable);
+                    
+                    if (!isAvailable)
+                    {
+                        _logger.LogWarning("⚠️ Port {PortName} may still be locked by the system. Wait a moment before reopening.", portName);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -187,19 +209,32 @@ public class SerialPortService : ISerialPortService, IDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error closing port {PortName}", portName);
+                _logger.LogError(ex, "❌ CRITICAL error closing port {PortName}", portName);
                 
-                // Critical: Even on error, ensure we wait for OS cleanup
-                // This prevents the port from being stuck in a bad state
-                await Task.Delay(500);
+                // CRITICAL: Even on error, ensure EXTENDED wait for OS cleanup
+                // This is essential when baud rate was incorrect
+                await Task.Delay(1000); // Increased from 500ms to 1000ms
                 
-                // Try to force cleanup by triggering garbage collection
-                // This can help release unmanaged resources
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
+                // AGGRESSIVE cleanup by triggering multiple GC cycles
+                try
+                {
+                    for (int i = 0; i < 3; i++)
+                    {
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        await Task.Delay(100);
+                    }
+                    GC.Collect();
+                    
+                    _logger.LogWarning("⚠️ Performed AGGRESSIVE garbage collection after error closing port {PortName}", portName);
+                }
+                catch (Exception gcEx)
+                {
+                    _logger.LogError(gcEx, "Error during aggressive GC for port {PortName}", portName);
+                }
                 
-                _logger.LogWarning("Forced garbage collection after error closing port {PortName}", portName);
+                // Final delay to ensure cleanup
+                await Task.Delay(200);
             }
         }
         else
@@ -527,7 +562,7 @@ public class SerialPortService : ISerialPortService, IDisposable
 
                 try
                 {
-                    _logger.LogDebug("Starting close sequence for port {PortName}", Config.PortName);
+                    _logger.LogDebug("Starting ENHANCED close sequence for port {PortName}", Config.PortName);
                     
                     // Step 1: Unsubscribe from events first to prevent callbacks during disposal
                     try
@@ -541,7 +576,22 @@ public class SerialPortService : ISerialPortService, IDisposable
                         _logger.LogDebug(ex, "Error unsubscribing from events for port {PortName}", Config.PortName);
                     }
 
-                    // Step 2: Discard any buffered data to prevent blocking
+                    // Step 2: Abort any pending I/O operations
+                    try
+                    {
+                        if (port.IsOpen && port.BaseStream != null)
+                        {
+                            // Close the base stream to abort pending operations
+                            port.BaseStream.Close();
+                            _logger.LogDebug("Closed base stream for port {PortName}", Config.PortName);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Error closing base stream for port {PortName}", Config.PortName);
+                    }
+
+                    // Step 3: Discard any buffered data to prevent blocking
                     try
                     {
                         if (port.IsOpen)
@@ -556,11 +606,11 @@ public class SerialPortService : ISerialPortService, IDisposable
                         _logger.LogDebug(ex, "Error discarding buffers for port {PortName}", Config.PortName);
                     }
 
-                    // Step 3: Close the port if it's open with enhanced retry logic
+                    // Step 4: Close the port with AGGRESSIVE retry logic for incorrect baud rate scenarios
                     if (port.IsOpen)
                     {
                         int retryCount = 0;
-                        const int maxRetries = 5; // Increased from 3 to 5
+                        const int maxRetries = 10; // Increased to 10 for stubborn ports
                         bool closed = false;
                         
                         while (!closed && retryCount < maxRetries)
@@ -570,67 +620,107 @@ public class SerialPortService : ISerialPortService, IDisposable
                                 // Try to close the port
                                 port.Close();
                                 closed = true;
-                                _logger.LogDebug("Port {PortName} closed successfully on attempt {Attempt}",
+                                _logger.LogInformation("✅ Port {PortName} closed successfully on attempt {Attempt}",
                                     Config.PortName, retryCount + 1);
                             }
                             catch (UnauthorizedAccessException ex)
                             {
-                                // Port is locked by another process or thread
+                                // Port is locked - this is common with incorrect baud rate
                                 retryCount++;
-                                _logger.LogWarning(ex, "Port {PortName} is locked (attempt {Attempt}/{Max})",
+                                _logger.LogWarning(ex, "⚠️ Port {PortName} is LOCKED (attempt {Attempt}/{Max}) - likely due to incorrect baud rate",
                                     Config.PortName, retryCount, maxRetries);
                                 
                                 if (retryCount < maxRetries)
                                 {
-                                    // Wait longer between retries for locked ports
-                                    Thread.Sleep(200);
+                                    // Aggressive wait for locked ports
+                                    Thread.Sleep(300 + (retryCount * 50)); // Increasing delay
+                                    
+                                    // Try to force release by triggering GC
+                                    if (retryCount % 3 == 0)
+                                    {
+                                        GC.Collect();
+                                        GC.WaitForPendingFinalizers();
+                                        Thread.Sleep(100);
+                                    }
                                 }
                             }
                             catch (IOException ex)
                             {
-                                // I/O error during close
+                                // I/O error during close - common with bad baud rate
                                 retryCount++;
-                                _logger.LogWarning(ex, "I/O error closing port {PortName} (attempt {Attempt}/{Max})",
+                                _logger.LogWarning(ex, "⚠️ I/O error closing port {PortName} (attempt {Attempt}/{Max})",
                                     Config.PortName, retryCount, maxRetries);
                                 
                                 if (retryCount < maxRetries)
                                 {
-                                    Thread.Sleep(150);
+                                    Thread.Sleep(250 + (retryCount * 50));
+                                }
+                            }
+                            catch (InvalidOperationException ex)
+                            {
+                                // Port in invalid state - force close
+                                retryCount++;
+                                _logger.LogWarning(ex, "⚠️ Port {PortName} in invalid state (attempt {Attempt}/{Max})",
+                                    Config.PortName, retryCount, maxRetries);
+                                
+                                if (retryCount < maxRetries)
+                                {
+                                    Thread.Sleep(200);
                                 }
                             }
                             catch (Exception ex)
                             {
                                 retryCount++;
-                                _logger.LogWarning(ex, "Error closing port {PortName} (attempt {Attempt}/{Max})",
+                                _logger.LogWarning(ex, "⚠️ Unexpected error closing port {PortName} (attempt {Attempt}/{Max})",
                                     Config.PortName, retryCount, maxRetries);
                                 
                                 if (retryCount < maxRetries)
                                 {
-                                    Thread.Sleep(100);
+                                    Thread.Sleep(150 + (retryCount * 50));
                                 }
                             }
                         }
                         
                         if (!closed)
                         {
-                            _logger.LogError("Failed to close port {PortName} after {MaxRetries} attempts",
+                            _logger.LogError("❌ CRITICAL: Failed to close port {PortName} after {MaxRetries} attempts. Port may require system restart.",
                                 Config.PortName, maxRetries);
+                            
+                            // Last resort: Force garbage collection and wait
+                            _logger.LogWarning("Attempting FORCED cleanup for port {PortName}", Config.PortName);
+                            GC.Collect();
+                            GC.WaitForPendingFinalizers();
+                            GC.Collect();
+                            Thread.Sleep(500);
                         }
                     }
+                    else
+                    {
+                        _logger.LogDebug("Port {PortName} was already closed", Config.PortName);
+                    }
                     
-                    // Step 4: Critical delay - Give Windows time to release the COM port handle
-                    // Windows needs 200-300ms to fully release serial port resources
-                    Thread.Sleep(250);
+                    // Step 5: Extended delay for Windows to release COM port handle
+                    // CRITICAL for incorrect baud rate scenarios where port is in bad state
+                    Thread.Sleep(400); // Increased from 250ms to 400ms
                     
                     _logger.LogDebug("Port {PortName} close operations completed", Config.PortName);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Critical error during port {PortName} close operations", Config.PortName);
+                    _logger.LogError(ex, "❌ CRITICAL error during port {PortName} close operations", Config.PortName);
+                    
+                    // Even on critical error, try to force cleanup
+                    try
+                    {
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        Thread.Sleep(500);
+                    }
+                    catch { }
                 }
                 finally
                 {
-                    // Step 5: Always try to dispose, catching the known .NET SerialPort bug
+                    // Step 6: Always try to dispose, catching ALL exceptions
                     try
                     {
                         port.Dispose();
@@ -639,22 +729,34 @@ public class SerialPortService : ISerialPortService, IDisposable
                     catch (NullReferenceException)
                     {
                         // Known .NET bug in SerialPort.Dispose() - safe to ignore
-                        // The port resources are still released despite the exception
                         _logger.LogDebug("Caught known NullReferenceException in SerialPort.Dispose() for port {PortName}",
                             Config.PortName);
                     }
+                    catch (ObjectDisposedException)
+                    {
+                        // Already disposed - safe to ignore
+                        _logger.LogDebug("Port {PortName} was already disposed", Config.PortName);
+                    }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Error disposing port {PortName}", Config.PortName);
+                        _logger.LogWarning(ex, "⚠️ Error disposing port {PortName} - continuing cleanup", Config.PortName);
                     }
                     
-                    // Step 6: Final delay after disposal to ensure complete OS cleanup
-                    // This is critical for reliable port reopening
-                    Thread.Sleep(150);
+                    // Step 7: EXTENDED final delay after disposal for complete OS cleanup
+                    // This is CRITICAL for incorrect baud rate scenarios
+                    Thread.Sleep(300); // Increased from 150ms to 300ms
+                    
+                    // Step 8: Final garbage collection to ensure all handles are released
+                    try
+                    {
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                    catch { }
 
                     Statistics.DisconnectedAt = DateTime.Now;
                     
-                    _logger.LogInformation("Port {PortName} fully closed and resources released", Config.PortName);
+                    _logger.LogInformation("✅ Port {PortName} fully closed and resources released", Config.PortName);
                 }
             });
         }

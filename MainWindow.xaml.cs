@@ -263,6 +263,13 @@ public sealed partial class MainWindow : Window
         // When dropdown closes (after user may have selected an item)
         if (sender is ComboBox comboBox)
         {
+            // If user selected an item from history, add it to recent searches
+            var searchText = comboBox.Text?.Trim();
+            if (!string.IsNullOrWhiteSpace(searchText))
+            {
+                ViewModel.AddToRecentSearches(searchText);
+            }
+            
             // Clear the selection to prevent auto-selection behavior
             comboBox.SelectedIndex = -1;
             
@@ -297,6 +304,33 @@ public sealed partial class MainWindow : Window
             
             // Mark event as handled to prevent further processing
             e.Handled = true;
+        }
+    }
+    
+    private void DeleteSearchHistory_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button button && button.Tag is string searchText)
+        {
+            ViewModel.RemoveFromRecentSearches(searchText);
+        }
+    }
+    
+    private async void ClearSearchHistory_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "清空搜索历史",
+            Content = "确定要清空所有搜索历史记录吗？",
+            PrimaryButtonText = "确定",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close
+        };
+        
+        var result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.Primary)
+        {
+            ViewModel.ClearRecentSearches();
         }
     }
 

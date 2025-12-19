@@ -226,15 +226,58 @@
                 <StackPanel Grid.Row="0" Padding="8" Spacing="8" Margin="8,4,8,8">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <StackPanel Spacing="4">
-                            <ComboBox x:Name="SearchBox"
-                                     PlaceholderText="正则表达式搜索..."
-                                     IsEditable="True"
-                                     ItemsSource="{x:Bind ViewModel.RecentSearchTexts, Mode=OneWay}"
-                                     Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                     DropDownClosed="SearchBox_DropDownClosed"
-                                     LostFocus="SearchBox_LostFocus"
-                                     KeyDown="SearchBox_KeyDown"
-                                     Width="300"/>
+                            <Grid Width="300">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                
+                                <ComboBox x:Name="SearchBox"
+                                         Grid.Column="0"
+                                         PlaceholderText="正则表达式搜索..."
+                                         IsEditable="True"
+                                         Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         DropDownClosed="SearchBox_DropDownClosed"
+                                         LostFocus="SearchBox_LostFocus"
+                                         KeyDown="SearchBox_KeyDown"
+                                         HorizontalAlignment="Stretch">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="x:String">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                
+                                                <TextBlock Grid.Column="0"
+                                                          Text="{x:Bind}"
+                                                          VerticalAlignment="Center"
+                                                          Margin="0,0,8,0"/>
+                                                
+                                                <Button Grid.Column="1"
+                                                       Content="🗑️"
+                                                       FontSize="12"
+                                                       Padding="4,2"
+                                                       VerticalAlignment="Center"
+                                                       Click="DeleteSearchHistory_Click"
+                                                       Tag="{x:Bind}"
+                                                       ToolTipService.ToolTip="删除此历史记录"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                    <ComboBox.ItemsSource>
+                                        <Binding Path="ViewModel.RecentSearchTexts" Mode="OneWay"/>
+                                    </ComboBox.ItemsSource>
+                                </ComboBox>
+                                
+                                <Button Grid.Column="1"
+                                       Content="🗑️"
+                                       ToolTipService.ToolTip="清空搜索历史"
+                                       Click="ClearSearchHistory_Click"
+                                       Padding="8,4"
+                                       Margin="4,0,0,0"
+                                       VerticalAlignment="Center"/>
+                            </Grid>
                             
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <TextBlock x:Name="RegexErrorTextBlock"
