@@ -128,7 +128,7 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     private ObservableCollection<string> _recentSearchTexts = new();
 
     private string _searchText = string.Empty;
-    
+
     public string SearchText
     {
         get => _searchText;
@@ -138,7 +138,10 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
             {
                 // Validate regex pattern
                 ValidateSearchPattern();
-                
+
+                // Update clear button visibility
+                OnPropertyChanged(nameof(HasSearchText));
+
                 // Debounce filter updates to reduce UI thrashing
                 _filterDebounceTimer?.Dispose();
                 _filterDebounceTimer = new System.Threading.Timer(_ =>
@@ -148,6 +151,11 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
             }
         }
     }
+
+    /// <summary>
+    /// Gets whether there is search text (for clear button visibility)
+    /// </summary>
+    public bool HasSearchText => !string.IsNullOrEmpty(SearchText);
     
     /// <summary>
     /// Add a search text to recent history

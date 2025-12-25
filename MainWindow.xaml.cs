@@ -314,7 +314,16 @@ public sealed partial class MainWindow : Window
             ViewModel.RemoveFromRecentSearches(searchText);
         }
     }
-    
+
+    private void ClearSearchText_Click(object sender, RoutedEventArgs e)
+    {
+        // Clear the current search text
+        ViewModel.SearchText = string.Empty;
+
+        // Focus the search box for user convenience
+        SearchBox.Focus(FocusState.Programmatic);
+    }
+
     private async void ClearSearchHistory_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new ContentDialog

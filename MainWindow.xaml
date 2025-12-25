@@ -226,12 +226,13 @@
                 <StackPanel Grid.Row="0" Padding="8" Spacing="8" Margin="8,4,8,8">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <StackPanel Spacing="4">
-                            <Grid Width="300">
+                            <Grid Width="350">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                
+
                                 <ComboBox x:Name="SearchBox"
                                          Grid.Column="0"
                                          PlaceholderText="正则表达式搜索..."
@@ -248,12 +249,12 @@
                                                     <ColumnDefinition Width="*"/>
                                                     <ColumnDefinition Width="Auto"/>
                                                 </Grid.ColumnDefinitions>
-                                                
+
                                                 <TextBlock Grid.Column="0"
                                                           Text="{x:Bind}"
                                                           VerticalAlignment="Center"
                                                           Margin="0,0,8,0"/>
-                                                
+
                                                 <Button Grid.Column="1"
                                                        Content="🗑️"
                                                        FontSize="12"
@@ -269,8 +270,25 @@
                                         <Binding Path="ViewModel.RecentSearchTexts" Mode="OneWay"/>
                                     </ComboBox.ItemsSource>
                                 </ComboBox>
-                                
+
                                 <Button Grid.Column="1"
+                                       x:Name="ClearSearchTextButton"
+                                       Content="✕"
+                                       ToolTipService.ToolTip="清空当前搜索"
+                                       Click="ClearSearchText_Click"
+                                       Padding="8,4"
+                                       Margin="4,0,0,0"
+                                       VerticalAlignment="Center">
+                                    <Button.Visibility>
+                                        <Binding Path="ViewModel.HasSearchText" Mode="OneWay">
+                                            <Binding.Converter>
+                                                <StaticResource ResourceKey="BoolToVisibilityConverter"/>
+                                            </Binding.Converter>
+                                        </Binding>
+                                    </Button.Visibility>
+                                </Button>
+
+                                <Button Grid.Column="2"
                                        Content="🗑️"
                                        ToolTipService.ToolTip="清空搜索历史"
                                        Click="ClearSearchHistory_Click"
