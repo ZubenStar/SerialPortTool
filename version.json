@@ -1,7 +1,25 @@
 ﻿{
-    "version": "1.6.1",
+    "version": "1.6.2",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2025-12-25",
+            "version": "1.6.2",
+            "changes": [
+                "Enhanced search history functionality with improved UI and user experience",
+                "Added clear current search button (✕) that appears when there is text",
+                "Added individual delete buttons for each history item in dropdown",
+                "Added clear all search history button with confirmation dialog",
+                "Fixed issue where selecting history items would cause text to disappear",
+                "Fixed duplicate history save issues with debounce mechanism",
+                "Improved dropdown menu layout to prevent text truncation",
+                "Added StringToVisibilityConverter for dynamic UI element visibility",
+                "Optimized ComboBox event handling to prevent binding conflicts",
+                "Enhanced search box with better focus management and selection handling",
+                "Search history now correctly persists across application restarts",
+                "Added detailed debug logging for troubleshooting search functionality"
+            ]
+        },
         {
             "date": "2025-12-15",
             "version": "1.6.1",
