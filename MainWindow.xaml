@@ -237,15 +237,23 @@
                                          Grid.Column="0"
                                          PlaceholderText="正则表达式搜索..."
                                          IsEditable="True"
-                                         Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         Text="{x:Bind ViewModel.SearchText, Mode=TwoWay}"
                                          ItemsSource="{x:Bind ViewModel.RecentSearchTexts, Mode=OneWay}"
+                                         SelectionChanged="SearchBox_SelectionChanged"
                                          DropDownClosed="SearchBox_DropDownClosed"
                                          LostFocus="SearchBox_LostFocus"
                                          KeyDown="SearchBox_KeyDown"
-                                         HorizontalAlignment="Stretch">
+                                         HorizontalAlignment="Stretch"
+                                         MaxDropDownHeight="200">
+                                    <ComboBox.ItemContainerStyle>
+                                        <Style TargetType="ComboBoxItem">
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                            <Setter Property="MinWidth" Value="320"/>
+                                        </Style>
+                                    </ComboBox.ItemContainerStyle>
                                     <ComboBox.ItemTemplate>
                                         <DataTemplate x:DataType="x:String">
-                                            <Grid>
+                                            <Grid Margin="0,4" HorizontalAlignment="Stretch">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*"/>
                                                     <ColumnDefinition Width="Auto"/>
@@ -254,12 +262,16 @@
                                                 <TextBlock Grid.Column="0"
                                                           Text="{x:Bind}"
                                                           VerticalAlignment="Center"
-                                                          Margin="0,0,8,0"/>
+                                                          Margin="0,0,8,0"
+                                                          TextWrapping="NoWrap"
+                                                          TextTrimming="CharacterEllipsis"
+                                                          ToolTipService.ToolTip="{x:Bind}"/>
 
                                                 <Button Grid.Column="1"
                                                        Content="🗑️"
                                                        FontSize="12"
-                                                       Padding="4,2"
+                                                       Padding="6,4"
+                                                       MinWidth="28"
                                                        VerticalAlignment="Center"
                                                        Click="DeleteSearchHistory_Click"
                                                        Tag="{x:Bind}"

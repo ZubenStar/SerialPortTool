@@ -15,6 +15,13 @@ public sealed partial class MainWindow : Window
 {
     public MainViewModel ViewModel { get; }
 
+    // Flag to prevent duplicate history saves
+    private string _lastSavedSearchText = string.Empty;
+    private DateTime _lastSaveTime = DateTime.MinValue;
+
+    // Flag to track if current text is from selecting history
+    private bool _isFromHistorySelection = false;
+
     public MainWindow()
     {
         // IMPORTANT: Get ViewModel BEFORE InitializeComponent for x:Bind to work
@@ -279,16 +286,38 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void SearchBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // When user selects an item from the dropdown
+        if (sender is ComboBox comboBox && e.AddedItems.Count > 0 && e.AddedItems[0] is string selectedText)
+        {
+            System.Diagnostics.Debug.WriteLine($"SelectionChanged: Selected '{selectedText}'");
+
+            // Mark that this text is from selecting a history item
+            _isFromHistorySelection = true;
+
+            // Update ViewModel
+            ViewModel.SearchText = selectedText;
+
+            // Trigger filter
+            ViewModel.FilterLogs();
+        }
+    }
+
     private void SearchBox_DropDownClosed(object sender, object e)
     {
-        // When dropdown closes (after user may have selected an item)
+        // When dropdown closes
         if (sender is ComboBox comboBox)
         {
-            // Clear the selection to prevent auto-selection behavior
-            comboBox.SelectedIndex = -1;
+            System.Diagnostics.Debug.WriteLine($"DropDownClosed: Text='{comboBox.Text}'");
 
-            // The Text binding updates ViewModel.SearchText automatically
-            // Just trigger filter
+            // Ensure ViewModel has the current text
+            if (!string.IsNullOrWhiteSpace(comboBox.Text))
+            {
+                ViewModel.SearchText = comboBox.Text;
+            }
+
+            // Trigger filter
             ViewModel.FilterLogs();
         }
     }
@@ -298,15 +327,38 @@ public sealed partial class MainWindow : Window
         // When the ComboBox loses focus
         if (sender is ComboBox comboBox)
         {
-            // Save to history if there's text
-            var searchText = comboBox.Text?.Trim();
-            if (!string.IsNullOrWhiteSpace(searchText))
+            var searchText = comboBox.Text?.Trim() ?? string.Empty;
+            System.Diagnostics.Debug.WriteLine($"LostFocus: Text='{searchText}', IsFromHistorySelection={_isFromHistorySelection}");
+
+            // DON'T clear SelectedItem - this causes recursive LostFocus events
+            // Let the ComboBox manage it naturally
+
+            // If the text is from selecting a history item, don't add it again
+            if (_isFromHistorySelection)
             {
-                ViewModel.AddToRecentSearches(searchText);
+                System.Diagnostics.Debug.WriteLine($"Skipping save - text is from history selection");
+                _isFromHistorySelection = false; // Reset flag
+                _lastSavedSearchText = searchText; // Update last saved
+                _lastSaveTime = DateTime.Now;
+                return;
             }
 
-            // Ensure selection is cleared
-            comboBox.SelectedIndex = -1;
+            // Save to history if text is not empty
+            if (!string.IsNullOrWhiteSpace(searchText))
+            {
+                var timeSinceLastSave = DateTime.Now - _lastSaveTime;
+                if (searchText != _lastSavedSearchText || timeSinceLastSave.TotalSeconds > 1)
+                {
+                    ViewModel.AddToRecentSearches(searchText);
+                    _lastSavedSearchText = searchText;
+                    _lastSaveTime = DateTime.Now;
+                    System.Diagnostics.Debug.WriteLine($"Saved to history: '{searchText}'");
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine($"Skipped duplicate save: '{searchText}'");
+                }
+            }
         }
     }
 
@@ -315,16 +367,34 @@ public sealed partial class MainWindow : Window
         // When user presses Enter key
         if (e.Key == Windows.System.VirtualKey.Enter && sender is ComboBox comboBox)
         {
-            var searchText = comboBox.Text?.Trim();
+            var searchText = comboBox.Text?.Trim() ?? string.Empty;
+            System.Diagnostics.Debug.WriteLine($"KeyDown Enter: Text='{searchText}'");
 
-            // Add to recent searches if text is not empty
+            // Clear the history selection flag - this is manual input
+            _isFromHistorySelection = false;
+
             if (!string.IsNullOrWhiteSpace(searchText))
             {
-                ViewModel.AddToRecentSearches(searchText);
-            }
+                // Update ViewModel
+                ViewModel.SearchText = searchText;
 
-            // Trigger filter
-            ViewModel.FilterLogs();
+                // Add to recent searches (using debounce logic)
+                var timeSinceLastSave = DateTime.Now - _lastSaveTime;
+                if (searchText != _lastSavedSearchText || timeSinceLastSave.TotalSeconds > 1)
+                {
+                    ViewModel.AddToRecentSearches(searchText);
+                    _lastSavedSearchText = searchText;
+                    _lastSaveTime = DateTime.Now;
+                    System.Diagnostics.Debug.WriteLine($"Saved to history (Enter): '{searchText}'");
+                }
+
+                // Trigger filter
+                ViewModel.FilterLogs();
+
+                // Close dropdown and clear selection
+                comboBox.IsDropDownOpen = false;
+                comboBox.SelectedItem = null;
+            }
 
             // Mark event as handled to prevent further processing
             e.Handled = true;
