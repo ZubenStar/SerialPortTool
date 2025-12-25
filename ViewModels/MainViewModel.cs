@@ -162,25 +162,33 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     /// </summary>
     public void AddToRecentSearches(string searchText)
     {
+        _logger.LogInformation("AddToRecentSearches called with: '{SearchText}'", searchText);
+
         if (string.IsNullOrWhiteSpace(searchText))
+        {
+            _logger.LogDebug("Search text is empty, skipping");
             return;
-            
+        }
+
         // Remove if already exists
         if (RecentSearchTexts.Contains(searchText))
         {
+            _logger.LogDebug("Search text already exists, removing old entry");
             RecentSearchTexts.Remove(searchText);
         }
-        
+
         // Add to beginning
         RecentSearchTexts.Insert(0, searchText);
-        
+        _logger.LogInformation("Added search text to history. Total count: {Count}", RecentSearchTexts.Count);
+
         // Keep only last 5
         while (RecentSearchTexts.Count > 5)
         {
             RecentSearchTexts.RemoveAt(RecentSearchTexts.Count - 1);
         }
-        
+
         // Save to settings
+        _logger.LogDebug("Saving recent searches to settings");
         _ = SaveRecentSearchesAsync();
     }
     
@@ -217,27 +225,41 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         try
         {
             var searchHistory = string.Join("|", RecentSearchTexts);
+            _logger.LogInformation("Saving recent searches: '{SearchHistory}'", searchHistory);
             await _settingsService.SaveSettingAsync("RecentSearchTexts", searchHistory);
+            _logger.LogInformation("Successfully saved recent searches");
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to save recent search texts");
         }
     }
-    
+
     private async Task LoadRecentSearchesAsync()
     {
         try
         {
+            _logger.LogInformation("Loading recent searches from settings");
             var searchHistory = await _settingsService.LoadSettingAsync("RecentSearchTexts", string.Empty);
+            _logger.LogInformation("Loaded search history: '{SearchHistory}'", searchHistory);
+
             if (!string.IsNullOrEmpty(searchHistory))
             {
                 var searches = searchHistory.Split('|', StringSplitOptions.RemoveEmptyEntries);
+                _logger.LogInformation("Found {Count} search entries", searches.Length);
+
                 RecentSearchTexts.Clear();
                 foreach (var search in searches.Take(5))
                 {
                     RecentSearchTexts.Add(search);
+                    _logger.LogDebug("Added search to history: '{Search}'", search);
                 }
+
+                _logger.LogInformation("Loaded {Count} recent searches", RecentSearchTexts.Count);
+            }
+            else
+            {
+                _logger.LogInformation("No recent searches found in settings");
             }
         }
         catch (Exception ex)

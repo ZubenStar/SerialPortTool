@@ -17,42 +17,63 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
-        InitializeComponent();
-        
-        // Get ViewModel from DI container
+        // IMPORTANT: Get ViewModel BEFORE InitializeComponent for x:Bind to work
         ViewModel = App.Current.Services.GetRequiredService<MainViewModel>();
-        
+
+        InitializeComponent();
+
         // Set window properties
         Title = ViewModel.Title;
-        
+
         // Set window icon
         var iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "Images", "logo.ico");
         if (System.IO.File.Exists(iconPath))
         {
             this.AppWindow.SetIcon(iconPath);
         }
-        
+
         // Set window size
         var appWindow = this.AppWindow;
         if (appWindow != null)
         {
             appWindow.Resize(new Windows.Graphics.SizeInt32(1200, 800));
         }
-        
+
         // Auto-scroll support for ItemsRepeater
         ViewModel.DisplayLogs.CollectionChanged += DisplayLogs_CollectionChanged;
-        
+
         // Disable auto-scroll when user manually scrolls
         LogScrollViewer.ViewChanged += LogScrollViewer_ViewChanged;
-        
+
         // Subscribe to ViewModel property changes for match count
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
-        
+
         // Subscribe to baud rate suggestion events
         ViewModel.BaudRateSuggested += ViewModel_BaudRateSuggested;
-        
+
         // Initialize baud rate alert UI
         InitializeBaudRateAlert();
+
+        // Debug: Monitor search history changes
+        ViewModel.RecentSearchTexts.CollectionChanged += (s, e) =>
+        {
+            System.Diagnostics.Debug.WriteLine($"RecentSearchTexts changed: Action={e.Action}, Count={ViewModel.RecentSearchTexts.Count}");
+            if (e.NewItems != null)
+            {
+                foreach (var item in e.NewItems)
+                {
+                    System.Diagnostics.Debug.WriteLine($"  Added: {item}");
+                }
+            }
+
+            // Force ComboBox to refresh - this is a workaround for WinUI 3 binding issues
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                // Trigger a UI update by accessing the ItemsSource
+                var count = SearchBox.Items.Count;
+                System.Diagnostics.Debug.WriteLine($"ComboBox Items Count: {count}");
+            });
+        };
     }
     
     private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -263,45 +284,48 @@ public sealed partial class MainWindow : Window
         // When dropdown closes (after user may have selected an item)
         if (sender is ComboBox comboBox)
         {
-            // If user selected an item from history, add it to recent searches
-            var searchText = comboBox.Text?.Trim();
-            if (!string.IsNullOrWhiteSpace(searchText))
-            {
-                ViewModel.AddToRecentSearches(searchText);
-            }
-            
             // Clear the selection to prevent auto-selection behavior
             comboBox.SelectedIndex = -1;
-            
+
             // The Text binding updates ViewModel.SearchText automatically
             // Just trigger filter
             ViewModel.FilterLogs();
         }
     }
-    
+
     private void SearchBox_LostFocus(object sender, RoutedEventArgs e)
     {
         // When the ComboBox loses focus
         if (sender is ComboBox comboBox)
         {
+            // Save to history if there's text
+            var searchText = comboBox.Text?.Trim();
+            if (!string.IsNullOrWhiteSpace(searchText))
+            {
+                ViewModel.AddToRecentSearches(searchText);
+            }
+
             // Ensure selection is cleared
             comboBox.SelectedIndex = -1;
         }
     }
-    
+
     private void SearchBox_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
         // When user presses Enter key
         if (e.Key == Windows.System.VirtualKey.Enter && sender is ComboBox comboBox)
         {
             var searchText = comboBox.Text?.Trim();
-            
-            // Only add to recent searches if text is not empty
+
+            // Add to recent searches if text is not empty
             if (!string.IsNullOrWhiteSpace(searchText))
             {
                 ViewModel.AddToRecentSearches(searchText);
             }
-            
+
+            // Trigger filter
+            ViewModel.FilterLogs();
+
             // Mark event as handled to prevent further processing
             e.Handled = true;
         }

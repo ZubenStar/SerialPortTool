@@ -238,6 +238,7 @@
                                          PlaceholderText="正则表达式搜索..."
                                          IsEditable="True"
                                          Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         ItemsSource="{x:Bind ViewModel.RecentSearchTexts, Mode=OneWay}"
                                          DropDownClosed="SearchBox_DropDownClosed"
                                          LostFocus="SearchBox_LostFocus"
                                          KeyDown="SearchBox_KeyDown"
@@ -266,9 +267,6 @@
                                             </Grid>
                                         </DataTemplate>
                                     </ComboBox.ItemTemplate>
-                                    <ComboBox.ItemsSource>
-                                        <Binding Path="ViewModel.RecentSearchTexts" Mode="OneWay"/>
-                                    </ComboBox.ItemsSource>
                                 </ComboBox>
 
                                 <Button Grid.Column="1"
