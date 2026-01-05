@@ -168,10 +168,9 @@ public class SerialPortService : ISerialPortService, IDisposable
                     _logger.LogWarning(ex, "Error disposing port {PortName} instance", portName);
                 }
                 
-                // CRITICAL: Extended wait for Windows to fully release the COM port handle
-                // When baud rate is incorrect, Windows needs MORE time to release resources
-                // Increased from 500ms to 800ms for stubborn ports
-                await Task.Delay(800);
+                // Wait for Windows to release the COM port handle
+                // Reduced from 800ms to 200ms for better responsiveness
+                await Task.Delay(200);
                 
                 // Force garbage collection to ensure handle release
                 try
@@ -187,7 +186,7 @@ public class SerialPortService : ISerialPortService, IDisposable
                 }
                 
                 // Additional delay after GC
-                await Task.Delay(200);
+                await Task.Delay(100);
                 
                 // Verify port is actually released by attempting to check its availability
                 try
@@ -731,9 +730,9 @@ public class SerialPortService : ISerialPortService, IDisposable
                         _logger.LogDebug("Port {PortName} was already closed", Config.PortName);
                     }
                     
-                    // Step 5: Extended delay for Windows to release COM port handle
-                    // CRITICAL for incorrect baud rate scenarios where port is in bad state
-                    Thread.Sleep(400); // Increased from 250ms to 400ms
+                    // Step 5: Delay for Windows to release COM port handle
+                    // Reduced from 400ms to 100ms
+                    Thread.Sleep(100);
                     
                     _logger.LogDebug("Port {PortName} close operations completed", Config.PortName);
                 }
@@ -774,9 +773,9 @@ public class SerialPortService : ISerialPortService, IDisposable
                         _logger.LogWarning(ex, "⚠️ Error disposing port {PortName} - continuing cleanup", Config.PortName);
                     }
                     
-                    // Step 7: EXTENDED final delay after disposal for complete OS cleanup
-                    // This is CRITICAL for incorrect baud rate scenarios
-                    Thread.Sleep(300); // Increased from 150ms to 300ms
+                    // Step 7: Final delay after disposal
+                    // Reduced from 300ms to 100ms
+                    Thread.Sleep(100);
                     
                     // Step 8: Final garbage collection to ensure all handles are released
                     try
