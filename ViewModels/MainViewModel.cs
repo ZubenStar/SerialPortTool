@@ -905,6 +905,15 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 
                 try
                 {
+                    // Check if port is still active in UI to prevent residual logs from closed ports
+                    // This ensures that if a port was closed while updates were still in the dispatcher queue,
+                    // they won't be added to the global log collections.
+                    if (!OpenPorts.Any(p => p.PortName == portName))
+                    {
+                        _logger.LogDebug("Ignoring data update for closed port: {Port}", portName);
+                        return;
+                    }
+
                     // Batch add to AllLogs with error handling
                     try
                     {

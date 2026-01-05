@@ -508,6 +508,22 @@ public class SerialPortService : ISerialPortService, IDisposable
                     // Open the port
                     port.Open();
                     
+                    // CRITICAL: Discard any residual data in the buffers immediately after opening
+                    // This prevents "ghost" logs from previous sessions that might be stuck in the driver/OS
+                    try
+                    {
+                        if (port.IsOpen)
+                        {
+                            port.DiscardInBuffer();
+                            port.DiscardOutBuffer();
+                            _logger.LogDebug("Discarded residual buffers after opening port {PortName}", Config.PortName);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to discard buffers after opening port {PortName}", Config.PortName);
+                    }
+                    
                     // Only assign to field after successful open
                     _serialPort = port;
                     Statistics.ConnectedAt = DateTime.Now;
@@ -564,6 +580,22 @@ public class SerialPortService : ISerialPortService, IDisposable
                 {
                     _logger.LogDebug("Starting ENHANCED close sequence for port {PortName}", Config.PortName);
                     
+                    // Step 0: Flush any remaining data in the buffer before closing
+                    // This ensures that the last few logs are processed and not lost
+                    try
+                    {
+                        if (port.IsOpen && port.BytesToRead > 0)
+                        {
+                            _logger.LogInformation("Flushing {Count} bytes from {PortName} before closing",
+                                port.BytesToRead, Config.PortName);
+                            SerialPort_DataReceived(port, null!);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Error flushing buffer for port {PortName}", Config.PortName);
+                    }
+
                     // Step 1: Unsubscribe from events first to prevent callbacks during disposal
                     try
                     {
