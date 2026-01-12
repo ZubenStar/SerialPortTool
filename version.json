@@ -1,7 +1,18 @@
 ﻿{
-    "version": "1.6.2",
+    "version": "1.6.3",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-01-12",
+            "version": "1.6.3",
+            "changes": [
+                "Fixed custom baud rate not being applied correctly (added UpdateSourceTrigger=PropertyChanged)",
+                "Added save/restore functionality for custom baud rate settings",
+                "Fixed COM port close issue when using incorrect baud rate (added timeout and _isClosing flag)",
+                "Custom baud rate checkbox and value now persist across application restarts",
+                "Status message now displays the actual baud rate being used when opening ports"
+            ]
+        },
         {
             "date": "2025-12-25",
             "version": "1.6.2",

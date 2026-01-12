@@ -394,10 +394,13 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
 
     private async Task InitializeAsync()
     {
-        // Load saved baud rate
+        // Load saved baud rate settings
         BaudRate = await _settingsService.LoadSettingAsync("BaudRate", 3000000);
-        _logger.LogInformation("Loaded baud rate: {BaudRate}", BaudRate);
-        
+        UseCustomBaudRate = await _settingsService.LoadSettingAsync("UseCustomBaudRate", 0) == 1;
+        CustomBaudRate = await _settingsService.LoadSettingAsync("CustomBaudRate", string.Empty);
+        _logger.LogInformation("Loaded baud rate settings: BaudRate={BaudRate}, UseCustom={UseCustom}, CustomValue={CustomValue}",
+            BaudRate, UseCustomBaudRate, CustomBaudRate);
+
         // Load recent search texts
         await LoadRecentSearchesAsync();
 
@@ -458,12 +461,17 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 if (int.TryParse(CustomBaudRate, out int customRate) && customRate > 0)
                 {
                     baudRateToUse = customRate;
+                    _logger.LogInformation("Using custom baud rate: {BaudRate}", baudRateToUse);
                 }
                 else
                 {
                     StatusMessage = "Invalid custom baud rate";
                     return;
                 }
+            }
+            else
+            {
+                _logger.LogInformation("Using standard baud rate: {BaudRate}", baudRateToUse);
             }
 
             var config = new SerialPortConfig
@@ -480,20 +488,24 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
             {
                 // Start file logging
                 await _fileLoggerService.StartLoggingAsync(portName);
-                
+
                 var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue);
-                
+
                 // Initialize statistics display
                 var stats = _serialPortService.GetStatistics(portName);
                 portViewModel.UpdateStatistics(stats);
-                
+
                 OpenPorts.Add(portViewModel);
-                
-                // Save the baud rate for next time
+
+                // Save baud rate settings for next time
                 await _settingsService.SaveSettingAsync("BaudRate", BaudRate);
-                
-                StatusMessage = $"Port {portName} opened successfully. Log file: {_fileLoggerService.GetLogFilePath(portName)}";
-                _logger.LogInformation("Port {PortName} opened with logging", portName);
+                await _settingsService.SaveSettingAsync("UseCustomBaudRate", UseCustomBaudRate ? 1 : 0);
+                await _settingsService.SaveSettingAsync("CustomBaudRate", CustomBaudRate);
+                _logger.LogInformation("Saved baud rate settings: UseCustom={UseCustom}, CustomValue={CustomValue}",
+                    UseCustomBaudRate, CustomBaudRate);
+
+                StatusMessage = $"Port {portName} opened successfully (BaudRate: {baudRateToUse}). Log file: {_fileLoggerService.GetLogFilePath(portName)}";
+                _logger.LogInformation("Port {PortName} opened with baud rate {BaudRate}", portName, baudRateToUse);
             }
             else
             {
@@ -525,12 +537,17 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 if (int.TryParse(CustomBaudRate, out int customRate) && customRate > 0)
                 {
                     baudRateToUse = customRate;
+                    _logger.LogInformation("OpenAllPorts: Using custom baud rate: {BaudRate}", baudRateToUse);
                 }
                 else
                 {
                     StatusMessage = "Invalid custom baud rate";
                     return;
                 }
+            }
+            else
+            {
+                _logger.LogInformation("OpenAllPorts: Using standard baud rate: {BaudRate}", baudRateToUse);
             }
 
             var defaultConfig = new SerialPortConfig
@@ -549,7 +566,7 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 if (!OpenPorts.Any(p => p.PortName == portName))
                 {
                     await _fileLoggerService.StartLoggingAsync(portName);
-                    
+
                     var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue);
                     var stats = _serialPortService.GetStatistics(portName);
                     portViewModel.UpdateStatistics(stats);
@@ -557,11 +574,13 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 }
             }
 
-            StatusMessage = $"Opened {openedCount} port(s) successfully";
-            _logger.LogInformation("Batch opened {Count} ports", openedCount);
+            StatusMessage = $"Opened {openedCount} port(s) successfully (BaudRate: {baudRateToUse})";
+            _logger.LogInformation("Batch opened {Count} ports with baud rate {BaudRate}", openedCount, baudRateToUse);
 
-            // Save the baud rate for next time
+            // Save baud rate settings for next time
             await _settingsService.SaveSettingAsync("BaudRate", BaudRate);
+            await _settingsService.SaveSettingAsync("UseCustomBaudRate", UseCustomBaudRate ? 1 : 0);
+            await _settingsService.SaveSettingAsync("CustomBaudRate", CustomBaudRate);
         }
         catch (Exception ex)
         {

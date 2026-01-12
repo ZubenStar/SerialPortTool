@@ -61,7 +61,7 @@
                                       Unchecked="CustomBaudRateCheckBox_Changed"/>
                             <TextBox x:Name="CustomBaudRateTextBox"
                                      PlaceholderText="输入自定义波特率..."
-                                     Text="{x:Bind ViewModel.CustomBaudRate, Mode=TwoWay}"
+                                     Text="{x:Bind ViewModel.CustomBaudRate, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                      HorizontalAlignment="Stretch"
                                      InputScope="Number"
                                      Visibility="Collapsed"/>

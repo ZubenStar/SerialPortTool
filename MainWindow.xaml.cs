@@ -61,6 +61,9 @@ public sealed partial class MainWindow : Window
         // Initialize baud rate alert UI
         InitializeBaudRateAlert();
 
+        // Initialize custom baud rate UI based on saved settings
+        InitializeCustomBaudRateUI();
+
         // Debug: Monitor search history changes
         ViewModel.RecentSearchTexts.CollectionChanged += (s, e) =>
         {
@@ -81,6 +84,18 @@ public sealed partial class MainWindow : Window
                 System.Diagnostics.Debug.WriteLine($"ComboBox Items Count: {count}");
             });
         };
+    }
+
+    private void InitializeCustomBaudRateUI()
+    {
+        // Update UI based on UseCustomBaudRate setting after a short delay
+        // to allow ViewModel initialization to complete
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            bool useCustom = ViewModel.UseCustomBaudRate;
+            BaudRateComboBox.Visibility = useCustom ? Visibility.Collapsed : Visibility.Visible;
+            CustomBaudRateTextBox.Visibility = useCustom ? Visibility.Visible : Visibility.Collapsed;
+        });
     }
     
     private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
