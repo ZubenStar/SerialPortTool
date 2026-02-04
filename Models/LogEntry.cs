@@ -50,6 +50,12 @@ public partial class LogEntry : ObservableObject
     [ObservableProperty]
     private bool _isReceived = true;
 
+    /// <summary>
+    /// 显示颜色的十六进制值
+    /// </summary>
+    [ObservableProperty]
+    private string _colorHex = "#000000";
+
     // 缓存格式化文本以避免重复字符串分配
     private string? _cachedFormattedText;
 
@@ -62,7 +68,8 @@ public partial class LogEntry : ObservableObject
         {
             if (_cachedFormattedText == null)
             {
-                _cachedFormattedText = $"[{Timestamp:HH:mm:ss.fff}] [{PortName}] {Content}";
+                var direction = IsReceived ? "RX" : "TX";
+                _cachedFormattedText = $"[{Timestamp:HH:mm:ss.fff}] [{PortName}] [{direction}] {Content}";
             }
             return _cachedFormattedText;
         }
@@ -83,4 +90,5 @@ public partial class LogEntry : ObservableObject
     partial void OnContentChanged(string value) => _cachedFormattedText = null;
     partial void OnPortNameChanged(string value) => _cachedFormattedText = null;
     partial void OnTimestampChanged(DateTime value) => _cachedFormattedText = null;
+    partial void OnIsReceivedChanged(bool value) => _cachedFormattedText = null;
 }

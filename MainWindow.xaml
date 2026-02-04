@@ -4,10 +4,14 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:converters="using:SerialPortTool.Converters"
     mc:Ignorable="d"
     Title="{x:Bind ViewModel.Title, Mode=OneWay}">
 
     <Grid>
+        <Grid.Resources>
+            <converters:HexColorToBrushConverter x:Key="HexColorToBrushConverter"/>
+        </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -353,6 +357,7 @@
                             <DataTemplate>
                                 <!-- Larger font and better spacing for readability -->
                                 <TextBlock Text="{Binding FormattedText}"
+                                           Foreground="{Binding ColorHex, Converter={StaticResource HexColorToBrushConverter}}"
                                            FontFamily="Consolas"
                                            FontSize="14"
                                            TextWrapping="NoWrap"
@@ -368,9 +373,36 @@
                             Spacing="8"
                             Padding="8"
                             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
-                    <CheckBox x:Name="SendAsHexCheckBox"
-                              Content="十六进制发送"
-                              IsChecked="{x:Bind ViewModel.SendAsHex, Mode=TwoWay}"/>
+                    <StackPanel Orientation="Horizontal" Spacing="16">
+                        <CheckBox Content="十六进制发送"
+                                  IsChecked="{x:Bind ViewModel.SendAsHex, Mode=TwoWay}"/>
+                        <CheckBox Content="显示发送数据"
+                                  IsChecked="{x:Bind ViewModel.ShowSentData, Mode=TwoWay}"/>
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <TextBlock Text="TX颜色:" VerticalAlignment="Center"/>
+                            <ComboBox x:Name="TxColorComboBox"
+                                      SelectedValue="{x:Bind ViewModel.TxColorHex, Mode=TwoWay}"
+                                      SelectedValuePath="Tag"
+                                      Width="100">
+                                <ComboBoxItem Tag="#0078D4"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#0078D4" Margin="0,0,8,0"/><TextBlock Text="蓝色"/></StackPanel></ComboBoxItem>
+                                <ComboBoxItem Tag="#E74856"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#E74856" Margin="0,0,8,0"/><TextBlock Text="红色"/></StackPanel></ComboBoxItem>
+                                <ComboBoxItem Tag="#FF8C00"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#FF8C00" Margin="0,0,8,0"/><TextBlock Text="橙色"/></StackPanel></ComboBoxItem>
+                                <ComboBoxItem Tag="#881798"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#881798" Margin="0,0,8,0"/><TextBlock Text="紫色"/></StackPanel></ComboBoxItem>
+                            </ComboBox>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <TextBlock Text="RX颜色:" VerticalAlignment="Center"/>
+                            <ComboBox x:Name="RxColorComboBox"
+                                      SelectedValue="{x:Bind ViewModel.RxColorHex, Mode=TwoWay}"
+                                      SelectedValuePath="Tag"
+                                      Width="100">
+                                <ComboBoxItem Tag="#107C10"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#107C10" Margin="0,0,8,0"/><TextBlock Text="绿色"/></StackPanel></ComboBoxItem>
+                                <ComboBoxItem Tag="#0078D4"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#0078D4" Margin="0,0,8,0"/><TextBlock Text="蓝色"/></StackPanel></ComboBoxItem>
+                                <ComboBoxItem Tag="#767676"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#767676" Margin="0,0,8,0"/><TextBlock Text="灰色"/></StackPanel></ComboBoxItem>
+                                <ComboBoxItem Tag="#000000"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#000000" Margin="0,0,8,0"/><TextBlock Text="黑色"/></StackPanel></ComboBoxItem>
+                            </ComboBox>
+                        </StackPanel>
+                    </StackPanel>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>

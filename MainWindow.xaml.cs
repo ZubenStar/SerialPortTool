@@ -349,16 +349,21 @@ public sealed partial class MainWindow : Window
                 byteCount = System.Text.Encoding.UTF8.GetByteCount(sendText);
             }
 
-            // Create log entry and add to all collections
-            var logEntry = new Models.LogEntry
+            // Only add log if ShowSentData is enabled
+            if (ViewModel.ShowSentData)
             {
-                PortName = portVm.PortName,
-                Content = displayContent,
-                IsReceived = false
-            };
+                // Create log entry and add to all collections
+                var logEntry = new Models.LogEntry
+                {
+                    PortName = portVm.PortName,
+                    Content = displayContent,
+                    IsReceived = false,
+                    ColorHex = ViewModel.TxColorHex
+                };
 
-            ViewModel.AddSentLog(logEntry);
-            portVm.AddLog(logEntry);
+                ViewModel.AddSentLog(logEntry);
+                portVm.AddLog(logEntry);
+            }
 
             ViewModel.StatusMessage = $"已发送 {byteCount} 字节";
         }

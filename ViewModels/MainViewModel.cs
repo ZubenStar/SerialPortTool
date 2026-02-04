@@ -311,6 +311,15 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     [ObservableProperty]
     private string _sendText = string.Empty;
 
+    [ObservableProperty]
+    private bool _showSentData = true;
+
+    [ObservableProperty]
+    private string _txColorHex = "#0078D4"; // Blue for TX (sent)
+
+    [ObservableProperty]
+    private string _rxColorHex = "#107C10"; // Green for RX (received)
+
     partial void OnSendAsHexChanged(bool value)
     {
         _ = _settingsService.SaveSettingAsync("SendAsHex", value ? 1 : 0);
@@ -319,6 +328,21 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     partial void OnSendTextChanged(string value)
     {
         _ = _settingsService.SaveSettingAsync("SendText", value);
+    }
+
+    partial void OnShowSentDataChanged(bool value)
+    {
+        _ = _settingsService.SaveSettingAsync("ShowSentData", value ? 1 : 0);
+    }
+
+    partial void OnTxColorHexChanged(string value)
+    {
+        _ = _settingsService.SaveSettingAsync("TxColorHex", value);
+    }
+
+    partial void OnRxColorHexChanged(string value)
+    {
+        _ = _settingsService.SaveSettingAsync("RxColorHex", value);
     }
 
     private const int MaxDisplayLogs = 2000; // Increased limit with optimizations
@@ -417,6 +441,9 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         // Load send settings
         SendAsHex = await _settingsService.LoadSettingAsync("SendAsHex", 0) == 1;
         SendText = await _settingsService.LoadSettingAsync("SendText", string.Empty);
+        ShowSentData = await _settingsService.LoadSettingAsync("ShowSentData", 1) == 1;
+        TxColorHex = await _settingsService.LoadSettingAsync("TxColorHex", "#0078D4");
+        RxColorHex = await _settingsService.LoadSettingAsync("RxColorHex", "#107C10");
 
         // Load recent search texts
         await LoadRecentSearchesAsync();
@@ -906,7 +933,8 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                     PortName = portName,
                     Content = line,
                     Timestamp = now,
-                    IsReceived = true
+                    IsReceived = true,
+                    ColorHex = RxColorHex
                 };
                 
                 newLogs.Add(logEntry);
