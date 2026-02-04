@@ -285,11 +285,87 @@ public sealed partial class MainWindow : Window
 
     private async void SendButton_Click(object sender, RoutedEventArgs e)
     {
-        if (OpenPortListView.SelectedItem is ViewModels.PortViewModel portVm &&
-            !string.IsNullOrEmpty(SendTextBox.Text))
+        var sendText = SendTextBox.Text;
+        if (string.IsNullOrEmpty(sendText))
         {
-            await portVm.SendDataCommand.ExecuteAsync(null);
+            return;
+        }
+
+        // Try to get the selected port, or use the only open port if there's just one
+        ViewModels.PortViewModel? portVm = null;
+
+        if (OpenPortListView.SelectedItem is ViewModels.PortViewModel selectedPort)
+        {
+            portVm = selectedPort;
+        }
+        else if (ViewModel.OpenPorts.Count == 1)
+        {
+            portVm = ViewModel.OpenPorts[0];
+        }
+        else if (ViewModel.OpenPorts.Count == 0)
+        {
+            ViewModel.StatusMessage = "请先打开一个串口";
+            return;
+        }
+        else
+        {
+            ViewModel.StatusMessage = "请在已打开串口列表中选择一个串口";
+            return;
+        }
+
+        try
+        {
+            string displayContent;
+            int byteCount;
+
+            if (ViewModel.SendAsHex)
+            {
+                // Parse hex string to bytes
+                var hexString = sendText.Replace(" ", "").Replace("-", "").Replace("0x", "").Replace("0X", "");
+                if (hexString.Length % 2 != 0)
+                {
+                    ViewModel.StatusMessage = "十六进制格式错误：长度必须为偶数";
+                    return;
+                }
+
+                var bytes = new byte[hexString.Length / 2];
+                for (int i = 0; i < bytes.Length; i++)
+                {
+                    if (!byte.TryParse(hexString.Substring(i * 2, 2), System.Globalization.NumberStyles.HexNumber, null, out bytes[i]))
+                    {
+                        ViewModel.StatusMessage = $"十六进制格式错误：无效字符 '{hexString.Substring(i * 2, 2)}'";
+                        return;
+                    }
+                }
+
+                await ViewModel.SendDataAsync(portVm.PortName, bytes);
+                displayContent = $"[HEX] {BitConverter.ToString(bytes).Replace("-", " ")}";
+                byteCount = bytes.Length;
+            }
+            else
+            {
+                await ViewModel.SendTextAsync(portVm.PortName, sendText);
+                displayContent = sendText;
+                byteCount = System.Text.Encoding.UTF8.GetByteCount(sendText);
+            }
+
+            // Create log entry and add to all collections
+            var logEntry = new Models.LogEntry
+            {
+                PortName = portVm.PortName,
+                Content = displayContent,
+                IsReceived = false
+            };
+
+            ViewModel.AddSentLog(logEntry);
+            portVm.AddLog(logEntry);
+
             SendTextBox.Text = string.Empty;
+            ViewModel.StatusMessage = $"已发送 {byteCount} 字节";
+        }
+        catch (Exception ex)
+        {
+            ViewModel.StatusMessage = $"发送失败: {ex.Message}";
         }
     }
 

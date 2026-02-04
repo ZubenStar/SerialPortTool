@@ -305,6 +305,9 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     [ObservableProperty]
     private bool _autoScroll = true;
 
+    [ObservableProperty]
+    private bool _sendAsHex = false;
+
     private const int MaxDisplayLogs = 2000; // Increased limit with optimizations
     private const int BatchProcessSize = 50; // Process logs in batches
 
@@ -682,6 +685,22 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 DisplayLogs.Add(log);
             }
         }
+    }
+
+    public async Task SendDataAsync(string portName, byte[] data)
+    {
+        await _serialPortService.SendDataAsync(portName, data);
+    }
+
+    public async Task SendTextAsync(string portName, string text)
+    {
+        await _serialPortService.SendTextAsync(portName, text, Encoding.UTF8);
+    }
+
+    public void AddSentLog(LogEntry logEntry)
+    {
+        AllLogs.Add(logEntry);
+        DisplayLogs.Add(logEntry);
     }
 
     [RelayCommand]
@@ -1346,6 +1365,9 @@ public partial class PortViewModel : ObservableObject
     private string _sendText = string.Empty;
 
     [ObservableProperty]
+    private bool _sendAsHex = false;
+
+    [ObservableProperty]
     private string _statisticsDisplay = "0 bytes";
 
     private readonly DispatcherQueue? _dispatcherQueue;
@@ -1394,12 +1416,41 @@ public partial class PortViewModel : ObservableObject
 
         try
         {
-            await _serialPortService.SendTextAsync(PortName, SendText, Encoding.UTF8);
+            string displayContent;
+
+            if (SendAsHex)
+            {
+                // Parse hex string to bytes
+                var hexString = SendText.Replace(" ", "").Replace("-", "").Replace("0x", "").Replace("0X", "");
+                if (hexString.Length % 2 != 0)
+                {
+                    // Invalid hex string length
+                    return;
+                }
+
+                var bytes = new byte[hexString.Length / 2];
+                for (int i = 0; i < bytes.Length; i++)
+                {
+                    if (!byte.TryParse(hexString.Substring(i * 2, 2), System.Globalization.NumberStyles.HexNumber, null, out bytes[i]))
+                    {
+                        // Invalid hex character
+                        return;
+                    }
+                }
+
+                await _serialPortService.SendDataAsync(PortName, bytes);
+                displayContent = $"[HEX] {BitConverter.ToString(bytes).Replace("-", " ")}";
+            }
+            else
+            {
+                await _serialPortService.SendTextAsync(PortName, SendText, Encoding.UTF8);
+                displayContent = SendText;
+            }
 
             var logEntry = new LogEntry
             {
                 PortName = PortName,
-                Content = SendText,
+                Content = displayContent,
                 IsReceived = false
             };
 

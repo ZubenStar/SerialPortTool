@@ -368,17 +368,20 @@
                             Spacing="8"
                             Padding="8"
                             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                    <CheckBox x:Name="SendAsHexCheckBox"
+                              Content="十六进制发送"
+                              IsChecked="{x:Bind ViewModel.SendAsHex, Mode=TwoWay}"/>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        
+
                         <TextBox x:Name="SendTextBox"
                                  Grid.Column="0"
                                  PlaceholderText="输入要发送的数据..."
                                  Margin="0,0,8,0"/>
-                        
+
                         <Button Grid.Column="1"
                                 Content="发送"
                                 Style="{StaticResource AccentButtonStyle}"
