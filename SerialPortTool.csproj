@@ -16,13 +16,13 @@
     
     <!-- Version Information - Automatically read from version.json -->
     <!-- Default fallback version if not yet loaded -->
-    <Version Condition="'$(VersionFromJson)' == ''">1.6.1</Version>
+    <Version Condition="'$(VersionFromJson)' == ''">1.7.0</Version>
     <Version Condition="'$(VersionFromJson)' != ''">$(VersionFromJson)</Version>
-    <AssemblyVersion Condition="'$(VersionFromJson)' == ''">1.6.1.0</AssemblyVersion>
+    <AssemblyVersion Condition="'$(VersionFromJson)' == ''">1.7.0.0</AssemblyVersion>
     <AssemblyVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson).0</AssemblyVersion>
-    <FileVersion Condition="'$(VersionFromJson)' == ''">1.6.1.0</FileVersion>
+    <FileVersion Condition="'$(VersionFromJson)' == ''">1.7.0.0</FileVersion>
     <FileVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson).0</FileVersion>
-    <InformationalVersion Condition="'$(VersionFromJson)' == ''">1.6.1</InformationalVersion>
+    <InformationalVersion Condition="'$(VersionFromJson)' == ''">1.7.0</InformationalVersion>
     <InformationalVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson)</InformationalVersion>
     
     <!-- Publishing Configuration -->
@@ -60,12 +60,10 @@
   <Target Name="UpdateManifestVersion" BeforeTargets="BeforeBuild">
     <PropertyGroup>
       <ManifestPath>$(MSBuildProjectDirectory)\Package.appxmanifest</ManifestPath>
-      <ManifestContent>$([System.IO.File]::ReadAllText('$(ManifestPath)'))</ManifestContent>
-      <!-- Replace version in manifest with version from JSON (add .0 for 4-part version) -->
-      <UpdatedManifestContent>$([System.Text.RegularExpressions.Regex]::Replace($(ManifestContent), 'Version="[\d\.]+"', 'Version="$(VersionFromJson).0"'))</UpdatedManifestContent>
     </PropertyGroup>
-    <WriteLinesToFile File="$(ManifestPath)" Lines="$(UpdatedManifestContent)" Overwrite="true" Encoding="UTF-8" />
-    <Message Text="Updated Package.appxmanifest version to $(VersionFromJson).0" Importance="high" />
+    <!-- Use PowerShell script to safely update only the Identity Version -->
+    <Exec Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\scripts\update-manifest-version.ps1&quot; -ManifestPath &quot;$(ManifestPath)&quot; -Version &quot;$(VersionFromJson).0&quot;" />
+    <Message Text="Updated Package.appxmanifest Identity version to $(VersionFromJson).0" Importance="high" />
   </Target>
   
   <!-- Target to read version from version.json at evaluation time -->

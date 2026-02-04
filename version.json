@@ -1,7 +1,18 @@
 ﻿{
-    "version": "1.6.3",
+    "version": "1.7.0",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-02-04",
+            "version": "1.7.0",
+            "changes": [
+                "Added per-port color customization for visual distinction of multiple COM ports",
+                "Each port automatically gets a unique color from a 10-color palette when opened",
+                "Added color picker dropdown in open ports list to manually change port colors",
+                "Log entries now display in their port's assigned color for easy identification",
+                "Moved HexColorToBrushConverter to application resources for global accessibility"
+            ]
+        },
         {
             "date": "2026-01-12",
             "version": "1.6.3",
