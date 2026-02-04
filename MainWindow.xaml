@@ -9,9 +9,6 @@
     Title="{x:Bind ViewModel.Title, Mode=OneWay}">
 
     <Grid>
-        <Grid.Resources>
-            <converters:HexColorToBrushConverter x:Key="HexColorToBrushConverter"/>
-        </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -145,24 +142,29 @@
                                         </Grid.ColumnDefinitions>
 
                                         <!-- 颜色指示器和选择器 -->
-                                        <ComboBox Grid.Column="0"
-                                                  SelectedValue="{Binding ColorHex, Mode=TwoWay}"
-                                                  SelectedValuePath="Tag"
-                                                  Width="50"
-                                                  Margin="0,0,8,0"
-                                                  VerticalAlignment="Center"
-                                                  ToolTipService.ToolTip="选择端口颜色">
-                                            <ComboBoxItem Tag="#107C10"><Rectangle Width="16" Height="16" Fill="#107C10"/></ComboBoxItem>
-                                            <ComboBoxItem Tag="#0078D4"><Rectangle Width="16" Height="16" Fill="#0078D4"/></ComboBoxItem>
-                                            <ComboBoxItem Tag="#E74856"><Rectangle Width="16" Height="16" Fill="#E74856"/></ComboBoxItem>
-                                            <ComboBoxItem Tag="#FF8C00"><Rectangle Width="16" Height="16" Fill="#FF8C00"/></ComboBoxItem>
-                                            <ComboBoxItem Tag="#881798"><Rectangle Width="16" Height="16" Fill="#881798"/></ComboBoxItem>
-                                            <ComboBoxItem Tag="#00B7C3"><Rectangle Width="16" Height="16" Fill="#00B7C3"/></ComboBoxItem>
-                                            <ComboBoxItem Tag="#C239B3"><Rectangle Width="16" Height="16" Fill="#C239B3"/></ComboBoxItem>
-                                            <ComboBoxItem Tag="#498205"><Rectangle Width="16" Height="16" Fill="#498205"/></ComboBoxItem>
-                                            <ComboBoxItem Tag="#8764B8"><Rectangle Width="16" Height="16" Fill="#8764B8"/></ComboBoxItem>
-                                            <ComboBoxItem Tag="#CA5010"><Rectangle Width="16" Height="16" Fill="#CA5010"/></ComboBoxItem>
-                                        </ComboBox>
+                                        <DropDownButton Grid.Column="0"
+                                                        Margin="0,0,8,0"
+                                                        Padding="4"
+                                                        VerticalAlignment="Center"
+                                                        ToolTipService.ToolTip="选择端口颜色">
+                                            <Border Width="20" Height="20"
+                                                    CornerRadius="2"
+                                                    Background="{Binding ColorHex, Converter={StaticResource HexColorToBrushConverter}}"/>
+                                            <DropDownButton.Flyout>
+                                                <MenuFlyout Placement="Bottom">
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#107C10"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#107C10"/></MenuFlyoutItem.Icon>绿色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#0078D4"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#0078D4"/></MenuFlyoutItem.Icon>蓝色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#E74856"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#E74856"/></MenuFlyoutItem.Icon>红色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#FF8C00"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#FF8C00"/></MenuFlyoutItem.Icon>橙色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#881798"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#881798"/></MenuFlyoutItem.Icon>紫色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#00B7C3"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#00B7C3"/></MenuFlyoutItem.Icon>青色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#C239B3"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#C239B3"/></MenuFlyoutItem.Icon>粉色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#498205"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#498205"/></MenuFlyoutItem.Icon>橄榄绿</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#8764B8"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#8764B8"/></MenuFlyoutItem.Icon>淡紫</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#CA5010"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#CA5010"/></MenuFlyoutItem.Icon>棕橙</MenuFlyoutItem>
+                                                </MenuFlyout>
+                                            </DropDownButton.Flyout>
+                                        </DropDownButton>
 
                                         <StackPanel Grid.Column="1" Spacing="4">
                                             <TextBlock Text="{Binding PortName}"

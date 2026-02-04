@@ -647,6 +647,49 @@ public sealed partial class MainWindow : Window
         HideBaudRateAlert();
         ViewModel.StatusMessage = "已忽略波特率建议";
     }
-    
+
+    #endregion
+
+    #region Port Color Selection
+
+    private void PortColorMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuFlyoutItem menuItem && menuItem.Tag is string colorHex)
+        {
+            // Try to get the PortViewModel from the DataContext
+            // The DataContext should be inherited from the ListViewItem -> DropDownButton
+            ViewModels.PortViewModel? portVm = null;
+
+            // Method 1: Check if DataContext is directly available
+            if (menuItem.DataContext is ViewModels.PortViewModel vm)
+            {
+                portVm = vm;
+            }
+            // Method 2: Navigate through the MenuFlyout's Target
+            else if (menuItem.Parent is MenuFlyout flyout && flyout.Target is FrameworkElement target)
+            {
+                if (target.DataContext is ViewModels.PortViewModel targetVm)
+                {
+                    portVm = targetVm;
+                }
+            }
+            // Method 3: Use the selected item in the ListView as fallback
+            else if (OpenPortListView.SelectedItem is ViewModels.PortViewModel selectedVm)
+            {
+                portVm = selectedVm;
+            }
+
+            if (portVm != null)
+            {
+                portVm.ColorHex = colorHex;
+                System.Diagnostics.Debug.WriteLine($"Changed {portVm.PortName} color to {colorHex}");
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine($"Could not find PortViewModel to change color");
+            }
+        }
+    }
+
     #endregion
 }
