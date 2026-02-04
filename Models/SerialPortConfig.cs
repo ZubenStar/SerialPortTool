@@ -53,6 +53,11 @@ public class SerialPortConfig
     public int WriteTimeout { get; set; } = 500;
 
     /// <summary>
+    /// 端口显示颜色 (十六进制)
+    /// </summary>
+    public string ColorHex { get; set; } = "#107C10";
+
+    /// <summary>
     /// 克隆配置
     /// </summary>
     public SerialPortConfig Clone()
@@ -67,7 +72,8 @@ public class SerialPortConfig
             AutoReconnect = AutoReconnect,
             ReconnectInterval = ReconnectInterval,
             ReadTimeout = ReadTimeout,
-            WriteTimeout = WriteTimeout
+            WriteTimeout = WriteTimeout,
+            ColorHex = ColorHex
         };
     }
 }

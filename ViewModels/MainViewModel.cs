@@ -320,6 +320,47 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     [ObservableProperty]
     private string _rxColorHex = "#107C10"; // Green for RX (received)
 
+    /// <summary>
+    /// 端口颜色调色板 - 用于自动分配不同颜色给不同串口
+    /// </summary>
+    public static readonly string[] PortColorPalette = new[]
+    {
+        "#107C10", // 绿色
+        "#0078D4", // 蓝色
+        "#E74856", // 红色
+        "#FF8C00", // 橙色
+        "#881798", // 紫色
+        "#00B7C3", // 青色
+        "#C239B3", // 粉色
+        "#498205", // 橄榄绿
+        "#8764B8", // 淡紫
+        "#CA5010", // 棕橙
+    };
+
+    /// <summary>
+    /// 获取下一个可用的端口颜色
+    /// </summary>
+    private string GetNextPortColor()
+    {
+        var usedColors = OpenPorts.Select(p => p.ColorHex).ToHashSet();
+        foreach (var color in PortColorPalette)
+        {
+            if (!usedColors.Contains(color))
+                return color;
+        }
+        // 如果所有颜色都用完了，从头开始循环
+        return PortColorPalette[OpenPorts.Count % PortColorPalette.Length];
+    }
+
+    /// <summary>
+    /// 获取指定端口的颜色
+    /// </summary>
+    public string GetPortColor(string portName)
+    {
+        var port = OpenPorts.FirstOrDefault(p => p.PortName == portName);
+        return port?.ColorHex ?? RxColorHex;
+    }
+
     partial void OnSendAsHexChanged(bool value)
     {
         _ = _settingsService.SaveSettingAsync("SendAsHex", value ? 1 : 0);
@@ -533,7 +574,12 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 // Start file logging
                 await _fileLoggerService.StartLoggingAsync(portName);
 
-                var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue);
+                // 分配端口颜色
+                var portColor = GetNextPortColor();
+                var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue)
+                {
+                    ColorHex = portColor
+                };
 
                 // Initialize statistics display
                 var stats = _serialPortService.GetStatistics(portName);
@@ -611,7 +657,12 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 {
                     await _fileLoggerService.StartLoggingAsync(portName);
 
-                    var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue);
+                    // 分配端口颜色
+                    var portColor = GetNextPortColor();
+                    var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue)
+                    {
+                        ColorHex = portColor
+                    };
                     var stats = _serialPortService.GetStatistics(portName);
                     portViewModel.UpdateStatistics(stats);
                     OpenPorts.Add(portViewModel);
@@ -864,7 +915,10 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
             }
             
             var portName = e.PortName;
-            
+
+            // 获取端口颜色
+            var portColor = GetPortColor(portName);
+
             _logger.LogTrace("Decoded text: Length={Length} chars, Port={Port}", text.Length, portName);
             
             // Build log entries on background thread with optimized string operations
@@ -934,7 +988,7 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                     Content = line,
                     Timestamp = now,
                     IsReceived = true,
-                    ColorHex = RxColorHex
+                    ColorHex = portColor
                 };
                 
                 newLogs.Add(logEntry);
@@ -1396,6 +1450,9 @@ public partial class PortViewModel : ObservableObject
 
     [ObservableProperty]
     private string _portName = string.Empty;
+
+    [ObservableProperty]
+    private string _colorHex = "#107C10";
 
     [ObservableProperty]
     private ObservableCollection<LogEntry> _logs = new();
