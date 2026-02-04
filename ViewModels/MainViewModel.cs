@@ -308,6 +308,19 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     [ObservableProperty]
     private bool _sendAsHex = false;
 
+    [ObservableProperty]
+    private string _sendText = string.Empty;
+
+    partial void OnSendAsHexChanged(bool value)
+    {
+        _ = _settingsService.SaveSettingAsync("SendAsHex", value ? 1 : 0);
+    }
+
+    partial void OnSendTextChanged(string value)
+    {
+        _ = _settingsService.SaveSettingAsync("SendText", value);
+    }
+
     private const int MaxDisplayLogs = 2000; // Increased limit with optimizations
     private const int BatchProcessSize = 50; // Process logs in batches
 
@@ -316,9 +329,6 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
 
     [ObservableProperty]
     private bool _isScanning = false;
-
-    [ObservableProperty]
-    private string _sendText = string.Empty;
 
     // Port configuration properties
     [ObservableProperty]
@@ -403,6 +413,10 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         CustomBaudRate = await _settingsService.LoadSettingAsync("CustomBaudRate", string.Empty);
         _logger.LogInformation("Loaded baud rate settings: BaudRate={BaudRate}, UseCustom={UseCustom}, CustomValue={CustomValue}",
             BaudRate, UseCustomBaudRate, CustomBaudRate);
+
+        // Load send settings
+        SendAsHex = await _settingsService.LoadSettingAsync("SendAsHex", 0) == 1;
+        SendText = await _settingsService.LoadSettingAsync("SendText", string.Empty);
 
         // Load recent search texts
         await LoadRecentSearchesAsync();
@@ -1362,12 +1376,6 @@ public partial class PortViewModel : ObservableObject
     private ObservableCollection<LogEntry> _filteredLogs = new();
 
     [ObservableProperty]
-    private string _sendText = string.Empty;
-
-    [ObservableProperty]
-    private bool _sendAsHex = false;
-
-    [ObservableProperty]
     private string _statisticsDisplay = "0 bytes";
 
     private readonly DispatcherQueue? _dispatcherQueue;
@@ -1408,61 +1416,6 @@ public partial class PortViewModel : ObservableObject
             FilteredLogs.RemoveAt(0);
         }
     }
-
-    [RelayCommand]
-    private async Task SendDataAsync()
-    {
-        if (string.IsNullOrEmpty(SendText)) return;
-
-        try
-        {
-            string displayContent;
-
-            if (SendAsHex)
-            {
-                // Parse hex string to bytes
-                var hexString = SendText.Replace(" ", "").Replace("-", "").Replace("0x", "").Replace("0X", "");
-                if (hexString.Length % 2 != 0)
-                {
-                    // Invalid hex string length
-                    return;
-                }
-
-                var bytes = new byte[hexString.Length / 2];
-                for (int i = 0; i < bytes.Length; i++)
-                {
-                    if (!byte.TryParse(hexString.Substring(i * 2, 2), System.Globalization.NumberStyles.HexNumber, null, out bytes[i]))
-                    {
-                        // Invalid hex character
-                        return;
-                    }
-                }
-
-                await _serialPortService.SendDataAsync(PortName, bytes);
-                displayContent = $"[HEX] {BitConverter.ToString(bytes).Replace("-", " ")}";
-            }
-            else
-            {
-                await _serialPortService.SendTextAsync(PortName, SendText, Encoding.UTF8);
-                displayContent = SendText;
-            }
-
-            var logEntry = new LogEntry
-            {
-                PortName = PortName,
-                Content = displayContent,
-                IsReceived = false
-            };
-
-            AddLog(logEntry);
-            SendText = string.Empty;
-        }
-        catch (Exception)
-        {
-            // Error will be handled by the service
-        }
-    }
-
 }
 
 /// <summary>

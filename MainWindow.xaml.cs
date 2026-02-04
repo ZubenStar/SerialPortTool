@@ -285,7 +285,7 @@ public sealed partial class MainWindow : Window
 
     private async void SendButton_Click(object sender, RoutedEventArgs e)
     {
-        var sendText = SendTextBox.Text;
+        var sendText = ViewModel.SendText;
         if (string.IsNullOrEmpty(sendText))
         {
             return;
@@ -360,7 +360,6 @@ public sealed partial class MainWindow : Window
             ViewModel.AddSentLog(logEntry);
             portVm.AddLog(logEntry);
 
-            SendTextBox.Text = string.Empty;
             ViewModel.StatusMessage = $"已发送 {byteCount} 字节";
         }
         catch (Exception ex)

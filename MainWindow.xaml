@@ -379,6 +379,7 @@
 
                         <TextBox x:Name="SendTextBox"
                                  Grid.Column="0"
+                                 Text="{x:Bind ViewModel.SendText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                  PlaceholderText="输入要发送的数据..."
                                  Margin="0,0,8,0"/>
 
