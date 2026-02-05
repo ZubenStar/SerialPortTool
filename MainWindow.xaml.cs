@@ -148,20 +148,20 @@ public sealed partial class MainWindow : Window
     private void DisplayLogs_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
         // Auto-scroll when new logs are added
-        if (ViewModel.AutoScroll && e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)
+        if (ViewModel?.AutoScroll == true && e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)
         {
             // Ensure LogScrollViewer is loaded before attempting to scroll
             if (LogScrollViewer == null)
                 return;
-                
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+
+            DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
                 try
                 {
                     // Double-check in case it's still null on the dispatcher thread
                     if (LogScrollViewer == null)
                         return;
-                        
+
                     _isAutoScrolling = true;
                     // Small delay to ensure layout is updated
                     LogScrollViewer.UpdateLayout();
@@ -682,6 +682,7 @@ public sealed partial class MainWindow : Window
             if (portVm != null)
             {
                 portVm.ColorHex = colorHex;
+                ViewModel.SavePortColor(portVm.PortName, colorHex);
                 System.Diagnostics.Debug.WriteLine($"Changed {portVm.PortName} color to {colorHex}");
             }
             else

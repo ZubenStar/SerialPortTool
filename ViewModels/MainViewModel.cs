@@ -353,6 +353,27 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     }
 
     /// <summary>
+    /// 获取端口的保存颜色，如果没有保存过则分配新颜色
+    /// </summary>
+    private async Task<string> GetOrAssignPortColorAsync(string portName)
+    {
+        var savedColor = await _settingsService.LoadSettingAsync($"PortColor_{portName}", string.Empty);
+        if (!string.IsNullOrEmpty(savedColor))
+        {
+            return savedColor;
+        }
+        return GetNextPortColor();
+    }
+
+    /// <summary>
+    /// 保存端口颜色设置
+    /// </summary>
+    public void SavePortColor(string portName, string colorHex)
+    {
+        _ = _settingsService.SaveSettingAsync($"PortColor_{portName}", colorHex);
+    }
+
+    /// <summary>
     /// 获取指定端口的颜色
     /// </summary>
     public string GetPortColor(string portName)
@@ -574,8 +595,8 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 // Start file logging
                 await _fileLoggerService.StartLoggingAsync(portName);
 
-                // 分配端口颜色
-                var portColor = GetNextPortColor();
+                // 分配端口颜色（优先使用保存的颜色）
+                var portColor = await GetOrAssignPortColorAsync(portName);
                 var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue)
                 {
                     ColorHex = portColor
@@ -587,7 +608,8 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
 
                 OpenPorts.Add(portViewModel);
 
-                // Save baud rate settings for next time
+                // Save port color and baud rate settings for next time
+                SavePortColor(portName, portColor);
                 await _settingsService.SaveSettingAsync("BaudRate", BaudRate);
                 await _settingsService.SaveSettingAsync("UseCustomBaudRate", UseCustomBaudRate ? 1 : 0);
                 await _settingsService.SaveSettingAsync("CustomBaudRate", CustomBaudRate);
@@ -657,8 +679,8 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 {
                     await _fileLoggerService.StartLoggingAsync(portName);
 
-                    // 分配端口颜色
-                    var portColor = GetNextPortColor();
+                    // 分配端口颜色（优先使用保存的颜色）
+                    var portColor = await GetOrAssignPortColorAsync(portName);
                     var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue)
                     {
                         ColorHex = portColor
@@ -666,6 +688,9 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                     var stats = _serialPortService.GetStatistics(portName);
                     portViewModel.UpdateStatistics(stats);
                     OpenPorts.Add(portViewModel);
+
+                    // 保存端口颜色
+                    SavePortColor(portName, portColor);
                 }
             }
 
