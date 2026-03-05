@@ -9,8 +9,8 @@ param(
 # Read the manifest content
 $content = Get-Content $ManifestPath -Raw -Encoding UTF8
 
-# Update only the Identity Version attribute (not TargetDeviceFamily MinVersion)
-$pattern = '(<Identity[^>]*Version=")[^"]+(")'
+# Update only the Identity Version attribute using a more precise pattern
+$pattern = '(<Identity\s[^>]*\bVersion=")[^"]+(")'
 $replacement = "`$1$Version`$2"
 $content = $content -replace $pattern, $replacement
 

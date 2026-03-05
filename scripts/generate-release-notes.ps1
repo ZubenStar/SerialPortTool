@@ -62,7 +62,6 @@ $($changelog.changes | ForEach-Object { "- $_" } | Out-String)
 
 Choose the appropriate package for your system:
 - **x64**: For standard 64-bit Windows PCs
-- **ARM64**: For ARM-based Windows devices (Surface Pro X, etc.)
 
 Each package is self-contained and requires no additional dependencies.
 
@@ -79,7 +78,7 @@ Each package is self-contained and requires no additional dependencies.
 
 ---
 
-**Full Changelog**: https://github.com/YOUR_USERNAME/SerialPortTool/compare/v$Version...HEAD
+**Full Changelog**: https://github.com/ZubenStar/SerialPortTool/compare/v$Version...HEAD
 "@
 
 # Save to file

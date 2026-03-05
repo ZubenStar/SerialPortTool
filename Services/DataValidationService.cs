@@ -25,9 +25,9 @@ public class DataValidationService : IDataValidationService
     private const double GarbageDataThreshold = 0.8;
     
     // 正则表达式模式
-    private readonly Regex _printableCharRegex = new(@"^[\x20-\x7E\r\n\t]*$", RegexOptions.Compiled);
-    private readonly Regex _commonProtocolRegex = new(@"^(AT|OK|ERROR|READY|[\d\w\s.,!?@#$%^&*()_+=\-\[\]{};:'""<>\\/|`~\r\n\t])*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private readonly Regex _hexPatternRegex = new(@"^[0-9A-Fa-f\s\r\n]*$", RegexOptions.Compiled);
+    private readonly Regex _printableCharRegex = new(@"^[\x20-\x7E\r\n\t]*$", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
+    private readonly Regex _commonProtocolRegex = new(@"^(AT|OK|ERROR|READY|[\d\w\s.,!?@#$%^&*()_+=\-\[\]{};:'""<>\\/|`~\r\n\t])*$", RegexOptions.Compiled | RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
+    private readonly Regex _hexPatternRegex = new(@"^[0-9A-Fa-f\s\r\n]*$", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
 
     public DataValidationService(ILogger<DataValidationService> logger)
     {

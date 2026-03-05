@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -90,7 +91,17 @@ public class FileLoggerService : IFileLoggerService, IDisposable
     {
         foreach (var logger in _loggers.Values)
         {
-            logger.DisposeAsync().AsTask().Wait();
+            try
+            {
+                if (!logger.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2)))
+                {
+                    _logger.LogWarning("FileLogger dispose timed out");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error disposing file logger");
+            }
         }
         _loggers.Clear();
     }
@@ -116,9 +127,11 @@ public class FileLoggerService : IFileLoggerService, IDisposable
         {
             _logger = logger;
             
-            // Create log file with timestamp
+            // Create log file with timestamp - sanitize port name to prevent path traversal
+            var safePortName = string.Concat(portName.Where(c => char.IsLetterOrDigit(c) || c == '-' || c == '_'));
+            if (string.IsNullOrEmpty(safePortName)) safePortName = "unknown";
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var fileName = $"{portName}_{timestamp}.log";
+            var fileName = $"{safePortName}_{timestamp}.log";
             LogFilePath = Path.Combine(logDirectory, fileName);
 
             // Create StreamWriter with UTF-8 encoding and larger buffer

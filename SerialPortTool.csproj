@@ -13,9 +13,17 @@
     <Nullable>enable</Nullable>
     <LangVersion>12</LangVersion>
     <ApplicationIcon>Assets\Images\logo.ico</ApplicationIcon>
-    
+  </PropertyGroup>
+
+  <!-- Read version from version.json at evaluation time (must be before version assignment) -->
+  <PropertyGroup>
+    <VersionJsonContent>$([System.IO.File]::ReadAllText('$(ProjectDir)version.json'))</VersionJsonContent>
+    <VersionFromJson>$([System.Text.RegularExpressions.Regex]::Match($(VersionJsonContent), '"version"\s*:\s*"([^"]+)"').Groups[1].Value)</VersionFromJson>
+  </PropertyGroup>
+
+  <PropertyGroup>
     <!-- Version Information - Automatically read from version.json -->
-    <!-- Default fallback version if not yet loaded -->
+    <!-- Default fallback version if version.json read fails -->
     <Version Condition="'$(VersionFromJson)' == ''">1.7.0</Version>
     <Version Condition="'$(VersionFromJson)' != ''">$(VersionFromJson)</Version>
     <AssemblyVersion Condition="'$(VersionFromJson)' == ''">1.7.0.0</AssemblyVersion>
@@ -62,17 +70,11 @@
       <ManifestPath>$(MSBuildProjectDirectory)\Package.appxmanifest</ManifestPath>
     </PropertyGroup>
     <!-- Use PowerShell script to safely update only the Identity Version -->
-    <Exec Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\scripts\update-manifest-version.ps1&quot; -ManifestPath &quot;$(ManifestPath)&quot; -Version &quot;$(VersionFromJson).0&quot;" />
-    <Message Text="Updated Package.appxmanifest Identity version to $(VersionFromJson).0" Importance="high" />
+    <Exec Condition="'$(VersionFromJson)' != ''" Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\scripts\update-manifest-version.ps1&quot; -ManifestPath &quot;$(ManifestPath)&quot; -Version &quot;$(VersionFromJson).0&quot;" />
+    <Message Condition="'$(VersionFromJson)' != ''" Text="Updated Package.appxmanifest Identity version to $(VersionFromJson).0" Importance="high" />
+    <Message Condition="'$(VersionFromJson)' == ''" Text="WARNING: VersionFromJson is empty, skipping manifest version update" Importance="high" />
   </Target>
-  
-  <!-- Target to read version from version.json at evaluation time -->
-  <PropertyGroup>
-    <VersionJsonContent>$([System.IO.File]::ReadAllText('$(ProjectDir)version.json'))</VersionJsonContent>
-    <!-- Extract version using regex -->
-    <VersionFromJson>$([System.Text.RegularExpressions.Regex]::Match($(VersionJsonContent), '"version"\s*:\s*"([^"]+)"').Groups[1].Value)</VersionFromJson>
-  </PropertyGroup>
-  
+
   <!-- Target to prevent duplicate assemblies in publish output -->
   <Target Name="DeduplicateBundleFiles" BeforeTargets="GenerateBundle" Condition="'@(FilesToBundle)' != ''">
     <ItemGroup>

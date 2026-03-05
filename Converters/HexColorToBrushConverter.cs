@@ -2,6 +2,7 @@ using Microsoft.UI;
 using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Media;
 using System;
+using System.Collections.Concurrent;
 using Windows.UI;
 
 namespace SerialPortTool.Converters;
@@ -11,21 +12,27 @@ namespace SerialPortTool.Converters;
 /// </summary>
 public class HexColorToBrushConverter : IValueConverter
 {
+    private static readonly ConcurrentDictionary<string, SolidColorBrush> _brushCache = new();
+    private static readonly SolidColorBrush _defaultBrush = new(Colors.Black);
+
     public object Convert(object value, Type targetType, object parameter, string language)
     {
         if (value is string hexColor && !string.IsNullOrEmpty(hexColor))
         {
-            try
+            return _brushCache.GetOrAdd(hexColor, key =>
             {
-                var color = ParseHexColor(hexColor);
-                return new SolidColorBrush(color);
-            }
-            catch
-            {
-                return new SolidColorBrush(Colors.Black);
-            }
+                try
+                {
+                    var color = ParseHexColor(key);
+                    return new SolidColorBrush(color);
+                }
+                catch (Exception)
+                {
+                    return _defaultBrush;
+                }
+            });
         }
-        return new SolidColorBrush(Colors.Black);
+        return _defaultBrush;
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)

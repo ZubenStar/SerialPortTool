@@ -6,6 +6,7 @@ using Serilog;
 using SerialPortTool.Services;
 using SerialPortTool.ViewModels;
 using System;
+using System.Threading.Tasks;
 
 namespace SerialPortTool;
 
@@ -16,6 +17,7 @@ public partial class App : Application
 {
     private readonly IHost _host;
     private Window? _window;
+    private bool _isClosing;
 
     /// <summary>
     /// Gets the current App instance
@@ -40,7 +42,7 @@ public partial class App : Application
             "SerialPortTool", "DebugLogs", "app-.log");
 
         Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Verbose()  // Capture all levels including Trace
+            .MinimumLevel.Information()
             .WriteTo.File(
                 path: logsPath,
                 rollingInterval: RollingInterval.Day,
@@ -93,7 +95,60 @@ public partial class App : Application
 
         // Create main window
         _window = _host.Services.GetRequiredService<MainWindow>();
+        _window.Closed += OnWindowClosed;
         _window.Activate();
+    }
+
+    private async void OnWindowClosed(object sender, WindowEventArgs args)
+    {
+        // Prevent re-entrance when we call _window.Close() below
+        if (_isClosing) return;
+        _isClosing = true;
+
+        // Prevent the window from closing immediately
+        args.Handled = true;
+
+        try
+        {
+            // Dispose ViewModel (unsubscribes events - fast, non-blocking)
+            if (_window is MainWindow mainWindow)
+            {
+                mainWindow.ViewModel?.Dispose();
+            }
+
+            // Run all cleanup on a thread pool thread with an overall timeout
+            var cleanupTask = Task.Run(async () =>
+            {
+                try
+                {
+                    await _host.StopAsync(TimeSpan.FromSeconds(3));
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Error stopping host during shutdown");
+                }
+                finally
+                {
+                    try { _host.Dispose(); } catch { }
+                }
+            });
+
+            // Wait for cleanup with a hard timeout
+            if (!cleanupTask.Wait(TimeSpan.FromSeconds(5)))
+            {
+                Log.Warning("Shutdown cleanup timed out after 5 seconds, forcing exit");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error during shutdown cleanup");
+        }
+        finally
+        {
+            Log.CloseAndFlush();
+            // Force exit the application
+            Environment.Exit(0);
+        }
     }
 
 }

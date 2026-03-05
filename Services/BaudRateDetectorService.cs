@@ -232,7 +232,7 @@ public class BaudRateDetectorService : IBaudRateDetectorService
             var printableChars = text.Count(c => char.IsControl(c) || (c >= 32 && c <= 126));
             
             // 检查是否有常见的协议模式
-            var hasCommonPatterns = Regex.IsMatch(text, @"^(AT|OK|ERROR|READY|[\d\w\s.,!?@#$%^&*()_+=\-\[\]{};:'""<>\\/|`~\r\n\t])*$", RegexOptions.IgnoreCase);
+            var hasCommonPatterns = Regex.IsMatch(text, @"^(AT|OK|ERROR|READY|[\d\w\s.,!?@#$%^&*()_+=\-\[\]{};:'""<>\\/|`~\r\n\t])*$", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
             
             if (hasCommonPatterns)
             {

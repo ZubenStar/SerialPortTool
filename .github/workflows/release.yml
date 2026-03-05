@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: read
     
     strategy:
       matrix:
@@ -214,7 +216,7 @@ jobs:
         ls -lh release-assets/
     
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@c062e08bd532815e2082a07b400bb5b6016c6822 # v2.3.0
       with:
         name: SerialPortTool ${{ steps.get_version.outputs.VERSION }}
         body_path: release-notes.md

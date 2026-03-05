@@ -76,7 +76,7 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
 /// <summary>
 /// 主窗口视图模型
 /// </summary>
-public partial class MainViewModel : ObservableObject
+public partial class MainViewModel : ObservableObject, IDisposable
 {
 /// <summary>
 /// 波特率检测建议事件
@@ -290,7 +290,7 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
 
         try
         {
-            _ = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            _ = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
             IsRegexValid = true;
             RegexErrorMessage = string.Empty;
         }
@@ -313,6 +313,9 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
 
     [ObservableProperty]
     private bool _showSentData = true;
+
+    [ObservableProperty]
+    private PortViewModel? _selectedPort;
 
     [ObservableProperty]
     private string _txColorHex = "#0078D4"; // Blue for TX (sent)
@@ -488,7 +491,11 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         }
 
         // Initialize
-        _ = InitializeAsync();
+        _ = InitializeAsync().ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+                _logger.LogError(t.Exception, "Failed to initialize MainViewModel");
+        }, TaskScheduler.Default);
     }
 
     private async Task InitializeAsync()
@@ -767,7 +774,7 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         {
             try
             {
-                var regex = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+                var regex = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
                 filtered = AllLogs.Where(log =>
                     regex.IsMatch(log.Content) ||
                     regex.IsMatch(log.PortName))
@@ -801,6 +808,79 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
             {
                 DisplayLogs.Add(log);
             }
+        }
+    }
+
+    [RelayCommand]
+    private async Task SendAsync()
+    {
+        if (string.IsNullOrEmpty(SendText))
+            return;
+
+        // Resolve target port
+        var portVm = SelectedPort;
+        if (portVm == null && OpenPorts.Count == 1)
+            portVm = OpenPorts[0];
+
+        if (portVm == null)
+        {
+            StatusMessage = OpenPorts.Count == 0 ? "请先打开一个串口" : "请在已打开串口列表中选择一个串口";
+            return;
+        }
+
+        try
+        {
+            string displayContent;
+            int byteCount;
+
+            if (SendAsHex)
+            {
+                var hexString = SendText.Replace(" ", "").Replace("-", "").Replace("0x", "").Replace("0X", "");
+                if (hexString.Length % 2 != 0)
+                {
+                    StatusMessage = "十六进制格式错误：长度必须为偶数";
+                    return;
+                }
+
+                var bytes = new byte[hexString.Length / 2];
+                for (int i = 0; i < bytes.Length; i++)
+                {
+                    if (!byte.TryParse(hexString.Substring(i * 2, 2), System.Globalization.NumberStyles.HexNumber, null, out bytes[i]))
+                    {
+                        StatusMessage = $"十六进制格式错误：无效字符 '{hexString.Substring(i * 2, 2)}'";
+                        return;
+                    }
+                }
+
+                await SendDataAsync(portVm.PortName, bytes);
+                displayContent = $"[HEX] {BitConverter.ToString(bytes).Replace("-", " ")}";
+                byteCount = bytes.Length;
+            }
+            else
+            {
+                await SendTextAsync(portVm.PortName, SendText);
+                displayContent = SendText;
+                byteCount = Encoding.UTF8.GetByteCount(SendText);
+            }
+
+            if (ShowSentData)
+            {
+                var logEntry = new LogEntry
+                {
+                    PortName = portVm.PortName,
+                    Content = displayContent,
+                    IsReceived = false,
+                    ColorHex = TxColorHex
+                };
+                AddSentLog(logEntry);
+                portVm.AddLog(logEntry);
+            }
+
+            StatusMessage = $"已发送 {byteCount} 字节";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"发送失败: {ex.Message}";
         }
     }
 
@@ -924,14 +1004,14 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
             {
                 text = Encoding.UTF8.GetString(e.Data);
             }
-            catch
+            catch (Exception)
             {
                 try
                 {
                     text = Encoding.ASCII.GetString(e.Data);
                     _logger.LogDebug("UTF-8 decoding failed for {Port}, using ASCII fallback", e.PortName);
                 }
-                catch
+                catch (Exception)
                 {
                     // If both decodings fail, create a safe representation
                     text = $"[Binary data: {dataSize} bytes]";
@@ -1449,6 +1529,26 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     {
         var documentsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
         return System.IO.Path.Combine(documentsPath, "SerialPortTool", "Logs");
+    }
+
+    private bool _disposed;
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        _filterDebounceTimer?.Dispose();
+        _filterDebounceTimer = null;
+
+        _serialPortService.DataReceived -= OnDataReceived;
+        _serialPortService.PortStateChanged -= OnPortStateChanged;
+        _serialPortService.ErrorOccurred -= OnErrorOccurred;
+
+        if (_serialPortService is SerialPortService serialPortServiceInstance)
+        {
+            serialPortServiceInstance.BaudRateDetectionRequested -= OnBaudRateDetectionRequested;
+        }
     }
     
     /// <summary>

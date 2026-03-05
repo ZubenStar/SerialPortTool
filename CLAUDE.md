@@ -161,7 +161,7 @@ The version flows through the build system:
 
 **To bump version**: Edit `version.json` only, or use:
 ```powershell
-.\scripts\bump-version.ps1 -NewVersion "1.7.0"
+.\scripts\bump-version.ps1 -BumpType patch
 ```
 
 **Build-time generated files**:

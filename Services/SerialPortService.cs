@@ -137,103 +137,38 @@ public class SerialPortService : ISerialPortService, IDisposable
         {
             try
             {
-                _logger.LogInformation("Starting ENHANCED close sequence for port {PortName}", portName);
-                
+                _logger.LogInformation("Closing port {PortName}", portName);
+
                 // Unsubscribe from events first to prevent callbacks during disposal
                 try
                 {
                     portInstance.DataReceived -= OnPortDataReceived;
                     portInstance.ErrorOccurred -= OnPortError;
-                    _logger.LogDebug("Unsubscribed from port {PortName} events", portName);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Error unsubscribing from port {PortName} events", portName);
                 }
-                
-                // Close the port with ENHANCED cleanup for incorrect baud rate scenarios
+
+                // Close the port (CloseAsync already handles GC and cleanup internally)
                 await portInstance.CloseAsync();
-                
+
                 RaisePortStateChanged(portName, ConnectionState.Connected, ConnectionState.Disconnected);
                 _logger.LogInformation("Port {PortName} closed successfully", portName);
-                
-                // Dispose the instance with error handling
+
+                // Dispose the instance
                 try
                 {
                     portInstance.Dispose();
-                    _logger.LogDebug("Port {PortName} instance disposed", portName);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Error disposing port {PortName} instance", portName);
                 }
-                
-                // Wait for Windows to release the COM port handle
-                // Reduced from 800ms to 200ms for better responsiveness
-                await Task.Delay(200);
-                
-                // Force garbage collection to ensure handle release
-                try
-                {
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
-                    GC.Collect();
-                    _logger.LogDebug("Forced GC after closing port {PortName}", portName);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Error during forced GC for port {PortName}", portName);
-                }
-                
-                // Additional delay after GC
-                await Task.Delay(100);
-                
-                // Verify port is actually released by attempting to check its availability
-                try
-                {
-                    var availablePorts = await GetAvailablePortsAsync();
-                    var isAvailable = availablePorts.Contains(portName);
-                    _logger.LogInformation("✅ Port {PortName} release verified: Available={IsAvailable}",
-                        portName, isAvailable);
-                    
-                    if (!isAvailable)
-                    {
-                        _logger.LogWarning("⚠️ Port {PortName} may still be locked by the system. Wait a moment before reopening.", portName);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Could not verify port {PortName} availability", portName);
-                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ CRITICAL error closing port {PortName}", portName);
-                
-                // CRITICAL: Even on error, ensure EXTENDED wait for OS cleanup
-                // This is essential when baud rate was incorrect
-                await Task.Delay(1000); // Increased from 500ms to 1000ms
-                
-                // AGGRESSIVE cleanup by triggering multiple GC cycles
-                try
-                {
-                    for (int i = 0; i < 3; i++)
-                    {
-                        GC.Collect();
-                        GC.WaitForPendingFinalizers();
-                        await Task.Delay(100);
-                    }
-                    GC.Collect();
-                    
-                    _logger.LogWarning("⚠️ Performed AGGRESSIVE garbage collection after error closing port {PortName}", portName);
-                }
-                catch (Exception gcEx)
-                {
-                    _logger.LogError(gcEx, "Error during aggressive GC for port {PortName}", portName);
-                }
-                
-                // Final delay to ensure cleanup
-                await Task.Delay(200);
+                _logger.LogError(ex, "Error closing port {PortName}", portName);
             }
         }
         else
@@ -407,7 +342,18 @@ public class SerialPortService : ISerialPortService, IDisposable
 
     public void Dispose()
     {
-        CloseAllPortsAsync().Wait();
+        // Use timeout to prevent hanging on close
+        try
+        {
+            if (!CloseAllPortsAsync().Wait(TimeSpan.FromSeconds(3)))
+            {
+                _logger?.LogWarning("CloseAllPortsAsync timed out during Dispose");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Error during SerialPortService.Dispose");
+        }
         _ports.Clear();
     }
 
@@ -657,11 +603,6 @@ public class SerialPortService : ISerialPortService, IDisposable
                         _logger.LogDebug("Port {PortName} was already closed", Config.PortName);
                     }
 
-                    // Step 4: Force garbage collection to release handles
-                    Thread.Sleep(100);
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
-
                     _logger.LogDebug("Port {PortName} close operations completed", Config.PortName);
                 }
                 catch (Exception ex)
@@ -670,33 +611,33 @@ public class SerialPortService : ISerialPortService, IDisposable
                 }
                 finally
                 {
-                    // Step 5: Always try to dispose, catching ALL exceptions
+                    // Step 5: Always try to dispose with timeout, catching ALL exceptions
                     try
                     {
-                        port.Dispose();
-                        _logger.LogDebug("Port {PortName} disposed successfully", Config.PortName);
-                    }
-                    catch (NullReferenceException)
-                    {
-                        // Known .NET bug in SerialPort.Dispose() - safe to ignore
-                        _logger.LogDebug("Caught known NullReferenceException in SerialPort.Dispose() for port {PortName}",
-                            Config.PortName);
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        // Already disposed - safe to ignore
-                        _logger.LogDebug("Port {PortName} was already disposed", Config.PortName);
+                        var disposeTask = Task.Run(() =>
+                        {
+                            try { port.Dispose(); return true; }
+                            catch { return false; }
+                        });
+
+                        if (disposeTask.Wait(TimeSpan.FromSeconds(2)))
+                        {
+                            if (disposeTask.Result)
+                                _logger.LogDebug("Port {PortName} disposed successfully", Config.PortName);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Port {PortName} Dispose() timed out, abandoning", Config.PortName);
+                        }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "⚠️ Error disposing port {PortName} - continuing cleanup", Config.PortName);
+                        _logger.LogWarning(ex, "Error disposing port {PortName} - continuing cleanup", Config.PortName);
                     }
 
                     // Step 6: Final cleanup
-                    Thread.Sleep(100);
                     GC.Collect();
                     GC.WaitForPendingFinalizers();
-                    GC.Collect();
 
                     Statistics.DisconnectedAt = DateTime.Now;
                     _logger.LogInformation("✅ Port {PortName} fully closed and resources released", Config.PortName);
@@ -755,7 +696,7 @@ public class SerialPortService : ISerialPortService, IDisposable
                     // 如果有数据验证服务，先验证数据
                     if (_dataValidationService != null)
                     {
-                        ProcessDataWithValidation(buffer);
+                        _ = ProcessDataWithValidationAsync(buffer);
                     }
                     else
                     {
@@ -779,7 +720,7 @@ public class SerialPortService : ISerialPortService, IDisposable
             }
         }
 
-        private async void ProcessDataWithValidation(byte[] buffer)
+        private async Task ProcessDataWithValidationAsync(byte[] buffer)
         {
             try
             {
