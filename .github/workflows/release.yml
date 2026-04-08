@@ -238,7 +238,8 @@ jobs:
           echo "Release $TAG already exists, updating notes and assets"
           gh release edit "$TAG" \
             --title "SerialPortTool $VERSION" \
-            --notes-file release-notes.md
+            --notes-file release-notes.md \
+            --draft=false
           gh release upload "$TAG" "${assets[@]}" --clobber
         else
           echo "Creating release $TAG"
