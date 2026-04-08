@@ -1,7 +1,17 @@
 ﻿{
-    "version": "1.7.0",
+    "version": "1.8.0",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-04-08",
+            "version": "1.8.0",
+            "changes": [
+                "Replaced ItemsRepeater with ListView for multi-line log selection and copy support",
+                "Added Ctrl+C to copy selected logs, Ctrl+A to select all, and right-click context menu",
+                "Custom compact ListViewItem template for tight log spacing with soft selection highlight",
+                "Preserved per-line color display and UI virtualization for smooth scrolling"
+            ]
+        },
         {
             "date": "2026-02-04",
             "version": "1.7.0",
