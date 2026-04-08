@@ -216,7 +216,7 @@ jobs:
         ls -lh release-assets/
     
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@c062e08bd532815e2082a07b400bb5b6016c6822 # v2.3.0
+      uses: softprops/action-gh-release@d5382d3e6f2fa7bd53cb749d33091853d4985daf # v2.3.0
       with:
         name: SerialPortTool ${{ steps.get_version.outputs.VERSION }}
         body_path: release-notes.md
