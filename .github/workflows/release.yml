@@ -219,15 +219,33 @@ jobs:
         find artifacts -name "*.zip" -exec cp {} release-assets/ \;
         ls -lh release-assets/
     
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@d5382d3e6f2fa7bd53cb749d33091853d4985daf # v2.3.0
-      with:
-        name: SerialPortTool ${{ steps.get_version.outputs.version }}
-        body_path: release-notes.md
-        draft: false
-        prerelease: false
-        files: release-assets/*.zip
-        token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Create or update GitHub Release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        TAG: ${{ steps.get_version.outputs.tag }}
+        VERSION: ${{ steps.get_version.outputs.version }}
+      run: |
+        shopt -s nullglob
+        assets=(release-assets/*.zip)
+        
+        if [ ${#assets[@]} -eq 0 ]; then
+          echo "No release assets found in release-assets/"
+          exit 1
+        fi
+        
+        if gh release view "$TAG" >/dev/null 2>&1; then
+          echo "Release $TAG already exists, updating notes and assets"
+          gh release edit "$TAG" \
+            --title "SerialPortTool $VERSION" \
+            --notes-file release-notes.md
+          gh release upload "$TAG" "${assets[@]}" --clobber
+        else
+          echo "Creating release $TAG"
+          gh release create "$TAG" "${assets[@]}" \
+            --title "SerialPortTool $VERSION" \
+            --notes-file release-notes.md
+        fi
     
     - name: Upload release artifacts to release
       uses: actions/upload-artifact@v4
