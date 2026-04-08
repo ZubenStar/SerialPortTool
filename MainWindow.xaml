@@ -360,36 +360,83 @@
                     </StackPanel>
                 </StackPanel>
 
-                <!-- Logs Display - Using ItemsRepeater with Virtualization for High Performance -->
-                <ScrollViewer Grid.Row="1"
-                              x:Name="LogScrollViewer"
-                              VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Auto"
-                              Background="{ThemeResource LayerFillColorDefaultBrush}"
-                              Padding="8"
-                              IsTabStop="True"
-                              TabNavigation="Local">
-                    <ItemsRepeater x:Name="LogsItemsRepeater"
-                                   ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
-                                   VerticalAlignment="Top">
-                        <ItemsRepeater.Layout>
-                            <!-- StackLayout with better spacing for readability -->
-                            <StackLayout Orientation="Vertical" Spacing="2"/>
-                        </ItemsRepeater.Layout>
-                        <ItemsRepeater.ItemTemplate>
-                            <DataTemplate>
-                                <!-- Larger font and better spacing for readability -->
-                                <TextBlock Text="{Binding FormattedText}"
-                                           Foreground="{Binding ColorHex, Converter={StaticResource HexColorToBrushConverter}}"
-                                           FontFamily="Consolas"
-                                           FontSize="14"
-                                           TextWrapping="NoWrap"
-                                           Padding="2,3,2,3"
-                                           IsTextSelectionEnabled="True"/>
-                            </DataTemplate>
-                        </ItemsRepeater.ItemTemplate>
-                    </ItemsRepeater>
-                </ScrollViewer>
+                <!-- Logs Display - ListView with minimal item template for compact layout -->
+                <ListView Grid.Row="1"
+                          x:Name="LogsListView"
+                          ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
+                          SelectionMode="Extended"
+                          Background="{ThemeResource LayerFillColorDefaultBrush}"
+                          Padding="8,4"
+                          IsTabStop="True"
+                          KeyDown="LogsListView_KeyDown">
+                    <ListView.ContextFlyout>
+                        <MenuFlyout>
+                            <MenuFlyoutItem Text="复制选中 (Ctrl+C)" Click="CopySelectedLogs_Click"/>
+                            <MenuFlyoutItem Text="全选 (Ctrl+A)" Click="SelectAllLogsInList_Click"/>
+                        </MenuFlyout>
+                    </ListView.ContextFlyout>
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="MinHeight" Value="0"/>
+                            <Setter Property="Padding" Value="0"/>
+                            <Setter Property="Margin" Value="0"/>
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListViewItem">
+                                        <Grid x:Name="Root"
+                                              Background="Transparent"
+                                              Padding="4,0">
+                                            <VisualStateManager.VisualStateGroups>
+                                                <VisualStateGroup x:Name="CommonStates">
+                                                    <VisualState x:Name="Normal"/>
+                                                    <VisualState x:Name="PointerOver">
+                                                        <VisualState.Setters>
+                                                            <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
+                                                        </VisualState.Setters>
+                                                    </VisualState>
+                                                    <VisualState x:Name="Selected">
+                                                        <VisualState.Setters>
+                                                            <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
+                                                        </VisualState.Setters>
+                                                    </VisualState>
+                                                    <VisualState x:Name="PointerOverSelected">
+                                                        <VisualState.Setters>
+                                                            <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
+                                                        </VisualState.Setters>
+                                                    </VisualState>
+                                                    <VisualState x:Name="Pressed">
+                                                        <VisualState.Setters>
+                                                            <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
+                                                        </VisualState.Setters>
+                                                    </VisualState>
+                                                    <VisualState x:Name="PressedSelected">
+                                                        <VisualState.Setters>
+                                                            <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
+                                                        </VisualState.Setters>
+                                                    </VisualState>
+                                                </VisualStateGroup>
+                                            </VisualStateManager.VisualStateGroups>
+                                            <ContentPresenter Content="{TemplateBinding Content}"
+                                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                              Margin="0"/>
+                                        </Grid>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding FormattedText}"
+                                       Foreground="{Binding ColorHex, Converter={StaticResource HexColorToBrushConverter}}"
+                                       FontFamily="Consolas"
+                                       FontSize="14"
+                                       TextWrapping="NoWrap"
+                                       Padding="0,1,0,1"/>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
 
                 <!-- Send Area -->
                 <StackPanel Grid.Row="2"

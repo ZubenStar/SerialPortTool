@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using SerialPortTool.Helpers;
 using SerialPortTool.ViewModels;
 using System;
@@ -46,11 +47,18 @@ public sealed partial class MainWindow : Window
             appWindow.Resize(new Windows.Graphics.SizeInt32(1200, 800));
         }
 
-        // Auto-scroll support for ItemsRepeater
+        // Auto-scroll support for ListView
         ViewModel.DisplayLogs.CollectionChanged += DisplayLogs_CollectionChanged;
 
-        // Disable auto-scroll when user manually scrolls
-        LogScrollViewer.ViewChanged += LogScrollViewer_ViewChanged;
+        // Disable auto-scroll when user manually scrolls (defer until loaded)
+        LogsListView.Loaded += (s, args) =>
+        {
+            var scrollViewer = FindScrollViewer(LogsListView);
+            if (scrollViewer != null)
+            {
+                scrollViewer.ViewChanged += LogScrollViewer_ViewChanged;
+            }
+        };
 
         // Subscribe to ViewModel property changes for match count
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
@@ -145,27 +153,34 @@ public sealed partial class MainWindow : Window
         }
     }
     
+    private static ScrollViewer? FindScrollViewer(DependencyObject depObj)
+    {
+        if (depObj is ScrollViewer sv) return sv;
+        for (int i = 0; i < Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(depObj); i++)
+        {
+            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(depObj, i);
+            var result = FindScrollViewer(child);
+            if (result != null) return result;
+        }
+        return null;
+    }
+
     private void DisplayLogs_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
         // Auto-scroll when new logs are added
         if (ViewModel?.AutoScroll == true && e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)
         {
-            // Ensure LogScrollViewer is loaded before attempting to scroll
-            if (LogScrollViewer == null)
-                return;
-
             DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
                 try
                 {
-                    // Double-check in case it's still null on the dispatcher thread
-                    if (LogScrollViewer == null)
+                    var scrollViewer = FindScrollViewer(LogsListView);
+                    if (scrollViewer == null)
                         return;
 
                     _isAutoScrolling = true;
-                    // Small delay to ensure layout is updated
-                    LogScrollViewer.UpdateLayout();
-                    LogScrollViewer.ChangeView(null, LogScrollViewer.ScrollableHeight, null, false);
+                    scrollViewer.UpdateLayout();
+                    scrollViewer.ChangeView(null, scrollViewer.ScrollableHeight, null, false);
                     _isAutoScrolling = false;
                 }
                 catch (Exception)
@@ -473,17 +488,49 @@ public sealed partial class MainWindow : Window
 
     private void SelectAllLogs_Click(object sender, RoutedEventArgs e)
     {
-        // Copy all logs to clipboard
-        var allText = string.Join("\n", ViewModel.DisplayLogs.Select(l => l.FormattedText));
-        
-        if (!string.IsNullOrEmpty(allText))
+        LogsListView.SelectAll();
+    }
+
+    private void SelectAllLogsInList_Click(object sender, RoutedEventArgs e)
+    {
+        LogsListView.SelectAll();
+    }
+
+    private void CopySelectedLogs_Click(object sender, RoutedEventArgs e)
+    {
+        CopySelectedLogsToClipboard();
+    }
+
+    private void LogsListView_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        var ctrl = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control);
+        if (ctrl.HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down))
         {
-            var dataPackage = new Windows.ApplicationModel.DataTransfer.DataPackage();
-            dataPackage.SetText(allText);
-            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dataPackage);
-            
-            ViewModel.StatusMessage = $"Copied {ViewModel.DisplayLogs.Count} logs to clipboard";
+            if (e.Key == Windows.System.VirtualKey.C)
+            {
+                CopySelectedLogsToClipboard();
+                e.Handled = true;
+            }
+            else if (e.Key == Windows.System.VirtualKey.A)
+            {
+                LogsListView.SelectAll();
+                e.Handled = true;
+            }
         }
+    }
+
+    private void CopySelectedLogsToClipboard()
+    {
+        var selectedItems = LogsListView.SelectedItems;
+        if (selectedItems.Count == 0) return;
+
+        var text = string.Join("\n", selectedItems.Cast<Models.LogEntry>().Select(l => l.FormattedText));
+
+        var dataPackage = new Windows.ApplicationModel.DataTransfer.DataPackage();
+        dataPackage.SetText(text);
+        Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dataPackage);
+
+        ViewModel.StatusMessage = $"已复制 {selectedItems.Count} 条日志到剪贴板";
     }
 
     private void CustomBaudRateCheckBox_Changed(object sender, RoutedEventArgs e)
