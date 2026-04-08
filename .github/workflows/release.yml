@@ -34,20 +34,24 @@ jobs:
       run: |
         $tag = "${{ github.ref_name }}"
         $version = $tag -replace '^v', ''
-        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
-        echo "TAG=$tag" >> $env:GITHUB_OUTPUT
+        "version=$version" >> $env:GITHUB_OUTPUT
+        "tag=$tag" >> $env:GITHUB_OUTPUT
     
     - name: Verify version.json matches tag
       shell: pwsh
       run: |
-        $versionJson = Get-Content version.json | ConvertFrom-Json
-        $jsonVersion = $versionJson.version
-        $tagVersion = "${{ steps.get_version.outputs.VERSION }}"
+        $jsonText = Get-Content version.json -Raw
+        $versionJson = $jsonText | ConvertFrom-Json
+        $jsonVersion = $versionJson.version.Trim()
+        $tagVersion = ("${{ github.ref_name }}" -replace '^v', '').Trim()
         
         if ($jsonVersion -ne $tagVersion) {
           Write-Error "Version mismatch: version.json has $jsonVersion but tag is $tagVersion"
           exit 1
         }
+        
+        Write-Host "version.json version: '$jsonVersion'"
+        Write-Host "git tag version: '$tagVersion'"
         Write-Host "✓ Version verified: $jsonVersion"
     
     - name: Generate BuildInfo
@@ -111,7 +115,7 @@ jobs:
     - name: Create release package
       shell: pwsh
       run: |
-        $version = "${{ steps.get_version.outputs.VERSION }}"
+        $version = "${{ steps.get_version.outputs.version }}"
         $platform = "${{ matrix.platform }}"
         $packageName = "SerialPortTool-v$version-win-$platform"
         
@@ -133,7 +137,7 @@ jobs:
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:
-        name: SerialPortTool-${{ steps.get_version.outputs.VERSION }}-win-${{ matrix.platform }}
+        name: SerialPortTool-${{ steps.get_version.outputs.version }}-win-${{ matrix.platform }}
         path: packages/*.zip
         retention-days: 30
 
@@ -151,15 +155,15 @@ jobs:
       id: get_version
       run: |
         VERSION=${GITHUB_REF_NAME#v}
-        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-        echo "TAG=$GITHUB_REF_NAME" >> $GITHUB_OUTPUT
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "tag=$GITHUB_REF_NAME" >> $GITHUB_OUTPUT
     
     - name: Generate release notes
       id: release_notes
       shell: pwsh
       run: |
         $versionJson = Get-Content version.json | ConvertFrom-Json
-        $version = "${{ steps.get_version.outputs.VERSION }}"
+        $version = "${{ steps.get_version.outputs.version }}"
         
         # Find the changelog for this version
         $changelog = $versionJson.changelog | Where-Object { $_.version -eq $version } | Select-Object -First 1
@@ -196,7 +200,7 @@ jobs:
         
         ---
         
-        **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.get_version.outputs.TAG }}...HEAD
+        **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.get_version.outputs.tag }}...HEAD
         "@
         
         # Save to file
@@ -218,7 +222,7 @@ jobs:
     - name: Create GitHub Release
       uses: softprops/action-gh-release@d5382d3e6f2fa7bd53cb749d33091853d4985daf # v2.3.0
       with:
-        name: SerialPortTool ${{ steps.get_version.outputs.VERSION }}
+        name: SerialPortTool ${{ steps.get_version.outputs.version }}
         body_path: release-notes.md
         draft: false
         prerelease: false

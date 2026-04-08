@@ -1,7 +1,16 @@
 ﻿{
-    "version": "1.8.0",
+    "version": "1.8.2",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-04-08",
+            "version": "1.8.2",
+            "changes": [
+                "Fixed GitHub Actions release workflow version verification against git tags",
+                "Hardened version.json parsing in the release pipeline to avoid whitespace and encoding mismatches",
+                "Standardized workflow step outputs to lowercase names for more reliable release packaging"
+            ]
+        },
         {
             "date": "2026-04-08",
             "version": "1.8.0",
