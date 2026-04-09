@@ -1,7 +1,15 @@
 ﻿{
-    "version": "1.8.2",
+    "version": "1.8.3",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-04-09",
+            "version": "1.8.3",
+            "changes": [
+                "Optimized log trimming by replacing RemoveRange with the more efficient RemoveFromStart path",
+                "Updated the GitHub release workflow to publish updated releases without keeping them in draft state"
+            ]
+        },
         {
             "date": "2026-04-08",
             "version": "1.8.2",
