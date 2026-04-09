@@ -46,22 +46,28 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
             Items.Count - itemsList.Count));
     }
 
-    public void RemoveRange(IEnumerable<T> items)
+    public void RemoveFromStart(int count)
     {
-        if (items == null) return;
+        if (count <= 0 || Items.Count == 0) return;
+        count = Math.Min(count, Items.Count);
 
-        var itemsList = items.ToList();
-        if (itemsList.Count == 0) return;
+        var removedItems = new List<T>(count);
+        for (int i = 0; i < count; i++)
+        {
+            removedItems.Add(Items[i]);
+        }
 
         _suppressNotification = true;
-        foreach (var item in itemsList)
+        for (int i = 0; i < count; i++)
         {
-            Items.Remove(item);
+            Items.RemoveAt(0);
         }
         _suppressNotification = false;
 
-        // Notify with Reset for removals (less common operation)
-        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        OnCollectionChanged(new NotifyCollectionChangedEventArgs(
+            NotifyCollectionChangedAction.Remove,
+            removedItems,
+            0));
     }
 
     protected override void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
@@ -1253,11 +1259,11 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                         {
                             _logger.LogTrace("Trimming DisplayLogs: Removing {Count} items, Current={Current}, Max={Max}",
                                 removeCount, DisplayLogs.Count, MaxDisplayLogs);
-                            
+
                             if (DisplayLogs is RangeObservableCollection<LogEntry> rangeDisplayLogsRemove)
                             {
-                                rangeDisplayLogsRemove.RemoveRange(DisplayLogs.Take(removeCount).ToList());
-                                _logger.LogTrace("Trimmed DisplayLogs using RemoveRange: New count={Count}", DisplayLogs.Count);
+                                rangeDisplayLogsRemove.RemoveFromStart(removeCount);
+                                _logger.LogTrace("Trimmed DisplayLogs using RemoveFromStart: New count={Count}", DisplayLogs.Count);
                             }
                             else
                             {
@@ -1283,11 +1289,11 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                         {
                             _logger.LogTrace("Trimming AllLogs: Removing {Count} items, Current={Current}, Max={Max}",
                                 removeAllCount, AllLogs.Count, MaxDisplayLogs * 2);
-                            
+
                             if (AllLogs is RangeObservableCollection<LogEntry> rangeAllLogsRemove)
                             {
-                                rangeAllLogsRemove.RemoveRange(AllLogs.Take(removeAllCount).ToList());
-                                _logger.LogTrace("Trimmed AllLogs using RemoveRange: New count={Count}", AllLogs.Count);
+                                rangeAllLogsRemove.RemoveFromStart(removeAllCount);
+                                _logger.LogTrace("Trimmed AllLogs using RemoveFromStart: New count={Count}", AllLogs.Count);
                             }
                             else
                             {
