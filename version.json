@@ -1,7 +1,16 @@
 ﻿{
-    "version": "1.8.4",
+    "version": "1.8.5",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-04-10",
+            "version": "1.8.5",
+            "changes": [
+                "Removed unused package references including WinUIEx, Newtonsoft.Json, CsvHelper, and unused CommunityToolkit controls",
+                "Replaced Host.CreateDefaultBuilder with a lightweight ServiceCollection container for desktop startup",
+                "Reduced release output dependencies by trimming unused hosting, configuration, and WebView-related assemblies"
+            ]
+        },
         {
             "date": "2026-04-10",
             "version": "1.8.4",

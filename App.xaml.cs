@@ -1,5 +1,4 @@
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Serilog;
@@ -15,7 +14,7 @@ namespace SerialPortTool;
 /// </summary>
 public partial class App : Application
 {
-    private readonly IHost _host;
+    private readonly ServiceProvider _services;
     private Window? _window;
     private bool _isClosing;
 
@@ -27,7 +26,7 @@ public partial class App : Application
     /// <summary>
     /// Gets the service provider for dependency injection
     /// </summary>
-    public IServiceProvider Services => _host.Services;
+    public IServiceProvider Services => _services;
 
     /// <summary>
     /// Initializes the singleton application object.
@@ -54,15 +53,16 @@ public partial class App : Application
 
         Log.Information("Application started. Logs will be saved to: {LogPath}", logsPath);
 
-        // Build host
-        _host = Host.CreateDefaultBuilder()
-            .ConfigureServices(ConfigureServices)
-            .ConfigureLogging(logging =>
-            {
-                logging.ClearProviders();
-                logging.AddSerilog(dispose: true);
-            })
-            .Build();
+        // Build a lightweight DI container for the desktop app.
+        var services = new ServiceCollection();
+        ConfigureServices(services);
+        services.AddLogging(logging =>
+        {
+            logging.ClearProviders();
+            logging.AddSerilog(dispose: true);
+        });
+
+        _services = services.BuildServiceProvider();
     }
 
     /// <summary>
@@ -88,13 +88,10 @@ public partial class App : Application
     /// <summary>
     /// Invoked when the application is launched.
     /// </summary>
-    protected override async void OnLaunched(LaunchActivatedEventArgs args)
+    protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        // Start the host
-        await _host.StartAsync();
-
         // Create main window
-        _window = _host.Services.GetRequiredService<MainWindow>();
+        _window = _services.GetRequiredService<MainWindow>();
         _window.Closed += OnWindowClosed;
         _window.Activate();
     }
@@ -121,15 +118,11 @@ public partial class App : Application
             {
                 try
                 {
-                    await _host.StopAsync(TimeSpan.FromSeconds(3));
+                    await _services.DisposeAsync();
                 }
                 catch (Exception ex)
                 {
-                    Log.Error(ex, "Error stopping host during shutdown");
-                }
-                finally
-                {
-                    try { _host.Dispose(); } catch { }
+                    Log.Error(ex, "Error disposing services during shutdown");
                 }
             });
 
