@@ -1,7 +1,16 @@
 ﻿{
-    "version": "1.8.3",
+    "version": "1.8.4",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-04-10",
+            "version": "1.8.4",
+            "changes": [
+                "Trimmed GitHub release packages by removing debug symbol files",
+                "Kept only zh-CN and en-us framework language resource folders in release archives",
+                "Stopped bundling README.md and version.json in release ZIP packages"
+            ]
+        },
         {
             "date": "2026-04-09",
             "version": "1.8.3",

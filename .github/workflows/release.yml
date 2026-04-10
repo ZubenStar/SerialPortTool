@@ -118,19 +118,26 @@ jobs:
         $version = "${{ steps.get_version.outputs.version }}"
         $platform = "${{ matrix.platform }}"
         $packageName = "SerialPortTool-v$version-win-$platform"
+        $packagePath = "packages/$packageName"
+        $keptLanguageDirs = @('zh-CN', 'en-us')
         
         # Create package directory
-        New-Item -ItemType Directory -Force -Path "packages/$packageName"
+        New-Item -ItemType Directory -Force -Path $packagePath
         
         # Copy published files
-        Copy-Item -Path "publish/$platform/*" -Destination "packages/$packageName/" -Recurse
+        Copy-Item -Path "publish/$platform/*" -Destination "$packagePath/" -Recurse
         
-        # Copy additional files
-        Copy-Item -Path "README.md" -Destination "packages/$packageName/"
-        Copy-Item -Path "version.json" -Destination "packages/$packageName/"
+        # Remove debug symbols from the release package
+        Get-ChildItem -Path $packagePath -Recurse -Filter "*.pdb" -File | Remove-Item -Force
+
+        # Keep only the framework language resources we actually ship
+        Get-ChildItem -Path $packagePath -Directory | Where-Object {
+          $_.Name -match '^[a-z]{2,3}(?:-[A-Za-z0-9]+)+$' -and
+          $_.Name -notin $keptLanguageDirs
+        } | Remove-Item -Recurse -Force
         
         # Create ZIP archive
-        Compress-Archive -Path "packages/$packageName/*" -DestinationPath "packages/$packageName.zip"
+        Compress-Archive -Path "$packagePath/*" -DestinationPath "$packagePath.zip"
         
         Write-Host "✓ Created package: $packageName.zip"
     
