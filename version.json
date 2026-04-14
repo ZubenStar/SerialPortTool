@@ -1,7 +1,17 @@
 ﻿{
-    "version": "1.8.5",
+    "version": "1.8.6",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-04-14",
+            "version": "1.8.6",
+            "changes": [
+                "Reduced high-volume log flicker by merging pending serial log updates before applying them on the UI thread",
+                "Deferred log trimming until the display buffer exceeds a higher threshold to avoid repeated full-list churn near the cap",
+                "Throttled auto-scroll updates to prevent forced layout refreshes on every incoming log batch",
+                "Improved batch collection notifications to keep WinUI bindings in sync during range updates"
+            ]
+        },
         {
             "date": "2026-04-10",
             "version": "1.8.5",

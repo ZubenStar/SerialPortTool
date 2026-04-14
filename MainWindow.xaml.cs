@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -22,6 +23,8 @@ public sealed partial class MainWindow : Window
 
     // Flag to track if current text is from selecting history
     private bool _isFromHistorySelection = false;
+    private readonly DispatcherQueueTimer? _autoScrollTimer;
+    private bool _isAutoScrollPending = false;
 
     public MainWindow()
     {
@@ -46,6 +49,11 @@ public sealed partial class MainWindow : Window
         {
             appWindow.Resize(new Windows.Graphics.SizeInt32(1200, 800));
         }
+
+        _autoScrollTimer = DispatcherQueue.CreateTimer();
+        _autoScrollTimer.Interval = TimeSpan.FromMilliseconds(40);
+        _autoScrollTimer.IsRepeating = false;
+        _autoScrollTimer.Tick += (_, _) => PerformPendingAutoScroll();
 
         // Auto-scroll support for ListView
         ViewModel.DisplayLogs.CollectionChanged += DisplayLogs_CollectionChanged;
@@ -168,26 +176,47 @@ public sealed partial class MainWindow : Window
     private void DisplayLogs_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
         // Auto-scroll when new logs are added
-        if (ViewModel?.AutoScroll == true && e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)
+        if (ViewModel?.AutoScroll == true &&
+            e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add &&
+            e.NewItems?.Count > 0)
         {
-            DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            {
-                try
-                {
-                    var scrollViewer = FindScrollViewer(LogsListView);
-                    if (scrollViewer == null)
-                        return;
+            _isAutoScrollPending = true;
 
-                    _isAutoScrolling = true;
-                    scrollViewer.UpdateLayout();
-                    scrollViewer.ChangeView(null, scrollViewer.ScrollableHeight, null, false);
-                    _isAutoScrolling = false;
-                }
-                catch (Exception)
-                {
-                    _isAutoScrolling = false;
-                }
-            });
+            if (_autoScrollTimer != null)
+            {
+                _autoScrollTimer.Stop();
+                _autoScrollTimer.Start();
+            }
+            else
+            {
+                PerformPendingAutoScroll();
+            }
+        }
+    }
+
+    private void PerformPendingAutoScroll()
+    {
+        if (!_isAutoScrollPending || ViewModel?.AutoScroll != true || ViewModel.DisplayLogs.Count == 0)
+        {
+            _isAutoScrollPending = false;
+            return;
+        }
+
+        try
+        {
+            _isAutoScrolling = true;
+            _isAutoScrollPending = false;
+
+            var lastItem = ViewModel.DisplayLogs[^1];
+            LogsListView.ScrollIntoView(lastItem);
+        }
+        catch (Exception)
+        {
+            _isAutoScrollPending = false;
+        }
+        finally
+        {
+            _isAutoScrolling = false;
         }
     }
 

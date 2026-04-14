@@ -6,6 +6,7 @@ using SerialPortTool.Helpers;
 using SerialPortTool.Models;
 using SerialPortTool.Services;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
@@ -23,6 +24,8 @@ namespace SerialPortTool.ViewModels;
 /// </summary>
 public class RangeObservableCollection<T> : ObservableCollection<T>
 {
+    private static readonly PropertyChangedEventArgs CountPropertyChanged = new(nameof(Count));
+    private static readonly PropertyChangedEventArgs IndexerPropertyChanged = new("Item[]");
     private bool _suppressNotification = false;
 
     public void AddRange(IEnumerable<T> items)
@@ -32,15 +35,26 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
         var itemsList = items.ToList();
         if (itemsList.Count == 0) return;
 
+        CheckReentrancy();
+
         _suppressNotification = true;
-        foreach (var item in itemsList)
+        try
         {
-            Items.Add(item);
+            foreach (var item in itemsList)
+            {
+                Items.Add(item);
+            }
         }
-        _suppressNotification = false;
+        finally
+        {
+            _suppressNotification = false;
+        }
+
+        OnPropertyChanged(CountPropertyChanged);
+        OnPropertyChanged(IndexerPropertyChanged);
 
         // Use Add action with multiple items instead of Reset for smoother UI updates
-        OnCollectionChanged(new NotifyCollectionChangedEventArgs(
+        base.OnCollectionChanged(new NotifyCollectionChangedEventArgs(
             NotifyCollectionChangedAction.Add,
             itemsList,
             Items.Count - itemsList.Count));
@@ -57,14 +71,25 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
             removedItems.Add(Items[i]);
         }
 
-        _suppressNotification = true;
-        for (int i = 0; i < count; i++)
-        {
-            Items.RemoveAt(0);
-        }
-        _suppressNotification = false;
+        CheckReentrancy();
 
-        OnCollectionChanged(new NotifyCollectionChangedEventArgs(
+        _suppressNotification = true;
+        try
+        {
+            for (int i = 0; i < count; i++)
+            {
+                Items.RemoveAt(0);
+            }
+        }
+        finally
+        {
+            _suppressNotification = false;
+        }
+
+        OnPropertyChanged(CountPropertyChanged);
+        OnPropertyChanged(IndexerPropertyChanged);
+
+        base.OnCollectionChanged(new NotifyCollectionChangedEventArgs(
             NotifyCollectionChangedAction.Remove,
             removedItems,
             0));
@@ -84,6 +109,13 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
 /// </summary>
 public partial class MainViewModel : ObservableObject, IDisposable
 {
+    private sealed class PendingLogBatch
+    {
+        public required string PortName { get; init; }
+
+        public required List<LogEntry> Logs { get; init; }
+    }
+
 /// <summary>
 /// 波特率检测建议事件
 /// </summary>
@@ -417,7 +449,10 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     }
 
     private const int MaxDisplayLogs = 2000; // Increased limit with optimizations
-    private const int BatchProcessSize = 50; // Process logs in batches
+    private const int DisplayLogTrimThreshold = MaxDisplayLogs + 200;
+    private const int AllLogsTrimThreshold = MaxDisplayLogs * 2 + 400;
+    private const int MaxQueuedLogEntries = MaxDisplayLogs * 4;
+    private const int MaxUiLogEntriesPerFlush = 250;
 
     [ObservableProperty]
     private string _statusMessage = "Ready";
@@ -912,6 +947,11 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         try
         {
             _logger.LogInformation("Clearing all logs");
+
+            while (_pendingLogBatches.TryDequeue(out var pendingBatch))
+            {
+                Interlocked.Add(ref _queuedLogCount, -pendingBatch.Logs.Count);
+            }
             
             // Clear both AllLogs and DisplayLogs collections
             AllLogs.Clear();
@@ -960,8 +1000,9 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         }
     }
 
-    private int _pendingUpdates = 0;
-    private const int MaxPendingUpdates = 50; // Rate limit UI updates
+    private readonly ConcurrentQueue<PendingLogBatch> _pendingLogBatches = new();
+    private int _isUiFlushScheduled = 0;
+    private long _queuedLogCount = 0;
     private long _totalDataReceived = 0;
     private long _totalDropped = 0;
     
@@ -970,17 +1011,8 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         var dataSize = e.Data?.Length ?? 0;
         Interlocked.Increment(ref _totalDataReceived);
         
-        _logger.LogTrace("OnDataReceived called: Port={Port}, Size={Size}bytes, Pending={Pending}",
-            e.PortName, dataSize, _pendingUpdates);
-        
-        // Enhanced rate limiting: Skip if too many pending updates
-        if (Interlocked.CompareExchange(ref _pendingUpdates, 0, 0) > MaxPendingUpdates)
-        {
-            Interlocked.Increment(ref _totalDropped);
-            _logger.LogWarning("⚠️ Dropping data update due to high pending count: Pending={Pending}, Port={Port}, TotalReceived={Total}, TotalDropped={Dropped}",
-                _pendingUpdates, e.PortName, _totalDataReceived, _totalDropped);
-            return;
-        }
+        _logger.LogTrace("OnDataReceived called: Port={Port}, Size={Size}bytes, QueuedLogs={QueuedLogs}",
+            e.PortName, dataSize, Interlocked.Read(ref _queuedLogCount));
 
         // Additional protection: Skip if data size is too large (potential garbage data)
         if (dataSize > 16384) // 16KB limit
@@ -991,15 +1023,11 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
             return;
         }
 
-        Interlocked.Increment(ref _pendingUpdates);
-        _logger.LogTrace("Processing data: Pending now {Pending}", _pendingUpdates);
-
         try
         {
             // Capture data on background thread
             if (e.Data == null || e.Data.Length == 0)
             {
-                Interlocked.Decrement(ref _pendingUpdates);
                 _logger.LogTrace("Received null or empty data, skipping: Port={Port}", e.PortName);
                 return;
             }
@@ -1118,260 +1146,251 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
             if (newLogs.Count == 0)
             {
                 _logger.LogTrace("No logs generated after processing, Port={Port}", portName);
-                Interlocked.Decrement(ref _pendingUpdates);
                 return;
             }
             
             _logger.LogTrace("Generated {Count} log entries, Port={Port}", newLogs.Count, portName);
 
-            // Cached regex for better performance
-            Regex? filterRegex = null;
-            if (!string.IsNullOrEmpty(SearchText) && IsRegexValid)
+            var queuedLogCount = Interlocked.Add(ref _queuedLogCount, newLogs.Count);
+            if (queuedLogCount > MaxQueuedLogEntries)
             {
-                try
+                Interlocked.Add(ref _queuedLogCount, -newLogs.Count);
+                Interlocked.Increment(ref _totalDropped);
+                _logger.LogWarning("⚠️ Dropping data update because queued logs exceed limit: Port={Port}, NewLogs={NewLogs}, QueuedLogs={QueuedLogs}, Limit={Limit}",
+                    portName, newLogs.Count, queuedLogCount, MaxQueuedLogEntries);
+                return;
+            }
+
+            _pendingLogBatches.Enqueue(new PendingLogBatch
+            {
+                PortName = portName,
+                Logs = newLogs
+            });
+
+            _logger.LogTrace("Queued UI batch: Port={Port}, NewLogs={Count}, QueuedLogs={QueuedLogs}",
+                portName, newLogs.Count, queuedLogCount);
+
+            SchedulePendingLogFlush();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Critical error in OnDataReceived: Port={Port}, Size={Size}bytes",
+                e.PortName, e.Data?.Length ?? 0);
+        }
+    }
+
+    private void SchedulePendingLogFlush()
+    {
+        if (Interlocked.Exchange(ref _isUiFlushScheduled, 1) == 1)
+        {
+            return;
+        }
+
+        if (!_dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, FlushPendingLogBatches))
+        {
+            Interlocked.Exchange(ref _isUiFlushScheduled, 0);
+            _logger.LogError("❌ Failed to enqueue merged UI log flush");
+        }
+    }
+
+    private void FlushPendingLogBatches()
+    {
+        var processedLogCount = 0;
+        var batchesToFlush = new List<PendingLogBatch>();
+
+        while (processedLogCount < MaxUiLogEntriesPerFlush &&
+               _pendingLogBatches.TryDequeue(out var batch))
+        {
+            batchesToFlush.Add(batch);
+            processedLogCount += batch.Logs.Count;
+            Interlocked.Add(ref _queuedLogCount, -batch.Logs.Count);
+        }
+
+        try
+        {
+            if (batchesToFlush.Count == 0)
+            {
+                return;
+            }
+
+            var updateStartTime = DateTime.Now;
+            var openPortMap = OpenPorts.ToDictionary(p => p.PortName, StringComparer.OrdinalIgnoreCase);
+            var searchTextSnapshot = SearchText;
+            var isRegexValidSnapshot = IsRegexValid;
+            var filterRegex = CreateSearchRegex(searchTextSnapshot, isRegexValidSnapshot, 50);
+
+            var estimatedLogCount = batchesToFlush.Sum(batch => batch.Logs.Count);
+            var allLogsToAdd = new List<LogEntry>(estimatedLogCount);
+            var displayLogsToAdd = new List<LogEntry>(estimatedLogCount);
+            var portsNeedingStatsRefresh = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var pendingBatch in batchesToFlush)
+            {
+                if (!openPortMap.TryGetValue(pendingBatch.PortName, out var portVm))
                 {
-                    filterRegex = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromMilliseconds(50));
-                    _logger.LogTrace("Created regex filter: Pattern={Pattern}", SearchText);
+                    _logger.LogDebug("Ignoring queued data for closed port: {Port}", pendingBatch.PortName);
+                    continue;
                 }
-                catch (Exception ex)
+
+                allLogsToAdd.AddRange(pendingBatch.Logs);
+                portsNeedingStatsRefresh.Add(pendingBatch.PortName);
+
+                if (string.IsNullOrEmpty(searchTextSnapshot))
                 {
-                    _logger.LogWarning(ex, "Failed to create regex filter: Pattern={Pattern}", SearchText);
-                    filterRegex = null;
+                    displayLogsToAdd.AddRange(pendingBatch.Logs);
+                }
+                else if (filterRegex != null)
+                {
+                    foreach (var logEntry in pendingBatch.Logs)
+                    {
+                        if (MatchesSearch(logEntry, filterRegex))
+                        {
+                            displayLogsToAdd.Add(logEntry);
+                        }
+                    }
+                }
+
+                foreach (var logEntry in pendingBatch.Logs)
+                {
+                    portVm.AddLog(logEntry);
                 }
             }
 
-            // Dispatch UI updates with batching for smoother performance
-            _logger.LogTrace("Enqueueing UI update: LogCount={Count}, Port={Port}", newLogs.Count, portName);
-            
-            var enqueued = _dispatcherQueue.TryEnqueue(() =>
+            if (allLogsToAdd.Count > 0)
             {
-                var updateStartTime = DateTime.Now;
-                _logger.LogTrace("🔄 UI update started: Port={Port}", portName);
-                
-                try
-                {
-                    // Check if port is still active in UI to prevent residual logs from closed ports
-                    // This ensures that if a port was closed while updates were still in the dispatcher queue,
-                    // they won't be added to the global log collections.
-                    if (!OpenPorts.Any(p => p.PortName == portName))
-                    {
-                        _logger.LogDebug("Ignoring data update for closed port: {Port}", portName);
-                        return;
-                    }
+                AllLogs.AddRange(allLogsToAdd);
+            }
 
-                    // Batch add to AllLogs with error handling
-                    try
-                    {
-                        var beforeCount = AllLogs.Count;
-                        
-                        if (AllLogs is RangeObservableCollection<LogEntry> rangeAllLogsAdd)
-                        {
-                            rangeAllLogsAdd.AddRange(newLogs);
-                            _logger.LogTrace("Added {Count} logs to AllLogs using AddRange: Before={Before}, After={After}",
-                                newLogs.Count, beforeCount, AllLogs.Count);
-                        }
-                        else
-                        {
-                            foreach (var log in newLogs)
-                            {
-                                AllLogs.Add(log);
-                            }
-                            _logger.LogTrace("Added {Count} logs to AllLogs individually: Before={Before}, After={After}",
-                                newLogs.Count, beforeCount, AllLogs.Count);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "❌ Error adding to AllLogs: Count={Count}, Port={Port}",
-                            newLogs.Count, portName);
-                    }
-                    
-                    // Apply regex filter to new logs
-                    var logsToDisplay = newLogs;
-                    if (filterRegex != null)
-                    {
-                        try
-                        {
-                            var filterStartTime = DateTime.Now;
-                            logsToDisplay = newLogs.Where(log =>
-                            {
-                                try
-                                {
-                                    return filterRegex.IsMatch(log.Content) || filterRegex.IsMatch(log.PortName);
-                                }
-                                catch (Exception matchEx)
-                                {
-                                    _logger.LogTrace("Regex match failed for log: {Error}", matchEx.Message);
-                                    return false;
-                                }
-                            }).ToList();
-                            
-                            var filterDuration = (DateTime.Now - filterStartTime).TotalMilliseconds;
-                            _logger.LogTrace("Filtered {Input} logs to {Output} logs in {Duration}ms",
-                                newLogs.Count, logsToDisplay.Count, filterDuration);
-                            
-                            MatchCount = DisplayLogs.Count + logsToDisplay.Count;
-                        }
-                        catch (RegexMatchTimeoutException ex)
-                        {
-                            _logger.LogWarning(ex, "⚠️ Regex match timeout during filter: Pattern={Pattern}", SearchText);
-                            logsToDisplay = new List<LogEntry>();
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "❌ Error filtering logs: Pattern={Pattern}", SearchText);
-                            logsToDisplay = newLogs; // Fallback to showing all
-                        }
-                    }
-                    
-                    // Batch add to DisplayLogs with error handling
-                    try
-                    {
-                        var beforeDisplayCount = DisplayLogs.Count;
-                        
-                        if (DisplayLogs is RangeObservableCollection<LogEntry> rangeDisplayLogsAdd && logsToDisplay.Count > 5)
-                        {
-                            rangeDisplayLogsAdd.AddRange(logsToDisplay);
-                            _logger.LogTrace("Added {Count} logs to DisplayLogs using AddRange: Before={Before}, After={After}",
-                                logsToDisplay.Count, beforeDisplayCount, DisplayLogs.Count);
-                        }
-                        else
-                        {
-                            foreach (var log in logsToDisplay)
-                            {
-                                DisplayLogs.Add(log);
-                            }
-                            _logger.LogTrace("Added {Count} logs to DisplayLogs individually: Before={Before}, After={After}",
-                                logsToDisplay.Count, beforeDisplayCount, DisplayLogs.Count);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "❌ Error adding to DisplayLogs: Count={Count}, Port={Port}",
-                            logsToDisplay.Count, portName);
-                    }
-
-                    // Trim logs in batches to reduce UI updates
-                    try
-                    {
-                        var removeCount = DisplayLogs.Count - MaxDisplayLogs;
-                        if (removeCount > 0)
-                        {
-                            _logger.LogTrace("Trimming DisplayLogs: Removing {Count} items, Current={Current}, Max={Max}",
-                                removeCount, DisplayLogs.Count, MaxDisplayLogs);
-
-                            if (DisplayLogs is RangeObservableCollection<LogEntry> rangeDisplayLogsRemove)
-                            {
-                                rangeDisplayLogsRemove.RemoveFromStart(removeCount);
-                                _logger.LogTrace("Trimmed DisplayLogs using RemoveFromStart: New count={Count}", DisplayLogs.Count);
-                            }
-                            else
-                            {
-                                for (int i = 0; i < removeCount && i < DisplayLogs.Count; i++)
-                                {
-                                    DisplayLogs.RemoveAt(0);
-                                }
-                                _logger.LogTrace("Trimmed DisplayLogs individually: New count={Count}", DisplayLogs.Count);
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "❌ Error trimming DisplayLogs: RemoveCount={Count}, CurrentCount={Current}",
-                            DisplayLogs.Count - MaxDisplayLogs, DisplayLogs.Count);
-                    }
-                    
-                    // Trim AllLogs
-                    try
-                    {
-                        var removeAllCount = AllLogs.Count - MaxDisplayLogs * 2;
-                        if (removeAllCount > 0)
-                        {
-                            _logger.LogTrace("Trimming AllLogs: Removing {Count} items, Current={Current}, Max={Max}",
-                                removeAllCount, AllLogs.Count, MaxDisplayLogs * 2);
-
-                            if (AllLogs is RangeObservableCollection<LogEntry> rangeAllLogsRemove)
-                            {
-                                rangeAllLogsRemove.RemoveFromStart(removeAllCount);
-                                _logger.LogTrace("Trimmed AllLogs using RemoveFromStart: New count={Count}", AllLogs.Count);
-                            }
-                            else
-                            {
-                                for (int i = 0; i < removeAllCount && i < AllLogs.Count; i++)
-                                {
-                                    AllLogs.RemoveAt(0);
-                                }
-                                _logger.LogTrace("Trimmed AllLogs individually: New count={Count}", AllLogs.Count);
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "❌ Error trimming AllLogs: RemoveCount={Count}, CurrentCount={Current}",
-                            AllLogs.Count - MaxDisplayLogs * 2, AllLogs.Count);
-                    }
-
-                    // Update port-specific logs and statistics
-                    try
-                    {
-                        var portVm = OpenPorts.FirstOrDefault(p => p.PortName == portName);
-                        if (portVm != null)
-                        {
-                            // Batch add logs to port
-                            foreach (var logEntry in newLogs)
-                            {
-                                portVm.AddLog(logEntry);
-                            }
-                            
-                            var stats = _serialPortService.GetStatistics(portName);
-                            portVm.UpdateStatistics(stats);
-                            
-                            _logger.LogTrace("Updated port statistics: Port={Port}, RxBytes={Rx}, TxBytes={Tx}",
-                                portName, stats.ReceivedBytes, stats.SentBytes);
-                        }
-                        else
-                        {
-                            _logger.LogWarning("⚠️ Port ViewModel not found: Port={Port}", portName);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "❌ Error updating port statistics: Port={Port}", portName);
-                    }
-                    
-                    var updateDuration = (DateTime.Now - updateStartTime).TotalMilliseconds;
-                    _logger.LogTrace("✅ UI update completed: Port={Port}, Duration={Duration}ms", portName, updateDuration);
-                    
-                    if (updateDuration > 100)
-                    {
-                        _logger.LogWarning("⚠️ Slow UI update detected: Duration={Duration}ms, Port={Port}",
-                            updateDuration, portName);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "❌ Critical error updating UI with received data: Port={Port}", portName);
-                }
-                finally
-                {
-                    Interlocked.Decrement(ref _pendingUpdates);
-                    _logger.LogTrace("UI update finished: Pending now {Pending}", _pendingUpdates);
-                }
-            });
-
-            if (!enqueued)
+            if (displayLogsToAdd.Count > 0)
             {
-                Interlocked.Decrement(ref _pendingUpdates);
-                _logger.LogError("❌ Failed to enqueue UI update: Port={Port}, Pending={Pending}",
-                    portName, _pendingUpdates);
+                foreach (var logEntry in displayLogsToAdd)
+                {
+                    DisplayLogs.Add(logEntry);
+                }
+            }
+
+            TrimDisplayLogs();
+            TrimLogCollection(AllLogs, AllLogsTrimThreshold, MaxDisplayLogs * 2, nameof(AllLogs));
+
+            MatchCount = !string.IsNullOrEmpty(searchTextSnapshot) && isRegexValidSnapshot
+                ? DisplayLogs.Count
+                : 0;
+
+            foreach (var portName in portsNeedingStatsRefresh)
+            {
+                if (openPortMap.TryGetValue(portName, out var portVm))
+                {
+                    var stats = _serialPortService.GetStatistics(portName);
+                    portVm.UpdateStatistics(stats);
+                }
+            }
+
+            var updateDuration = (DateTime.Now - updateStartTime).TotalMilliseconds;
+            _logger.LogTrace("✅ Merged UI flush completed: Batches={BatchCount}, Logs={LogCount}, Duration={Duration}ms, RemainingQueuedLogs={QueuedLogs}",
+                batchesToFlush.Count, allLogsToAdd.Count, updateDuration, Interlocked.Read(ref _queuedLogCount));
+
+            if (updateDuration > 100)
+            {
+                _logger.LogWarning("⚠️ Slow merged UI flush detected: Duration={Duration}ms, Batches={BatchCount}, Logs={LogCount}",
+                    updateDuration, batchesToFlush.Count, allLogsToAdd.Count);
             }
         }
         catch (Exception ex)
         {
-            Interlocked.Decrement(ref _pendingUpdates);
-            _logger.LogError(ex, "❌ Critical error in OnDataReceived: Port={Port}, Size={Size}bytes",
-                e.PortName, e.Data?.Length ?? 0);
+            _logger.LogError(ex, "❌ Critical error while flushing merged UI logs");
         }
+        finally
+        {
+            Interlocked.Exchange(ref _isUiFlushScheduled, 0);
+
+            if (!_pendingLogBatches.IsEmpty)
+            {
+                SchedulePendingLogFlush();
+            }
+        }
+    }
+
+    private Regex? CreateSearchRegex(string searchText, bool isRegexValid, int timeoutMilliseconds)
+    {
+        if (string.IsNullOrEmpty(searchText) || !isRegexValid)
+        {
+            return null;
+        }
+
+        try
+        {
+            return new Regex(
+                searchText,
+                RegexOptions.IgnoreCase | RegexOptions.Compiled,
+                TimeSpan.FromMilliseconds(timeoutMilliseconds));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to create search regex for live log filtering: Pattern={Pattern}", searchText);
+            return null;
+        }
+    }
+
+    private bool MatchesSearch(LogEntry logEntry, Regex filterRegex)
+    {
+        try
+        {
+            return filterRegex.IsMatch(logEntry.Content) || filterRegex.IsMatch(logEntry.PortName);
+        }
+        catch (RegexMatchTimeoutException ex)
+        {
+            _logger.LogWarning(ex, "Regex match timeout during live log filtering");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Regex match failed during live log filtering");
+            return false;
+        }
+    }
+
+    private void TrimLogCollection(
+        RangeObservableCollection<LogEntry> collection,
+        int trimThreshold,
+        int targetCount,
+        string collectionName)
+    {
+        if (collection.Count <= trimThreshold)
+        {
+            return;
+        }
+
+        var removeCount = collection.Count - targetCount;
+        if (removeCount <= 0)
+        {
+            return;
+        }
+
+        collection.RemoveFromStart(removeCount);
+        _logger.LogTrace("Trimmed {CollectionName}: Removed={Removed}, NewCount={Count}, Threshold={Threshold}, Target={Target}",
+            collectionName, removeCount, collection.Count, trimThreshold, targetCount);
+    }
+
+    private void TrimDisplayLogs()
+    {
+        if (DisplayLogs.Count <= DisplayLogTrimThreshold)
+        {
+            return;
+        }
+
+        var removeCount = DisplayLogs.Count - MaxDisplayLogs;
+        if (removeCount <= 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < removeCount && DisplayLogs.Count > 0; i++)
+        {
+            DisplayLogs.RemoveAt(0);
+        }
+
+        _logger.LogTrace("Trimmed {CollectionName}: Removed={Removed}, NewCount={Count}, Threshold={Threshold}, Target={Target}",
+            nameof(DisplayLogs), removeCount, DisplayLogs.Count, DisplayLogTrimThreshold, MaxDisplayLogs);
     }
 
     private void OnPortStateChanged(object? sender, PortStateChangedEventArgs e)
