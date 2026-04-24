@@ -475,7 +475,7 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
 
     public ObservableCollection<int> AvailableBaudRates { get; } = new()
     {
-        1152000, 3000000, 6000000
+        1152000, 2000000, 3000000, 6000000
     };
 
     [ObservableProperty]
