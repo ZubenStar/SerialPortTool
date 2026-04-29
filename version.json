@@ -1,7 +1,14 @@
 ﻿{
-    "version": "1.8.7",
+    "version": "1.8.8",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-04-29",
+            "version": "1.8.8",
+            "changes": [
+                "Version 1.8.8 release"
+            ]
+        },
         {
             "date": "2026-04-29",
             "version": "1.8.7",
