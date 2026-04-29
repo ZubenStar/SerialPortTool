@@ -74,6 +74,7 @@ public partial class App : Application
         services.AddSingleton<IBaudRateDetectorService, BaudRateDetectorService>();
         services.AddSingleton<IDataValidationService, DataValidationService>();
         services.AddSingleton<ISerialPortService, SerialPortService>();
+        services.AddSingleton<ITuningProtocolService, TuningProtocolService>();
         services.AddSingleton<ILogFilterService, LogFilterService>();
         services.AddSingleton<IFileLoggerService, FileLoggerService>();
         services.AddSingleton<ISettingsService, SettingsService>();

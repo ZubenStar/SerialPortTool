@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -121,6 +122,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 /// </summary>
 public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     private readonly ISerialPortService _serialPortService;
+    private readonly ITuningProtocolService _tuningProtocolService;
     private readonly ILogFilterService _logFilterService;
     private readonly IFileLoggerService _fileLoggerService;
     private readonly ISettingsService _settingsService;
@@ -361,6 +363,43 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     [ObservableProperty]
     private string _rxColorHex = "#107C10"; // Green for RX (received)
 
+    [ObservableProperty]
+    private string _tuningBinFilePath = string.Empty;
+
+    [ObservableProperty]
+    private string _tuningDescriptorFilePath = string.Empty;
+
+    [ObservableProperty]
+    private bool _isTuningDescriptorValid = false;
+
+    [ObservableProperty]
+    private bool _isTuningWatching = false;
+
+    [ObservableProperty]
+    private bool _isTuningBusy = false;
+
+    [ObservableProperty]
+    private string _tuningStatus = "未配置 tuning";
+
+    [ObservableProperty]
+    private string _tuningDescriptorStatus = "未选择 JSON 描述文件";
+
+    [ObservableProperty]
+    private bool _canUseTuning = false;
+
+    public bool HasTuningBinFilePath => !string.IsNullOrWhiteSpace(TuningBinFilePath);
+
+    public bool HasTuningDescriptorPath => !string.IsNullOrWhiteSpace(TuningDescriptorFilePath);
+
+    public string TuningWatchButtonText => IsTuningWatching ? "停止监听" : "开始监听";
+
+    private TuningProtocolDescriptor? _tuningDescriptor;
+    private FileSystemWatcher? _tuningFileWatcher;
+    private CancellationTokenSource? _tuningChangeCts;
+    private readonly SemaphoreSlim _tuningSendLock = new(1, 1);
+    private string _lastTuningBaselineHash = string.Empty;
+    private bool _suppressTuningWatchPersistence = false;
+
     /// <summary>
     /// 端口颜色调色板 - 用于自动分配不同颜色给不同串口
     /// </summary>
@@ -448,6 +487,35 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         _ = _settingsService.SaveSettingAsync("RxColorHex", value);
     }
 
+    partial void OnTuningBinFilePathChanged(string value)
+    {
+        _ = _settingsService.SaveSettingAsync("TuningBinFilePath", value);
+        OnPropertyChanged(nameof(HasTuningBinFilePath));
+        RefreshTuningAvailability();
+    }
+
+    partial void OnTuningDescriptorFilePathChanged(string value)
+    {
+        _ = _settingsService.SaveSettingAsync("TuningDescriptorFilePath", value);
+        OnPropertyChanged(nameof(HasTuningDescriptorPath));
+        RefreshTuningAvailability();
+    }
+
+    partial void OnIsTuningDescriptorValidChanged(bool value)
+    {
+        RefreshTuningAvailability();
+    }
+
+    partial void OnIsTuningWatchingChanged(bool value)
+    {
+        if (!_suppressTuningWatchPersistence)
+        {
+            _ = _settingsService.SaveSettingAsync("TuningIsWatching", value ? 1 : 0);
+        }
+
+        OnPropertyChanged(nameof(TuningWatchButtonText));
+    }
+
     private const int MaxDisplayLogs = 2000; // Increased limit with optimizations
     private const int DisplayLogTrimThreshold = MaxDisplayLogs + 200;
     private const int AllLogsTrimThreshold = MaxDisplayLogs * 2 + 400;
@@ -504,6 +572,7 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
 
     public MainViewModel(
         ISerialPortService serialPortService,
+        ITuningProtocolService tuningProtocolService,
         ILogFilterService logFilterService,
         IFileLoggerService fileLoggerService,
         ISettingsService settingsService,
@@ -512,6 +581,7 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         Services.IDataValidationService? dataValidationService = null)
     {
         _serialPortService = serialPortService;
+        _tuningProtocolService = tuningProtocolService;
         _logFilterService = logFilterService;
         _fileLoggerService = fileLoggerService;
         _settingsService = settingsService;
@@ -555,11 +625,30 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         TxColorHex = await _settingsService.LoadSettingAsync("TxColorHex", "#0078D4");
         RxColorHex = await _settingsService.LoadSettingAsync("RxColorHex", "#107C10");
 
+        // Load tuning settings. The protocol itself is never defaulted; it must come from the user's JSON file.
+        TuningBinFilePath = await _settingsService.LoadSettingAsync("TuningBinFilePath", string.Empty);
+        TuningDescriptorFilePath = await _settingsService.LoadSettingAsync("TuningDescriptorFilePath", string.Empty);
+        _lastTuningBaselineHash = await _settingsService.LoadSettingAsync("TuningBaselineHash", string.Empty);
+        if (!string.IsNullOrWhiteSpace(TuningDescriptorFilePath))
+        {
+            await LoadTuningDescriptorCoreAsync();
+        }
+        else
+        {
+            RefreshTuningAvailability();
+        }
+
         // Load recent search texts
         await LoadRecentSearchesAsync();
 
         // Scan ports
         await ScanPortsAsync();
+
+        var shouldResumeTuningWatch = await _settingsService.LoadSettingAsync("TuningIsWatching", 0) == 1;
+        if (shouldResumeTuningWatch && CanUseTuning)
+        {
+            await StartTuningWatchAsync(createBaseline: true);
+        }
     }
 
     [RelayCommand]
@@ -939,6 +1028,506 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     {
         AllLogs.Add(logEntry);
         DisplayLogs.Add(logEntry);
+    }
+
+    public async Task SetTuningBinFilePathAsync(string filePath)
+    {
+        TuningBinFilePath = filePath ?? string.Empty;
+        if (IsTuningWatching)
+        {
+            await RestartTuningWatchAsync();
+        }
+    }
+
+    public async Task SetTuningDescriptorFilePathAsync(string filePath)
+    {
+        TuningDescriptorFilePath = filePath ?? string.Empty;
+        await LoadTuningDescriptorCoreAsync();
+        if (IsTuningWatching)
+        {
+            await RestartTuningWatchAsync();
+        }
+    }
+
+    [RelayCommand]
+    private async Task ReloadTuningDescriptorAsync()
+    {
+        await LoadTuningDescriptorCoreAsync();
+        if (IsTuningWatching)
+        {
+            await RestartTuningWatchAsync();
+        }
+    }
+
+    [RelayCommand]
+    private async Task ToggleTuningWatchAsync()
+    {
+        if (IsTuningWatching)
+        {
+            StopTuningWatch();
+            TuningStatus = "已停止 tuning 监听";
+            StatusMessage = TuningStatus;
+            return;
+        }
+
+        await StartTuningWatchAsync(createBaseline: true);
+    }
+
+    [RelayCommand]
+    private async Task SendCurrentTuningAsync()
+    {
+        await SendTuningFileAsync(force: true, cancellationToken: CancellationToken.None);
+    }
+
+    private async Task LoadTuningDescriptorCoreAsync()
+    {
+        if (string.IsNullOrWhiteSpace(TuningDescriptorFilePath))
+        {
+            _tuningDescriptor = null;
+            IsTuningDescriptorValid = false;
+            TuningDescriptorStatus = "未选择 JSON 描述文件";
+            TuningStatus = "未配置 tuning JSON";
+            return;
+        }
+
+        try
+        {
+            _tuningDescriptor = await _tuningProtocolService.LoadDescriptorAsync(TuningDescriptorFilePath);
+            IsTuningDescriptorValid = true;
+            TuningDescriptorStatus = $"JSON 有效: {_tuningDescriptor.Name}";
+            TuningStatus = "tuning JSON 已加载";
+        }
+        catch (Exception ex)
+        {
+            _tuningDescriptor = null;
+            IsTuningDescriptorValid = false;
+            TuningDescriptorStatus = $"JSON 无效: {ex.Message}";
+            TuningStatus = TuningDescriptorStatus;
+            if (IsTuningWatching)
+            {
+                StopTuningWatch();
+            }
+        }
+    }
+
+    private async Task StartTuningWatchAsync(bool createBaseline)
+    {
+        if (!CanUseTuning)
+        {
+            var message = BuildTuningUnavailableMessage();
+            SetTuningUiState(() =>
+            {
+                TuningStatus = message;
+                StatusMessage = message;
+            });
+            return;
+        }
+
+        if (_tuningDescriptor == null)
+        {
+            await LoadTuningDescriptorCoreAsync();
+            if (_tuningDescriptor == null)
+            {
+                return;
+            }
+        }
+
+        try
+        {
+            if (createBaseline)
+            {
+                await WaitForStableTuningFileAsync(TuningBinFilePath, CancellationToken.None);
+                _lastTuningBaselineHash = await _tuningProtocolService.ComputeFileHashAsync(TuningBinFilePath);
+                await _settingsService.SaveSettingAsync("TuningBaselineHash", _lastTuningBaselineHash);
+            }
+
+            ConfigureTuningWatcher();
+            IsTuningWatching = true;
+            await _settingsService.SaveSettingAsync("TuningIsWatching", 1);
+            TuningStatus = createBaseline
+                ? "已建立 tuning 基线，开始监听后续修改"
+                : "已开始 tuning 监听";
+            StatusMessage = TuningStatus;
+        }
+        catch (Exception ex)
+        {
+            StopTuningWatch();
+            TuningStatus = $"启动 tuning 监听失败: {ex.Message}";
+            _logger.LogError(ex, "Failed to start tuning watcher");
+        }
+    }
+
+    private async Task RestartTuningWatchAsync()
+    {
+        StopTuningWatch(persistState: false);
+        if (CanUseTuning)
+        {
+            await StartTuningWatchAsync(createBaseline: true);
+            return;
+        }
+
+        await _settingsService.SaveSettingAsync("TuningIsWatching", 0);
+        var message = BuildTuningUnavailableMessage();
+        TuningStatus = message;
+        StatusMessage = message;
+    }
+
+    private void StopTuningWatch(bool persistState = true)
+    {
+        _tuningChangeCts?.Cancel();
+        _tuningChangeCts?.Dispose();
+        _tuningChangeCts = null;
+
+        if (_tuningFileWatcher != null)
+        {
+            _tuningFileWatcher.EnableRaisingEvents = false;
+            _tuningFileWatcher.Changed -= OnTuningFileChanged;
+            _tuningFileWatcher.Created -= OnTuningFileChanged;
+            _tuningFileWatcher.Renamed -= OnTuningFileRenamed;
+            _tuningFileWatcher.Dispose();
+            _tuningFileWatcher = null;
+        }
+
+        if (persistState)
+        {
+            IsTuningWatching = false;
+        }
+        else
+        {
+            _suppressTuningWatchPersistence = true;
+            try
+            {
+                IsTuningWatching = false;
+            }
+            finally
+            {
+                _suppressTuningWatchPersistence = false;
+            }
+        }
+    }
+
+    private void ConfigureTuningWatcher()
+    {
+        StopTuningWatch(persistState: false);
+
+        var directory = Path.GetDirectoryName(TuningBinFilePath);
+        var fileName = Path.GetFileName(TuningBinFilePath);
+        if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName))
+        {
+            throw new InvalidOperationException("tuning bin 文件路径无效");
+        }
+
+        _tuningFileWatcher = new FileSystemWatcher(directory, fileName)
+        {
+            NotifyFilter = NotifyFilters.FileName |
+                           NotifyFilters.LastWrite |
+                           NotifyFilters.Size |
+                           NotifyFilters.CreationTime,
+            IncludeSubdirectories = false
+        };
+        _tuningFileWatcher.Changed += OnTuningFileChanged;
+        _tuningFileWatcher.Created += OnTuningFileChanged;
+        _tuningFileWatcher.Renamed += OnTuningFileRenamed;
+        _tuningFileWatcher.EnableRaisingEvents = true;
+    }
+
+    private void OnTuningFileChanged(object sender, FileSystemEventArgs e)
+    {
+        if (IsCurrentTuningFile(e.FullPath))
+        {
+            ScheduleTuningAutoSend();
+        }
+    }
+
+    private void OnTuningFileRenamed(object sender, RenamedEventArgs e)
+    {
+        if (IsCurrentTuningFile(e.FullPath))
+        {
+            ScheduleTuningAutoSend();
+        }
+    }
+
+    private bool IsCurrentTuningFile(string path)
+    {
+        return !string.IsNullOrWhiteSpace(TuningBinFilePath) &&
+               string.Equals(Path.GetFullPath(path), Path.GetFullPath(TuningBinFilePath), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ScheduleTuningAutoSend()
+    {
+        _tuningChangeCts?.Cancel();
+        _tuningChangeCts?.Dispose();
+
+        var cts = new CancellationTokenSource();
+        _tuningChangeCts = cts;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(700, cts.Token);
+                await HandleTuningFileChangedAsync(CancellationToken.None);
+            }
+            catch (OperationCanceledException)
+            {
+                // A newer file event superseded this one.
+            }
+            catch (Exception ex)
+            {
+                SetTuningUiState(() => TuningStatus = $"tuning 自动发送失败: {ex.Message}");
+                _logger.LogError(ex, "Tuning auto-send failed");
+            }
+        }, CancellationToken.None);
+    }
+
+    private async Task HandleTuningFileChangedAsync(CancellationToken cancellationToken)
+    {
+        if (!IsTuningWatching)
+        {
+            return;
+        }
+
+        await WaitForStableTuningFileAsync(TuningBinFilePath, cancellationToken);
+        if (!IsTuningWatching)
+        {
+            return;
+        }
+
+        var newHash = await _tuningProtocolService.ComputeFileHashAsync(TuningBinFilePath, cancellationToken);
+        if (string.Equals(newHash, _lastTuningBaselineHash, StringComparison.OrdinalIgnoreCase))
+        {
+            SetTuningUiState(() => TuningStatus = "检测到 tuning 文件事件，但内容未变化");
+            return;
+        }
+
+        await SendTuningFileAsync(force: false, cancellationToken);
+    }
+
+    private async Task SendTuningFileAsync(bool force, CancellationToken cancellationToken)
+    {
+        if (!force && !IsTuningWatching)
+        {
+            return;
+        }
+
+        if (!CanUseTuning)
+        {
+            var message = BuildTuningUnavailableMessage();
+            SetTuningUiState(() =>
+            {
+                TuningStatus = message;
+                StatusMessage = message;
+            });
+            return;
+        }
+
+        if (_tuningDescriptor == null)
+        {
+            await LoadTuningDescriptorCoreAsync();
+            if (_tuningDescriptor == null)
+            {
+                return;
+            }
+        }
+
+        await _tuningSendLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (!force && !IsTuningWatching)
+            {
+                return;
+            }
+
+            SetTuningUiState(() =>
+            {
+                IsTuningBusy = true;
+                TuningStatus = "正在打包 tuning bin...";
+                StatusMessage = TuningStatus;
+            });
+
+            var targetPorts = _serialPortService.GetOpenPorts().ToList();
+            if (targetPorts.Count == 0)
+            {
+                SetTuningUiState(() =>
+                {
+                    TuningStatus = "检测到 tuning 修改，但没有已打开串口，未更新基线";
+                    StatusMessage = TuningStatus;
+                });
+                return;
+            }
+
+            var buildResult = await _tuningProtocolService.BuildAsync(TuningBinFilePath, _tuningDescriptor, cancellationToken);
+            if (!force &&
+                string.Equals(buildResult.BinSha256, _lastTuningBaselineHash, StringComparison.OrdinalIgnoreCase))
+            {
+                SetTuningUiState(() => TuningStatus = "tuning bin 内容未变化，无需发送");
+                return;
+            }
+
+            SetTuningUiState(() =>
+            {
+                TuningStatus = $"正在发送 tuning: {buildResult.PacketCount} 包 -> {targetPorts.Count} 个串口";
+                StatusMessage = TuningStatus;
+            });
+
+            foreach (var portName in targetPorts)
+            {
+                for (var i = 0; i < buildResult.SendSegments.Count; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var segment = buildResult.SendSegments[i];
+                    await _serialPortService.SendDataAsync(portName, segment.Data);
+
+                    var hasMorePacketSegments = buildResult.SendSegments
+                        .Skip(i + 1)
+                        .Any(next => next.IsPacket);
+                    if (segment.IsPacket &&
+                        hasMorePacketSegments &&
+                        buildResult.DelayBetweenPacketsMs > 0)
+                    {
+                        await Task.Delay(buildResult.DelayBetweenPacketsMs, cancellationToken);
+                    }
+                }
+            }
+
+            _lastTuningBaselineHash = buildResult.BinSha256;
+            await _settingsService.SaveSettingAsync("TuningBaselineHash", _lastTuningBaselineHash);
+
+            SetTuningUiState(() =>
+            {
+                AddTuningSentLogs(targetPorts, buildResult);
+                RefreshTuningPortStatistics(targetPorts);
+                TuningStatus = $"tuning 发送完成: {buildResult.TotalBytes} 字节，{buildResult.PacketCount} 包，{targetPorts.Count} 个串口";
+                StatusMessage = TuningStatus;
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            SetTuningUiState(() =>
+            {
+                TuningStatus = $"tuning 发送失败: {ex.Message}";
+                StatusMessage = TuningStatus;
+            });
+            _logger.LogError(ex, "Failed to send tuning data");
+        }
+        finally
+        {
+            SetTuningUiState(() => IsTuningBusy = false);
+            _tuningSendLock.Release();
+        }
+    }
+
+    private void AddTuningSentLogs(IReadOnlyList<string> targetPorts, TuningBuildResult buildResult)
+    {
+        if (!ShowSentData)
+        {
+            return;
+        }
+
+        var openPortMap = OpenPorts.ToDictionary(p => p.PortName, StringComparer.OrdinalIgnoreCase);
+        var summary = $"[TUNING] {Path.GetFileName(buildResult.BinFilePath)} | {buildResult.TotalBytes} bytes | {buildResult.PacketCount} packets";
+        foreach (var portName in targetPorts)
+        {
+            var logEntry = new LogEntry
+            {
+                PortName = portName,
+                Content = summary,
+                IsReceived = false,
+                ColorHex = TxColorHex
+            };
+            AddSentLog(logEntry);
+            if (openPortMap.TryGetValue(portName, out var portVm))
+            {
+                portVm.AddLog(logEntry);
+            }
+        }
+    }
+
+    private void RefreshTuningPortStatistics(IReadOnlyList<string> targetPorts)
+    {
+        var openPortMap = OpenPorts.ToDictionary(p => p.PortName, StringComparer.OrdinalIgnoreCase);
+        foreach (var portName in targetPorts)
+        {
+            if (openPortMap.TryGetValue(portName, out var portVm))
+            {
+                var stats = _serialPortService.GetStatistics(portName);
+                portVm.UpdateStatistics(stats);
+            }
+        }
+    }
+
+    private async Task WaitForStableTuningFileAsync(string filePath, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        {
+            throw new FileNotFoundException("tuning bin 文件不存在", filePath);
+        }
+
+        long previousLength = -1;
+        DateTime previousWriteTime = DateTime.MinValue;
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var info = new FileInfo(filePath);
+            if (info.Exists &&
+                info.Length == previousLength &&
+                info.LastWriteTimeUtc == previousWriteTime)
+            {
+                return;
+            }
+
+            previousLength = info.Length;
+            previousWriteTime = info.LastWriteTimeUtc;
+            await Task.Delay(250, cancellationToken);
+        }
+    }
+
+    private void RefreshTuningAvailability()
+    {
+        CanUseTuning = IsTuningDescriptorValid &&
+                       !string.IsNullOrWhiteSpace(TuningBinFilePath) &&
+                       File.Exists(TuningBinFilePath);
+    }
+
+    private string BuildTuningUnavailableMessage()
+    {
+        if (string.IsNullOrWhiteSpace(TuningBinFilePath))
+        {
+            return "请选择 tuning bin 文件";
+        }
+
+        if (!File.Exists(TuningBinFilePath))
+        {
+            return "tuning bin 文件不存在";
+        }
+
+        if (string.IsNullOrWhiteSpace(TuningDescriptorFilePath))
+        {
+            return "请选择 tuning JSON 描述文件";
+        }
+
+        if (!IsTuningDescriptorValid)
+        {
+            return TuningDescriptorStatus;
+        }
+
+        return "tuning 当前不可用";
+    }
+
+    private void SetTuningUiState(Action update)
+    {
+        if (_dispatcherQueue.HasThreadAccess)
+        {
+            update();
+        }
+        else
+        {
+            _dispatcherQueue.TryEnqueue(() => update());
+        }
     }
 
     [RelayCommand]
@@ -1565,6 +2154,8 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
 
         _filterDebounceTimer?.Dispose();
         _filterDebounceTimer = null;
+        StopTuningWatch(persistState: false);
+        _tuningSendLock.Dispose();
 
         _serialPortService.DataReceived -= OnDataReceived;
         _serialPortService.PortStateChanged -= OnPortStateChanged;

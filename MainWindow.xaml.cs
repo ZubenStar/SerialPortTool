@@ -7,6 +7,8 @@ using SerialPortTool.Helpers;
 using SerialPortTool.ViewModels;
 using System;
 using System.Linq;
+using Windows.Storage.Pickers;
+using WinRT.Interop;
 
 namespace SerialPortTool;
 
@@ -332,6 +334,46 @@ public sealed partial class MainWindow : Window
         // Sync selected port from UI to ViewModel
         ViewModel.SelectedPort = OpenPortListView.SelectedItem as ViewModels.PortViewModel;
         await ViewModel.SendCommand.ExecuteAsync(null);
+    }
+
+    private async void SelectTuningBin_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var picker = new FileOpenPicker();
+            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+            picker.FileTypeFilter.Add(".bin");
+
+            var file = await picker.PickSingleFileAsync();
+            if (file != null)
+            {
+                await ViewModel.SetTuningBinFilePathAsync(file.Path);
+            }
+        }
+        catch (Exception ex)
+        {
+            ViewModel.StatusMessage = $"选择 tuning bin 失败: {ex.Message}";
+        }
+    }
+
+    private async void SelectTuningDescriptor_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var picker = new FileOpenPicker();
+            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+            picker.FileTypeFilter.Add(".json");
+
+            var file = await picker.PickSingleFileAsync();
+            if (file != null)
+            {
+                await ViewModel.SetTuningDescriptorFilePathAsync(file.Path);
+            }
+        }
+        catch (Exception ex)
+        {
+            ViewModel.StatusMessage = $"选择 tuning JSON 失败: {ex.Message}";
+        }
     }
 
     private async void ClosePort_Click(object sender, RoutedEventArgs e)

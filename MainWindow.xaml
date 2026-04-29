@@ -39,6 +39,7 @@
 
             <!-- Sidebar -->
             <Grid Grid.Column="0" Padding="0,0,8,0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel Spacing="16">
                     <!-- Port Configuration -->
                     <StackPanel Spacing="8">
@@ -186,7 +187,76 @@
                             </ListView.ItemTemplate>
                         </ListView>
                     </StackPanel>
+
+                    <!-- Tuning -->
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Tuning"
+                                   Style="{StaticResource SubtitleTextBlockStyle}"
+                                   FontWeight="SemiBold"/>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="bin 文件:" FontSize="12"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0"
+                                         Text="{x:Bind ViewModel.TuningBinFilePath, Mode=OneWay}"
+                                         PlaceholderText="选择 tuning bin..."
+                                         IsReadOnly="True"
+                                         TextWrapping="NoWrap"
+                                         Margin="0,0,4,0"/>
+                                <Button Grid.Column="1"
+                                        Content="选择"
+                                        Click="SelectTuningBin_Click"/>
+                            </Grid>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="JSON 描述文件:" FontSize="12"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0"
+                                         Text="{x:Bind ViewModel.TuningDescriptorFilePath, Mode=OneWay}"
+                                         PlaceholderText="选择协议 JSON..."
+                                         IsReadOnly="True"
+                                         TextWrapping="NoWrap"
+                                         Margin="0,0,4,0"/>
+                                <Button Grid.Column="1"
+                                        Content="选择"
+                                        Click="SelectTuningDescriptor_Click"/>
+                            </Grid>
+                            <TextBlock Text="{x:Bind ViewModel.TuningDescriptorStatus, Mode=OneWay}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Opacity="0.7"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <Button Content="重载"
+                                    Command="{x:Bind ViewModel.ReloadTuningDescriptorCommand}"
+                                    IsEnabled="{x:Bind ViewModel.HasTuningDescriptorPath, Mode=OneWay}"/>
+                            <Button Content="{x:Bind ViewModel.TuningWatchButtonText, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.ToggleTuningWatchCommand}"
+                                    IsEnabled="{x:Bind ViewModel.CanUseTuning, Mode=OneWay}"/>
+                            <Button Content="发送Tuning"
+                                    Style="{StaticResource AccentButtonStyle}"
+                                    ToolTipService.ToolTip="手动打包并发送当前 tuning bin"
+                                    Command="{x:Bind ViewModel.SendCurrentTuningCommand}"
+                                    IsEnabled="{x:Bind ViewModel.CanUseTuning, Mode=OneWay}"/>
+                        </StackPanel>
+
+                        <TextBlock Text="{x:Bind ViewModel.TuningStatus, Mode=OneWay}"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Opacity="0.8"/>
+                    </StackPanel>
                 </StackPanel>
+                </ScrollViewer>
             </Grid>
 
             <!-- Main Content Area -->
