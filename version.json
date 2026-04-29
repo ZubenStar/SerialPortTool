@@ -1,7 +1,15 @@
 ﻿{
-    "version": "1.8.8",
+    "version": "1.8.9",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-04-29",
+            "version": "1.8.9",
+            "changes": [
+                "Fixed multi-port tuning sends by running each COM port on its own send worker",
+                "Updated the regular send button to broadcast to all open COM ports with per-port results"
+            ]
+        },
         {
             "date": "2026-04-29",
             "version": "1.8.8",
