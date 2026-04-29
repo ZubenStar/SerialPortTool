@@ -117,10 +117,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
         public required List<LogEntry> Logs { get; init; }
     }
 
-/// <summary>
-/// 波特率检测建议事件
-/// </summary>
-public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
+    private sealed class PortSendResult
+    {
+        public required string PortName { get; init; }
+
+        public bool IsSuccess { get; init; }
+
+        public string? ErrorMessage { get; init; }
+    }
+
+    /// <summary>
+    /// 波特率检测建议事件
+    /// </summary>
+    public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     private readonly ISerialPortService _serialPortService;
     private readonly ITuningProtocolService _tuningProtocolService;
     private readonly ILogFilterService _logFilterService;
@@ -947,21 +956,19 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         if (string.IsNullOrEmpty(SendText))
             return;
 
-        // Resolve target port
-        var portVm = SelectedPort;
-        if (portVm == null && OpenPorts.Count == 1)
-            portVm = OpenPorts[0];
-
-        if (portVm == null)
+        var targetPorts = OpenPorts
+            .Select(port => port.PortName)
+            .ToList();
+        if (targetPorts.Count == 0)
         {
-            StatusMessage = OpenPorts.Count == 0 ? "请先打开一个串口" : "请在已打开串口列表中选择一个串口";
+            StatusMessage = "请先打开一个串口";
             return;
         }
 
         try
         {
             string displayContent;
-            int byteCount;
+            byte[] data;
 
             if (SendAsHex)
             {
@@ -982,31 +989,47 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                     }
                 }
 
-                await SendDataAsync(portVm.PortName, bytes);
+                data = bytes;
                 displayContent = $"[HEX] {BitConverter.ToString(bytes).Replace("-", " ")}";
-                byteCount = bytes.Length;
             }
             else
             {
-                await SendTextAsync(portVm.PortName, SendText);
+                data = Encoding.UTF8.GetBytes(SendText);
                 displayContent = SendText;
-                byteCount = Encoding.UTF8.GetByteCount(SendText);
             }
 
-            if (ShowSentData)
+            StatusMessage = targetPorts.Count == 1
+                ? $"正在发送 {data.Length} 字节..."
+                : $"正在向 {targetPorts.Count} 个串口发送 {data.Length} 字节...";
+
+            var sendResults = await SendDataToPortsAsync(targetPorts, data);
+            var successfulPorts = sendResults
+                .Where(result => result.IsSuccess)
+                .Select(result => result.PortName)
+                .ToList();
+            var failedResults = sendResults
+                .Where(result => !result.IsSuccess)
+                .ToList();
+
+            if (ShowSentData && successfulPorts.Count > 0)
             {
-                var logEntry = new LogEntry
-                {
-                    PortName = portVm.PortName,
-                    Content = displayContent,
-                    IsReceived = false,
-                    ColorHex = TxColorHex
-                };
-                AddSentLog(logEntry);
-                portVm.AddLog(logEntry);
+                AddSentLogs(successfulPorts, displayContent);
             }
 
-            StatusMessage = $"已发送 {byteCount} 字节";
+            RefreshPortStatistics(targetPorts);
+
+            if (failedResults.Count > 0)
+            {
+                var failedPorts = string.Join(", ", failedResults.Select(result => result.PortName));
+                StatusMessage = successfulPorts.Count == 0
+                    ? $"发送失败: {failedPorts}"
+                    : $"部分发送失败: 成功 {successfulPorts.Count}/{targetPorts.Count}，失败 {failedPorts}";
+                return;
+            }
+
+            StatusMessage = targetPorts.Count == 1
+                ? $"已发送 {data.Length} 字节"
+                : $"已向 {targetPorts.Count} 个串口发送 {data.Length} 字节";
         }
         catch (Exception ex)
         {
@@ -1028,6 +1051,64 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     {
         AllLogs.Add(logEntry);
         DisplayLogs.Add(logEntry);
+    }
+
+    private async Task<IReadOnlyList<PortSendResult>> SendDataToPortsAsync(
+        IReadOnlyList<string> targetPorts,
+        byte[] data)
+    {
+        var sendTasks = targetPorts
+            .Select(portName => Task.Factory.StartNew(
+                () => SendDataToPortWorker(portName, data),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default))
+            .ToArray();
+
+        return await Task.WhenAll(sendTasks);
+    }
+
+    private PortSendResult SendDataToPortWorker(string portName, byte[] data)
+    {
+        try
+        {
+            _serialPortService.SendDataAsync(portName, data).GetAwaiter().GetResult();
+            return new PortSendResult
+            {
+                PortName = portName,
+                IsSuccess = true
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send data to {PortName}", portName);
+            return new PortSendResult
+            {
+                PortName = portName,
+                IsSuccess = false,
+                ErrorMessage = ex.Message
+            };
+        }
+    }
+
+    private void AddSentLogs(IReadOnlyList<string> targetPorts, string displayContent)
+    {
+        var openPortMap = OpenPorts.ToDictionary(port => port.PortName, StringComparer.OrdinalIgnoreCase);
+        foreach (var portName in targetPorts)
+        {
+            var logEntry = new LogEntry
+            {
+                PortName = portName,
+                Content = displayContent,
+                IsReceived = false,
+                ColorHex = TxColorHex
+            };
+            AddSentLog(logEntry);
+            if (openPortMap.TryGetValue(portName, out var portVm))
+            {
+                portVm.AddLog(logEntry);
+            }
+        }
     }
 
     public async Task SetTuningBinFilePathAsync(string filePath)
@@ -1370,24 +1451,39 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
                 StatusMessage = TuningStatus;
             });
 
-            foreach (var portName in targetPorts)
-            {
-                for (var i = 0; i < buildResult.SendSegments.Count; i++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var segment = buildResult.SendSegments[i];
-                    await _serialPortService.SendDataAsync(portName, segment.Data);
+            var sendResults = await SendTuningToPortsAsync(targetPorts, buildResult, cancellationToken);
+            var successfulPorts = sendResults
+                .Where(result => result.IsSuccess)
+                .Select(result => result.PortName)
+                .ToList();
+            var failedResults = sendResults
+                .Where(result => !result.IsSuccess)
+                .ToList();
 
-                    var hasMorePacketSegments = buildResult.SendSegments
-                        .Skip(i + 1)
-                        .Any(next => next.IsPacket);
-                    if (segment.IsPacket &&
-                        hasMorePacketSegments &&
-                        buildResult.DelayBetweenPacketsMs > 0)
+            if (failedResults.Count > 0)
+            {
+                var failedPorts = string.Join(", ", failedResults.Select(result => result.PortName));
+                SetTuningUiState(() =>
+                {
+                    if (successfulPorts.Count > 0)
                     {
-                        await Task.Delay(buildResult.DelayBetweenPacketsMs, cancellationToken);
+                        AddTuningSentLogs(successfulPorts, buildResult);
+                        RefreshPortStatistics(successfulPorts);
                     }
+
+                    RefreshPortStatistics(failedResults.Select(result => result.PortName).ToList());
+                    TuningStatus = $"tuning 部分发送失败: 成功 {successfulPorts.Count}/{targetPorts.Count}，失败 {failedPorts}";
+                    StatusMessage = TuningStatus;
+                });
+
+                foreach (var failedResult in failedResults)
+                {
+                    _logger.LogWarning("Tuning send failed on {PortName}: {ErrorMessage}",
+                        failedResult.PortName,
+                        failedResult.ErrorMessage);
                 }
+
+                return;
             }
 
             _lastTuningBaselineHash = buildResult.BinSha256;
@@ -1396,7 +1492,7 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
             SetTuningUiState(() =>
             {
                 AddTuningSentLogs(targetPorts, buildResult);
-                RefreshTuningPortStatistics(targetPorts);
+                RefreshPortStatistics(targetPorts);
                 TuningStatus = $"tuning 发送完成: {buildResult.TotalBytes} 字节，{buildResult.PacketCount} 包，{targetPorts.Count} 个串口";
                 StatusMessage = TuningStatus;
             });
@@ -1419,6 +1515,87 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
             SetTuningUiState(() => IsTuningBusy = false);
             _tuningSendLock.Release();
         }
+    }
+
+    private async Task<IReadOnlyList<PortSendResult>> SendTuningToPortsAsync(
+        IReadOnlyList<string> targetPorts,
+        TuningBuildResult buildResult,
+        CancellationToken cancellationToken)
+    {
+        var delayAfterSegment = BuildTuningDelayPlan(buildResult);
+        var sendTasks = targetPorts
+            .Select(portName => Task.Factory.StartNew(
+                () => SendTuningToPortWorker(portName, buildResult, delayAfterSegment, cancellationToken),
+                cancellationToken,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default))
+            .ToArray();
+
+        return await Task.WhenAll(sendTasks);
+    }
+
+    private PortSendResult SendTuningToPortWorker(
+        string portName,
+        TuningBuildResult buildResult,
+        IReadOnlyList<bool> delayAfterSegment,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            for (var i = 0; i < buildResult.SendSegments.Count; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var segment = buildResult.SendSegments[i];
+                _serialPortService.SendDataAsync(portName, segment.Data).GetAwaiter().GetResult();
+
+                if (delayAfterSegment[i])
+                {
+                    if (cancellationToken.WaitHandle.WaitOne(buildResult.DelayBetweenPacketsMs))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+                }
+            }
+
+            return new PortSendResult
+            {
+                PortName = portName,
+                IsSuccess = true
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send tuning data to {PortName}", portName);
+            return new PortSendResult
+            {
+                PortName = portName,
+                IsSuccess = false,
+                ErrorMessage = ex.Message
+            };
+        }
+    }
+
+    private static IReadOnlyList<bool> BuildTuningDelayPlan(TuningBuildResult buildResult)
+    {
+        var delayAfterSegment = new bool[buildResult.SendSegments.Count];
+        var hasPacketAfter = false;
+        for (var i = buildResult.SendSegments.Count - 1; i >= 0; i--)
+        {
+            var segment = buildResult.SendSegments[i];
+            delayAfterSegment[i] = segment.IsPacket &&
+                                   hasPacketAfter &&
+                                   buildResult.DelayBetweenPacketsMs > 0;
+            if (segment.IsPacket)
+            {
+                hasPacketAfter = true;
+            }
+        }
+
+        return delayAfterSegment;
     }
 
     private void AddTuningSentLogs(IReadOnlyList<string> targetPorts, TuningBuildResult buildResult)
@@ -1447,7 +1624,7 @@ public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
         }
     }
 
-    private void RefreshTuningPortStatistics(IReadOnlyList<string> targetPorts)
+    private void RefreshPortStatistics(IReadOnlyList<string> targetPorts)
     {
         var openPortMap = OpenPorts.ToDictionary(p => p.PortName, StringComparer.OrdinalIgnoreCase);
         foreach (var portName in targetPorts)
