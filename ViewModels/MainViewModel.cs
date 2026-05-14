@@ -1336,11 +1336,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private void ScheduleTuningAutoSend()
     {
-        _tuningChangeCts?.Cancel();
-        _tuningChangeCts?.Dispose();
+        var previous = Interlocked.Exchange(ref _tuningChangeCts, new CancellationTokenSource());
+        previous?.Cancel();
+        previous?.Dispose();
 
-        var cts = new CancellationTokenSource();
-        _tuningChangeCts = cts;
+        var cts = _tuningChangeCts;
 
         _ = Task.Run(async () =>
         {
@@ -1352,6 +1352,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             catch (OperationCanceledException)
             {
                 // A newer file event superseded this one.
+            }
+            catch (ObjectDisposedException)
+            {
+                // CTS was disposed during shutdown, ignore.
             }
             catch (Exception ex)
             {
@@ -1542,6 +1546,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         try
         {
+            if (!_serialPortService.IsPortOpen(portName))
+            {
+                _logger.LogWarning("Tuning send skipped: port {PortName} is not open", portName);
+                return new PortSendResult
+                {
+                    PortName = portName,
+                    IsSuccess = false,
+                    ErrorMessage = $"Port {portName} is not open"
+                };
+            }
+
             for (var i = 0; i < buildResult.SendSegments.Count; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
