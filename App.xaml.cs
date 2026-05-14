@@ -53,6 +53,20 @@ public partial class App : Application
 
         Log.Information("Application started. Logs will be saved to: {LogPath}", logsPath);
 
+        // Register global unhandled exception handlers to prevent silent crashes
+        AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+        {
+            var ex = e.ExceptionObject as Exception;
+            Log.Fatal(ex, "Unhandled exception. IsTerminating: {IsTerminating}", e.IsTerminating);
+            Log.CloseAndFlush();
+        };
+
+        TaskScheduler.UnobservedTaskException += (sender, e) =>
+        {
+            Log.Error(e.Exception, "Unobserved task exception");
+            e.SetObserved(); // Prevent process termination
+        };
+
         // Build a lightweight DI container for the desktop app.
         var services = new ServiceCollection();
         ConfigureServices(services);
