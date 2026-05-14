@@ -1,7 +1,19 @@
 ﻿{
-    "version": "1.8.9",
+    "version": "1.8.10",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-05-14",
+            "version": "1.8.10",
+            "changes": [
+                "Fixed settings.json file lock conflicts causing tuning watcher and port open failures",
+                "Added reconnection cooldown to prevent reconnect storm with thousands of UnauthorizedAccessException errors",
+                "Fixed CancellationTokenSource disposed crash in tuning auto-send",
+                "Fixed tuning send failure when port is reconnecting (check IsPortOpen before sending)",
+                "Fixed concurrent Queue modification exception in DataValidationService",
+                "Added global unhandled exception handlers to prevent silent crashes"
+            ]
+        },
         {
             "date": "2026-04-29",
             "version": "1.8.9",
