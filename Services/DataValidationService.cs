@@ -366,45 +366,52 @@ public class DataValidationService : IDataValidationService
         public int ConsecutiveInvalidPackets { get; set; }
         public DateTime LastUpdateTime { get; set; }
         public DataQualityTrend Trend { get; set; } = DataQualityTrend.Stable;
-        
+
         private readonly Queue<double> _recentScores = new();
+        private readonly object _trendLock = new();
 
         public void Reset()
         {
-            TotalPackets = 0;
-            ValidPackets = 0;
-            InvalidPackets = 0;
-            AverageQualityScore = 0;
-            ConsecutiveInvalidPackets = 0;
-            LastUpdateTime = DateTime.Now;
-            Trend = DataQualityTrend.Stable;
-            _recentScores.Clear();
+            lock (_trendLock)
+            {
+                TotalPackets = 0;
+                ValidPackets = 0;
+                InvalidPackets = 0;
+                AverageQualityScore = 0;
+                ConsecutiveInvalidPackets = 0;
+                LastUpdateTime = DateTime.Now;
+                Trend = DataQualityTrend.Stable;
+                _recentScores.Clear();
+            }
         }
 
         public void UpdateTrend()
         {
-            _recentScores.Enqueue(AverageQualityScore);
-            if (_recentScores.Count > 10)
+            lock (_trendLock)
             {
-                _recentScores.Dequeue();
-            }
-
-            if (_recentScores.Count >= 5)
-            {
-                var recentAverage = _recentScores.Average();
-                var olderAverage = _recentScores.Take(_recentScores.Count / 2).Average();
-
-                if (recentAverage > olderAverage * 1.1)
+                _recentScores.Enqueue(AverageQualityScore);
+                if (_recentScores.Count > 10)
                 {
-                    Trend = DataQualityTrend.Improving;
+                    _recentScores.Dequeue();
                 }
-                else if (recentAverage < olderAverage * 0.9)
+
+                if (_recentScores.Count >= 5)
                 {
-                    Trend = DataQualityTrend.Deteriorating;
-                }
-                else
-                {
-                    Trend = DataQualityTrend.Stable;
+                    var recentAverage = _recentScores.Average();
+                    var olderAverage = _recentScores.Take(_recentScores.Count / 2).Average();
+
+                    if (recentAverage > olderAverage * 1.1)
+                    {
+                        Trend = DataQualityTrend.Improving;
+                    }
+                    else if (recentAverage < olderAverage * 0.9)
+                    {
+                        Trend = DataQualityTrend.Deteriorating;
+                    }
+                    else
+                    {
+                        Trend = DataQualityTrend.Stable;
+                    }
                 }
             }
         }
