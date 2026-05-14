@@ -20,8 +20,10 @@ public class SerialPortService : ISerialPortService, IDisposable
 {
     private readonly ILogger<SerialPortService> _logger;
     private readonly ConcurrentDictionary<string, PortInstance> _ports = new();
+    private readonly ConcurrentDictionary<string, DateTime> _lastReconnectAttempt = new();
     private readonly IDataValidationService? _dataValidationService;
     private readonly IBaudRateDetectorService? _baudRateDetectorService;
+    private static readonly TimeSpan ReconnectCooldown = TimeSpan.FromSeconds(3);
 
     public event EventHandler<DataReceivedEventArgs>? DataReceived;
     public event EventHandler<PortStateChangedEventArgs>? PortStateChanged;
@@ -290,10 +292,18 @@ public class SerialPortService : ISerialPortService, IDisposable
     private void OnPortError(object? sender, ErrorEventArgs e)
     {
         ErrorOccurred?.Invoke(this, e);
-        
-        // Auto reconnect if enabled
+
+        // Auto reconnect if enabled, with cooldown to prevent reconnect storm
         if (_ports.TryGetValue(e.PortName, out var port) && port.Config.AutoReconnect)
         {
+            var now = DateTime.UtcNow;
+            if (_lastReconnectAttempt.TryGetValue(e.PortName, out var lastAttempt) &&
+                now - lastAttempt < ReconnectCooldown)
+            {
+                return; // Skip reconnect, still in cooldown
+            }
+            _lastReconnectAttempt[e.PortName] = now;
+
             _ = Task.Run(async () =>
             {
                 await Task.Delay(port.Config.ReconnectInterval);
