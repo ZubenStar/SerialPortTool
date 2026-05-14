@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
@@ -14,23 +16,24 @@ public class SettingsService : ISettingsService
     private readonly ILogger<SettingsService> _logger;
     private readonly string _settingsFile;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly SemaphoreSlim _fileLock = new(1, 1);
 
     public SettingsService(ILogger<SettingsService> logger)
     {
         _logger = logger;
-        
+
         // Store settings in user's AppData folder
         var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var settingsDir = Path.Combine(appDataPath, "SerialPortTool");
         Directory.CreateDirectory(settingsDir);
-        
+
         _settingsFile = Path.Combine(settingsDir, "settings.json");
-        
+
         _jsonOptions = new JsonSerializerOptions
         {
             WriteIndented = true
         };
-        
+
         _logger.LogInformation("SettingsService initialized. Settings file: {SettingsFile}", _settingsFile);
     }
 
@@ -62,6 +65,7 @@ public class SettingsService : ISettingsService
 
     public async Task DeleteSettingAsync(string key)
     {
+        await _fileLock.WaitAsync();
         try
         {
             var settings = await LoadAllSettingsAsync();
@@ -76,10 +80,15 @@ public class SettingsService : ISettingsService
         {
             _logger.LogError(ex, "Error deleting setting {Key}", key);
         }
+        finally
+        {
+            _fileLock.Release();
+        }
     }
 
     public async Task ClearAsync()
     {
+        await _fileLock.WaitAsync();
         try
         {
             if (File.Exists(_settingsFile))
@@ -92,11 +101,15 @@ public class SettingsService : ISettingsService
         {
             _logger.LogError(ex, "Error clearing settings");
         }
-        await Task.CompletedTask;
+        finally
+        {
+            _fileLock.Release();
+        }
     }
 
     private async Task SaveSettingInternalAsync(string key, object value)
     {
+        await _fileLock.WaitAsync();
         try
         {
             var settings = await LoadAllSettingsAsync();
@@ -109,10 +122,15 @@ public class SettingsService : ISettingsService
             _logger.LogError(ex, "Error saving setting {Key}", key);
             throw;
         }
+        finally
+        {
+            _fileLock.Release();
+        }
     }
 
     private async Task<object?> LoadSettingInternalAsync(string key)
     {
+        await _fileLock.WaitAsync();
         try
         {
             var settings = await LoadAllSettingsAsync();
@@ -122,6 +140,10 @@ public class SettingsService : ISettingsService
         {
             _logger.LogError(ex, "Error loading setting {Key}", key);
             return null;
+        }
+        finally
+        {
+            _fileLock.Release();
         }
     }
 
