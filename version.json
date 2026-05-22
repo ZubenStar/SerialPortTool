@@ -1,7 +1,17 @@
 ﻿{
-    "version": "1.8.10",
+    "version": "1.8.11",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-05-22",
+            "version": "1.8.11",
+            "changes": [
+                "Fixed port reopen failure after closing with incorrect baud rate (retry availability check for OS handle release)",
+                "Clear stale validation state and reconnection cooldown on port close",
+                "Reset _isClosing flag on port open to ensure clean state for reopen",
+                "Moved cleanup delay to finally block in PortInstance Dispose for reliable handle release"
+            ]
+        },
         {
             "date": "2026-05-14",
             "version": "1.8.10",
