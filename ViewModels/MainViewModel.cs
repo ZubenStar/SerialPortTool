@@ -1758,25 +1758,28 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             StatusMessage = $"Closing port {portName}...";
             _logger.LogInformation("User requested to close port {PortName}", portName);
-            
+
             // Stop file logging
             await _fileLoggerService.StopLoggingAsync(portName);
-            
+
             // Close the port with enhanced cleanup
             await _serialPortService.ClosePortAsync(portName);
-            
+
+            // Give OS time to fully release the serial port handle before allowing reopen
+            await Task.Delay(500);
+
             var portVm = OpenPorts.FirstOrDefault(p => p.PortName == portName);
             if (portVm != null)
             {
                 OpenPorts.Remove(portVm);
             }
-            
-            StatusMessage = $"✅ Port {portName} closed successfully. Wait 1-2 seconds before reopening.";
+
+            StatusMessage = $"Port {portName} closed successfully.";
             _logger.LogInformation("Port {PortName} closed successfully", portName);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"❌ Error closing port {portName}: {ex.Message}. If port won't reopen, restart the application.";
+            StatusMessage = $"Error closing port {portName}: {ex.Message}";
             _logger.LogError(ex, "Error closing port {PortName}", portName);
         }
     }
