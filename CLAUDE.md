@@ -6,7 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **SerialPortTool** is a modern Windows desktop serial port debugging tool built with WinUI 3 and .NET 9. It supports multi-port simultaneous monitoring, real-time log filtering, intelligent data analysis, and advanced features for professional serial communication debugging.
 
-**Tech Stack**: WinUI 3, .NET 9, MVVM (CommunityToolkit.Mvvm), System.IO.Ports, Serilog, Microsoft.Extensions.DependencyInjection
+**Tech Stack**: WinUI 3 (Windows App SDK 1.6), .NET 9, MVVM (CommunityToolkit.Mvvm 8.2.2), System.IO.Ports 9.0, Serilog 4.0, Microsoft.Extensions.DependencyInjection 9.0
+
+**Target framework**: `net9.0-windows10.0.22621.0`, min platform `10.0.17763.0` (Windows 10 1809). Single platform: `x64`.
+
+> Note: as of v1.8.5 the app uses a lightweight `ServiceCollection` directly — no `Microsoft.Extensions.Hosting`, no `WinUIEx`, no `Newtonsoft.Json`. The `README.md` is out-of-date on its dependency list; trust `SerialPortTool.csproj`.
 
 ## Build Commands
 
@@ -62,7 +66,7 @@ Views (XAML) ←→ ViewModels ←→ Services ←→ Hardware/Infrastructure
 
 **Key Architectural Patterns**:
 
-1. **Dependency Injection**: All services are registered in `App.xaml.cs:ConfigureServices()` using Microsoft.Extensions.DependencyInjection. Services are injected into ViewModels via constructor injection.
+1. **Dependency Injection**: All services are registered in `App.xaml.cs:ConfigureServices()` as `AddSingleton`; `MainViewModel` and `MainWindow` are `AddTransient`. The DI container is a plain `ServiceCollection` (not a `Host`). Services are injected into ViewModels via constructor injection.
 
 2. **Event-Driven Communication**: Services use events to notify ViewModels of state changes (e.g., `DataReceived`, `PortStateChanged`, `ErrorOccurred`). ViewModels dispatch events to UI thread using `DispatcherQueue`.
 
@@ -106,6 +110,13 @@ The service layer implements the business logic and hardware communication:
 - **`ISettingsService` / `SettingsService`**:
   - Persists user preferences and serial port configurations
   - Loads/saves application state
+  - **Concurrency Pattern** (v1.8.10): uses a file lock to serialize concurrent writes to `settings.json`, preventing corruption when the tuning watcher and a port-open run simultaneously
+
+- **`ITuningProtocolService` / `TuningProtocolService`** (added v1.8.7):
+  - Sends `.bin` firmware/tuning files over the wire using a JSON-described protocol (e.g. `mic-tota-tuning.json` at repo root is a sample descriptor)
+  - Loads a `TuningProtocolDescriptor` from JSON, packs the bin payload, and broadcasts to one or all open COM ports
+  - **Key Pattern** (v1.8.9): each COM port has its own send worker so concurrent multi-port sends don't serialize
+  - Checks `IsPortOpen` before sending to avoid failures while a port is reconnecting
 
 ### ViewModel Layer
 
@@ -125,10 +136,12 @@ The application has been heavily optimized for high-throughput scenarios (10-20x
    - Caches formatted text in `_cachedFormattedText` field
    - Invalidates cache only when properties change via partial methods
    - Reduces string allocations by 50-70%
+   - **Gotcha**: only `Content`, `PortName`, `Timestamp`, and `IsReceived` invalidate the cache (`LogEntry.cs:90-93`). `ColorHex`, `Format`, and `RawData` do **not** — they aren't part of `FormattedText`. If you add a new field that *should* appear in `FormattedText`, wire its own `partial void OnXxxChanged(...) => _cachedFormattedText = null;` — otherwise displays will silently stay stale.
 
-2. **RangeObservableCollection** (`ViewModels/MainViewModel.cs:23-73`):
+2. **RangeObservableCollection** (`ViewModels/MainViewModel.cs:26-107`):
    - Custom collection supporting batch add/remove operations
    - Single `CollectionChanged` notification for batch operations
+   - Exposes `AddRange(IEnumerable<T>)` and `RemoveFromStart(int)` — the latter (v1.8.3) is the efficient FIFO trim path; prefer it over `RemoveRange` for log retention
    - Critical for UI performance when adding hundreds of log entries
 
 3. **Regex Caching** (`Services/LogFilterService.cs`):
@@ -142,12 +155,28 @@ The application has been heavily optimized for high-throughput scenarios (10-20x
    - Reused StringBuilder to reduce allocations
    - 10-20x faster than synchronous writes
 
-5. **UI Virtualization** (`MainWindow.xaml:212-240`):
-   - Uses `ItemsRepeater` with `StackLayout` for efficient rendering
-   - TextBlock optimization: `OpticalMarginAlignment="None"`, `TextLineBounds="Tight"`
-   - Only renders visible items (virtualized scrolling)
+5. **UI Virtualization** (`Controls/LogListView.xaml`):
+   - Log view is a `ListView` wrapped in a `UserControl` (replaced the original `ItemsRepeater` in v1.8.0 to enable multi-line selection / copy)
+   - **Why the UserControl wrapper**: WinUI 3 `Window` is not a `FrameworkElement`, so hosting the `ListView` inside a `UserControl` lets the `DataTemplate` use compiled `x:Bind` (~5–10× faster per-item realization than reflection-based `{Binding}` during wheel-scroll virtualization). See the comment in `LogListView.xaml:10-13`.
+   - `ItemsStackPanel CacheLength="0.5"` — halves off-screen item realization vs the default 1.0
+   - Empty `ItemContainerTransitions` and a minimal `Normal`/`Selected`-only visual state template — eliminates per-item layout invalidation when items parade under a stationary cursor
+   - `LogEntry.FormattedText` and `ColorHex` are set once at construction, bound `OneTime`, so there is no `PropertyChanged` wiring per item
+   - Selection: `Ctrl+C` copies selected logs, `Ctrl+A` selects all, right-click opens a context menu (`MenuFlyout` defined in `LogListView.xaml:24-29`)
 
-See `PERFORMANCE_OPTIMIZATIONS.md` for detailed performance documentation.
+See `WinUI3-Tech-Stack-Plan.md` for tech-stack rationale. The repository no longer ships `PERFORMANCE_OPTIMIZATIONS.md`; the version history (`version.json`) entries from v1.1.0 onward document the optimization changes.
+
+### Log Buffer Trim Thresholds (`ViewModels/MainViewModel.cs:543-546`)
+
+The collections are intentionally allowed to overshoot before being trimmed; trimming on every overflow caused flicker in v1.8.6 and earlier. Three related constants:
+
+```csharp
+private const int MaxDisplayLogs           = 2000;                     // target steady-state size of DisplayLogs
+private const int DisplayLogTrimThreshold  = MaxDisplayLogs + 200;     // trim DisplayLogs only after exceeding 2200
+private const int AllLogsTrimThreshold     = MaxDisplayLogs * 2 + 400; // 4400 — back-buffer of all unfiltered logs
+private const int MaxQueuedLogEntries      = MaxDisplayLogs * 4;       // 8000 — pending-update queue cap from background threads
+```
+
+Bumping `MaxDisplayLogs` without also raising the thresholds will reintroduce the overflow-trim-overflow flicker pattern those thresholds were added to fix.
 
 ### Version Management
 
@@ -173,9 +202,13 @@ The version flows through the build system:
 
 1. Define interface in `Services/I<ServiceName>.cs`
 2. Implement in `Services/<ServiceName>.cs`
-3. Register in `App.xaml.cs:ConfigureServices()`:
+3. Register in `App.xaml.cs:ConfigureServices()` — pick the lifetime that matches the consumer:
    ```csharp
+   // Services holding state shared across the app: Singleton.
    services.AddSingleton<IYourService, YourService>();
+
+   // ViewModels and Windows: Transient (one fresh instance per resolve).
+   services.AddTransient<YourViewModel>();
    ```
 4. Inject via constructor in ViewModel:
    ```csharp
@@ -245,15 +278,6 @@ File.AppendAllText(path, logEntry.ToString());  // Never do this!
 3. Add UI controls in filter panel (if needed)
 4. Consider performance implications - cache expensive operations
 
-### Changing Max Displayed Logs
-
-The limit is in `ViewModels/MainViewModel.cs`:
-```csharp
-private const int MaxDisplayLogs = 2000;  // Adjust this constant
-```
-
-Higher values increase memory usage but provide more visible history. Consider impact on UI rendering performance.
-
 ### Adding Baud Rate Detection Patterns
 
 Edit `Services/BaudRateDetectorService.cs`:
@@ -291,8 +315,9 @@ Edit `Services/BaudRateDetectorService.cs`:
 
 ## Debugging Tips
 
-- **Application Logs**: Saved to `%USERPROFILE%\Documents\SerialPortTool\DebugLogs\app-<date>.log`
-- **Log Level**: Verbose (captures all trace/debug logs)
+- **Application Logs**: Saved to `%USERPROFILE%\Documents\SerialPortTool\DebugLogs\app-<date>.log` (daily rolling, 7-day retention, 50 MB cap per file — configured in `App.xaml.cs:38-52`)
+- **Log Level**: `Information` (configured at `App.xaml.cs:44`)
+- **Global Exception Handlers** (`App.xaml.cs:57-68`, added v1.8.10): `AppDomain.UnhandledException` and `TaskScheduler.UnobservedTaskException` are both logged via Serilog. Do not remove these — they exist because the app was silently terminating on background-thread exceptions.
 - **Performance Monitoring**: Use `PerformanceMonitor` helper in `Helpers/PerformanceMonitor.cs`:
   ```csharp
   using (_perfMonitor.Measure("OperationName"))
@@ -307,17 +332,18 @@ Edit `Services/BaudRateDetectorService.cs`:
 
 ### Multi-Threading Model
 
-- **Serial Port Reading**: Each port has dedicated background thread for reading
+- **Serial Port Reading**: Each port has its own background read thread inside `SerialPortService`
+- **Tuning Sends**: Each port has its own send worker (v1.8.9) so concurrent multi-port sends do not serialize on a single channel
 - **File Writing**: Single background thread with batched queue
 - **Regex Compilation**: Compiled on first use, cached for reuse
 - **UI Updates**: All collection modifications must be on UI thread via `DispatcherQueue`
 
 ### Memory Management
 
-- **Log Retention**: Max 2000 logs per port in UI (older logs automatically trimmed)
+- **Log Retention (UI)**: target ~2000 per `DisplayLogs`, hard trim at 2200 (see `DisplayLogTrimThreshold`); the unfiltered `AllLogs` back-buffer trims at 4400
 - **File Logs**: Unlimited (written to disk, not memory)
 - **Regex Cache**: Max 50 patterns, LRU eviction
-- **String Allocations**: Minimized via cached formatted text in LogEntry
+- **String Allocations**: Minimized via cached `FormattedText` on `LogEntry` (set once at construction, bound `OneTime` from the `DataTemplate`)
 
 ### Error Handling Strategy
 
@@ -326,6 +352,33 @@ Edit `Services/BaudRateDetectorService.cs`:
 - ViewModels show user-friendly error messages in UI
 - Serial port errors trigger automatic reconnection if enabled
 - Regex timeout protection prevents UI freezing from malicious patterns
+
+## Reliability Mechanisms (do not regress)
+
+Most of these are subtle and exist because a specific bug caused a crash or storm — removing them tends to look like simplification right up to the next incident.
+
+- **Settings file lock** (`SettingsService`, v1.8.10): writes to `settings.json` are serialized to avoid corruption when the tuning watcher and a port-open path race.
+- **Reconnect cooldown** (`SerialPortService`, v1.8.10): a failed reconnect attempt enforces a backoff before retrying. Removing it produces thousands of `UnauthorizedAccessException` events when a port is yanked.
+- **Port reopen retry** (`SerialPortService` / `PortInstance.Dispose`, v1.8.11): on close, `_isClosing` is reset and availability is re-checked while the OS releases the COM handle; the cleanup delay lives in `Dispose`'s `finally` so it runs even on exception paths.
+- **DataValidationService queue lock** (v1.8.10): the queue inside `PortValidationState` is locked because it was being mutated concurrently from the read thread and validation worker.
+- **Tuning send pre-check** (`TuningProtocolService`, v1.8.10): every send checks `IsPortOpen` first — required because tuning auto-send can fire while a port is mid-reconnect, causing `CancellationTokenSource` disposal crashes.
+- **Shutdown timeout** (`App.xaml.cs:114-160`): window-close cleanup runs on a thread-pool task with a hard 5-second wall clock; on timeout the app force-exits rather than hanging on a stuck COM handle.
+
+## Notable User-Facing Features (architectural)
+
+Only features that change how an agent should reason about the code — version.json has the full changelog.
+
+- **Log pause toggle** (`HEAD`, commit `a938392`): pauses log appending without stopping serial reception; batched updates resume on unpause. Anything that touches the data-flow pipeline must respect this — buffering still happens during pause, only the UI append is gated.
+- **Per-port colors** (v1.7.0): each opened port gets a unique color from a 10-color palette stored on `LogEntry.ColorHex`. Surfaced via `HexColorToBrushConverter` in `LogListView.xaml`'s `DataTemplate`. New `LogEntry` fields that need a color treatment should pass through the same converter.
+
+## Project Layout Notes
+
+- `MainWindow.xaml` / `MainWindow.xaml.cs` live at the repo root, not in a `Views/` folder — the README's directory diagram is wrong about this.
+- `Controls/LogListView.xaml` is the only custom user control; if adding new ones, follow the same `UserControl`-wrapping-a-ListView pattern so `x:Bind` keeps working under WinUI 3's `Window` ≠ `FrameworkElement` constraint.
+- `Converters/` contains `BoolToVisibilityConverter`, `HexColorToBrushConverter` (per-port colors, v1.7.0), and `StringToVisibilityConverter` (search-history clear button visibility, v1.6.2). All three are registered as app-level resources in `App.xaml`.
+- `Core/Enums/` contains only `ConnectionState`, `DataFormat`, `FilterType` (no `LogLevel.cs` — the project uses `Microsoft.Extensions.Logging.LogLevel`).
+- `Helpers/BuildInfo.g.cs` is build-time generated by `scripts/generate-buildinfo.ps1` — do not edit manually and do not commit it; it is regenerated on every build.
+- `mic-tota-tuning.json` at repo root is a sample `TuningProtocolDescriptor`, not application config.
 
 ## Data Flow Example: Receiving Serial Data
 
@@ -344,20 +397,21 @@ LogFilterService.ShouldDisplay (apply filters with cached regex)
   ↓
 RangeObservableCollection.AddRange (batch update)
   ↓
-ItemsRepeater UI Update (virtualized rendering)
+ListView UI update inside Controls/LogListView.xaml (virtualized, x:Bind)
   ↓
 FileLoggerService.LogAsync (async batched write to disk)
 ```
 
 ## Known Issues and Limitations
 
-- **Port Close Reliability**: Windows sometimes holds COM port handles. The service implements retry logic with up to 5 attempts and GC fallback.
+- **Port Close Reliability**: Windows can hold COM handles after close. Handled by retry + cleanup-delay in `finally` — see Reliability Mechanisms above before touching `SerialPortService.PortInstance.Dispose`.
 - **High-Speed Data**: At extremely high baud rates (>921600), some data loss may occur. Consider increasing buffer sizes in `SerialPortService`.
 - **Regex Performance**: Very complex regex patterns with backtracking can hit the 100ms timeout. Keep patterns simple for real-time filtering.
 
 ## Additional Documentation
 
 - `SerialPortTool-Architecture-Plan.md` - Detailed architecture and design decisions
-- `PERFORMANCE_OPTIMIZATIONS.md` - Performance optimization documentation with benchmarks
+- `WinUI3-Tech-Stack-Plan.md` - Tech stack rationale and WinUI 3 specifics
 - `Development-Environment-Setup-Guide.md` - Environment setup instructions
-- `version.json` - Version history and changelog
+- `version.json` - Version history and changelog (single source of truth for version)
+- `README.md` - User-facing overview (Chinese; partially stale on dependency list and directory structure — CLAUDE.md is the source of truth for agents)
