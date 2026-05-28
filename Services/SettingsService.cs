@@ -11,12 +11,26 @@ namespace SerialPortTool.Services;
 /// <summary>
 /// 设置服务实现
 /// </summary>
-public class SettingsService : ISettingsService
+/// <remarks>
+/// 写入路径采用 in-memory 缓存 + 500ms 防抖定时器。
+/// 修复了之前每次属性变化（包括发送框逐键、搜索历史每次插入、tuning 路径每次切换等）
+/// 都触发整个 JSON 文件 read→deserialize→mutate→serialize→write 的卡顿问题。
+/// 关窗或 DI Dispose 时通过 DisposeAsync → FlushAsync 把尚未落盘的变更刷出。
+/// _fileLock 仍然在所有实际 I/O 段内使用，保留 v1.8.10 引入的并发保护。
+/// </remarks>
+public class SettingsService : ISettingsService, IAsyncDisposable
 {
+    private const int FlushDelayMs = 500;
+
     private readonly ILogger<SettingsService> _logger;
     private readonly string _settingsFile;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly SemaphoreSlim _fileLock = new(1, 1);
+    private readonly Timer _flushTimer;
+
+    private Dictionary<string, object>? _cache;
+    private bool _dirty;
+    private bool _disposed;
 
     public SettingsService(ILogger<SettingsService> logger)
     {
@@ -33,6 +47,8 @@ public class SettingsService : ISettingsService
         {
             WriteIndented = true
         };
+
+        _flushTimer = new Timer(OnFlushTimerTick, null, Timeout.Infinite, Timeout.Infinite);
 
         _logger.LogInformation("SettingsService initialized. Settings file: {SettingsFile}", _settingsFile);
     }
@@ -68,11 +84,13 @@ public class SettingsService : ISettingsService
         await _fileLock.WaitAsync();
         try
         {
-            var settings = await LoadAllSettingsAsync();
-            if (settings.ContainsKey(key))
+            await EnsureCacheLoadedLocked();
+            if (_cache!.Remove(key))
             {
-                settings.Remove(key);
-                await SaveAllSettingsAsync(settings);
+                // Delete is a user-visible action — flush immediately rather than waiting for debounce.
+                await SaveAllSettingsAsync(_cache);
+                _dirty = false;
+                _flushTimer.Change(Timeout.Infinite, Timeout.Infinite);
                 _logger.LogInformation("Deleted setting: {Key}", key);
             }
         }
@@ -91,6 +109,10 @@ public class SettingsService : ISettingsService
         await _fileLock.WaitAsync();
         try
         {
+            _flushTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            _cache = new Dictionary<string, object>();
+            _dirty = false;
+
             if (File.Exists(_settingsFile))
             {
                 File.Delete(_settingsFile);
@@ -107,19 +129,86 @@ public class SettingsService : ISettingsService
         }
     }
 
+    public async Task FlushAsync()
+    {
+        // _disposed is checked here so a timer callback racing with DisposeAsync doesn't try to
+        // re-enter _fileLock after it has been released by Dispose.
+        if (_disposed)
+        {
+            return;
+        }
+
+        await _fileLock.WaitAsync();
+        try
+        {
+            if (_cache == null || !_dirty)
+            {
+                return;
+            }
+
+            await SaveAllSettingsAsync(_cache);
+            _dirty = false;
+            _flushTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            _logger.LogDebug("Flushed pending settings to disk");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to flush settings to disk");
+        }
+        finally
+        {
+            _fileLock.Release();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _flushTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        }
+        catch
+        {
+            // Best-effort
+        }
+
+        // Flush BEFORE setting _disposed so the call goes through; FlushAsync's _disposed guard
+        // exists to protect timer-driven callbacks racing with this teardown.
+        await FlushAsync();
+
+        _disposed = true;
+
+        try
+        {
+            _flushTimer.Dispose();
+        }
+        catch
+        {
+            // Best-effort
+        }
+
+        _fileLock.Dispose();
+    }
+
     private async Task SaveSettingInternalAsync(string key, object value)
     {
         await _fileLock.WaitAsync();
         try
         {
-            var settings = await LoadAllSettingsAsync();
-            settings[key] = value;
-            await SaveAllSettingsAsync(settings);
-            _logger.LogDebug("Saved setting: {Key} = {Value}", key, value);
+            await EnsureCacheLoadedLocked();
+            _cache![key] = value;
+            _dirty = true;
+            _flushTimer.Change(FlushDelayMs, Timeout.Infinite);
+            _logger.LogTrace("Cached setting: {Key} = {Value}", key, value);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error saving setting {Key}", key);
+            _logger.LogError(ex, "Error caching setting {Key}", key);
             throw;
         }
         finally
@@ -133,8 +222,8 @@ public class SettingsService : ISettingsService
         await _fileLock.WaitAsync();
         try
         {
-            var settings = await LoadAllSettingsAsync();
-            return settings.TryGetValue(key, out var value) ? value : null;
+            await EnsureCacheLoadedLocked();
+            return _cache!.TryGetValue(key, out var value) ? value : null;
         }
         catch (Exception ex)
         {
@@ -147,19 +236,38 @@ public class SettingsService : ISettingsService
         }
     }
 
-    private async Task<System.Collections.Generic.Dictionary<string, object>> LoadAllSettingsAsync()
+    private void OnFlushTimerTick(object? state)
+    {
+        // Fire-and-forget by design — exceptions are logged inside FlushAsync.
+        _ = FlushAsync();
+    }
+
+    /// <summary>
+    /// Lazily populate the in-memory cache from disk on first access.
+    /// Caller MUST already hold _fileLock.
+    /// </summary>
+    private async Task EnsureCacheLoadedLocked()
+    {
+        if (_cache != null)
+        {
+            return;
+        }
+        _cache = await LoadAllSettingsAsync();
+    }
+
+    private async Task<Dictionary<string, object>> LoadAllSettingsAsync()
     {
         if (!File.Exists(_settingsFile))
         {
-            return new System.Collections.Generic.Dictionary<string, object>();
+            return new Dictionary<string, object>();
         }
 
         try
         {
             var json = await File.ReadAllTextAsync(_settingsFile);
-            var settings = JsonSerializer.Deserialize<System.Collections.Generic.Dictionary<string, JsonElement>>(json);
-            
-            var result = new System.Collections.Generic.Dictionary<string, object>();
+            var settings = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
+
+            var result = new Dictionary<string, object>();
             if (settings != null)
             {
                 foreach (var kvp in settings)
@@ -177,11 +285,11 @@ public class SettingsService : ISettingsService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error loading settings file");
-            return new System.Collections.Generic.Dictionary<string, object>();
+            return new Dictionary<string, object>();
         }
     }
 
-    private async Task SaveAllSettingsAsync(System.Collections.Generic.Dictionary<string, object> settings)
+    private async Task SaveAllSettingsAsync(Dictionary<string, object> settings)
     {
         try
         {

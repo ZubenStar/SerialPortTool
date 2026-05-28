@@ -403,6 +403,14 @@ public class SerialPortService : ISerialPortService, IDisposable
         private readonly SerialPortService _parentService;
         private volatile bool _isClosing = false; // Flag to prevent DataReceived during close
 
+        // Reused scratch buffer for SerialPort.Read(...). The DataReceived event is delivered on a
+        // single worker thread per port (the SerialPort internal "DataReceived" thread), and the
+        // _isClosing flag gates re-entrance during shutdown — so a non-locked, grow-on-demand
+        // buffer is safe and avoids allocating a fresh byte[] on every chunk under high baud
+        // rates. The data that leaves this method via the DataReceived event is always a
+        // freshly-allocated, exact-sized copy so consumers can hold onto it safely.
+        private byte[] _readScratch = Array.Empty<byte>();
+
         public SerialPortConfig Config { get; }
         public PortStatistics Statistics { get; } = new();
         public bool IsOpen => _serialPort?.IsOpen ?? false;
@@ -723,11 +731,24 @@ public class SerialPortService : ISerialPortService, IDisposable
             {
                 if (_serialPort?.IsOpen == true && _serialPort.BytesToRead > 0)
                 {
-                    var buffer = new byte[_serialPort.BytesToRead];
-                    var bytesRead = _serialPort.Read(buffer, 0, buffer.Length);
+                    var available = _serialPort.BytesToRead;
+                    if (_readScratch.Length < available)
+                    {
+                        // Grow with headroom so frequent small bursts stop reallocating.
+                        var newSize = Math.Max(available, _readScratch.Length * 2);
+                        _readScratch = new byte[newSize];
+                    }
+
+                    var bytesRead = _serialPort.Read(_readScratch, 0, available);
 
                     Statistics.ReceivedBytes += bytesRead;
                     Statistics.ReceivedMessages++;
+
+                    // Hand the consumers an exact-sized copy. They may stash it (the validation
+                    // service path awaits before forwarding, and the UI path queues it for the
+                    // dispatcher), so they must not see the reused scratch buffer.
+                    var buffer = new byte[bytesRead];
+                    Buffer.BlockCopy(_readScratch, 0, buffer, 0, bytesRead);
 
                     // 如果有数据验证服务，先验证数据
                     if (_dataValidationService != null)

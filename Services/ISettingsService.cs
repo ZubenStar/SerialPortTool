@@ -36,4 +36,14 @@ public interface ISettingsService
     /// 清除所有设置
     /// </summary>
     Task ClearAsync();
+
+    /// <summary>
+    /// 立即把内存缓存中尚未落盘的设置写入磁盘。
+    /// </summary>
+    /// <remarks>
+    /// 普通的 SaveSettingAsync 会把变更存入内存缓存并启动一个 500ms 防抖定时器，
+    /// 这是为了避免连续按键（发送框、搜索历史等）导致整文件 JSON 反复重写。
+    /// FlushAsync 在关窗 / DI Dispose 时调用以确保最后一次变更不会丢失。
+    /// </remarks>
+    Task FlushAsync();
 }
