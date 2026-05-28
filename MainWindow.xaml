@@ -5,6 +5,7 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:converters="using:SerialPortTool.Converters"
+    xmlns:controls="using:SerialPortTool.Controls"
     mc:Ignorable="d"
     Title="{x:Bind ViewModel.Title, Mode=OneWay}">
 
@@ -357,10 +358,11 @@
                         <Button Content="🗑️ 清空日志"
                                 Command="{x:Bind ViewModel.ClearLogsCommand}"
                                 ToolTipService.ToolTip="清空所有日志记录"/>
-                        
-                        <CheckBox Content="自动滚动"
-                                  IsChecked="{x:Bind ViewModel.AutoScroll, Mode=TwoWay}"
-                                  x:Name="AutoScrollCheckBox"/>
+
+                        <Button Content="{x:Bind ViewModel.PauseButtonText, Mode=OneWay}"
+                                Click="TogglePause_Click"
+                                MinWidth="64"
+                                ToolTipService.ToolTip="暂停时停止刷新 UI，文件日志继续记录"/>
                     </StackPanel>
                 </StackPanel>
 
@@ -523,83 +525,14 @@
                     </Grid>
                 </Border>
 
-                <!-- Logs Display - ListView with minimal item template for compact layout -->
-                <ListView Grid.Row="3"
-                          x:Name="LogsListView"
-                          ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
-                          SelectionMode="Extended"
-                          Background="{ThemeResource LayerFillColorDefaultBrush}"
-                          Padding="8,4"
-                          IsTabStop="True"
-                          KeyDown="LogsListView_KeyDown">
-                    <ListView.ContextFlyout>
-                        <MenuFlyout>
-                            <MenuFlyoutItem Text="复制选中 (Ctrl+C)" Click="CopySelectedLogs_Click"/>
-                            <MenuFlyoutItem Text="全选 (Ctrl+A)" Click="SelectAllLogsInList_Click"/>
-                        </MenuFlyout>
-                    </ListView.ContextFlyout>
-                    <ListView.ItemContainerStyle>
-                        <Style TargetType="ListViewItem">
-                            <Setter Property="MinHeight" Value="0"/>
-                            <Setter Property="Padding" Value="0"/>
-                            <Setter Property="Margin" Value="0"/>
-                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                            <Setter Property="Template">
-                                <Setter.Value>
-                                    <ControlTemplate TargetType="ListViewItem">
-                                        <Grid x:Name="Root"
-                                              Background="Transparent"
-                                              Padding="4,0">
-                                            <VisualStateManager.VisualStateGroups>
-                                                <VisualStateGroup x:Name="CommonStates">
-                                                    <VisualState x:Name="Normal"/>
-                                                    <VisualState x:Name="PointerOver">
-                                                        <VisualState.Setters>
-                                                            <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
-                                                        </VisualState.Setters>
-                                                    </VisualState>
-                                                    <VisualState x:Name="Selected">
-                                                        <VisualState.Setters>
-                                                            <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
-                                                        </VisualState.Setters>
-                                                    </VisualState>
-                                                    <VisualState x:Name="PointerOverSelected">
-                                                        <VisualState.Setters>
-                                                            <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
-                                                        </VisualState.Setters>
-                                                    </VisualState>
-                                                    <VisualState x:Name="Pressed">
-                                                        <VisualState.Setters>
-                                                            <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
-                                                        </VisualState.Setters>
-                                                    </VisualState>
-                                                    <VisualState x:Name="PressedSelected">
-                                                        <VisualState.Setters>
-                                                            <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
-                                                        </VisualState.Setters>
-                                                    </VisualState>
-                                                </VisualStateGroup>
-                                            </VisualStateManager.VisualStateGroups>
-                                            <ContentPresenter Content="{TemplateBinding Content}"
-                                                              ContentTemplate="{TemplateBinding ContentTemplate}"
-                                                              Margin="0"/>
-                                        </Grid>
-                                    </ControlTemplate>
-                                </Setter.Value>
-                            </Setter>
-                        </Style>
-                    </ListView.ItemContainerStyle>
-                    <ListView.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding FormattedText}"
-                                       Foreground="{Binding ColorHex, Converter={StaticResource HexColorToBrushConverter}}"
-                                       FontFamily="Consolas"
-                                       FontSize="14"
-                                       TextWrapping="NoWrap"
-                                       Padding="0,1,0,1"/>
-                        </DataTemplate>
-                    </ListView.ItemTemplate>
-                </ListView>
+                <!-- Logs Display - extracted into a UserControl so the DataTemplate can use compiled
+                     x:Bind (Window-rooted DataTemplates can't, which is what was bottlenecking
+                     wheel-scroll item realization). -->
+                <controls:LogListView Grid.Row="3"
+                                      x:Name="LogListView"
+                                      ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
+                                      IsPaused="{x:Bind ViewModel.IsPaused, Mode=OneWay}"
+                                      CopyCompleted="LogListView_CopyCompleted"/>
 
                 <!-- Send Area -->
                 <StackPanel Grid.Row="4"

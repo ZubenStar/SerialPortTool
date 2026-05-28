@@ -351,8 +351,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    // IsPaused replaces the old AutoScroll concept. UX:
+    //   IsPaused = false (default): log view is locked to the bottom; new data flows in and the
+    //     view tracks the latest line. The user cannot meaningfully scroll while data is arriving
+    //     (each new batch yanks the view back to the bottom).
+    //   IsPaused = true: new data stops being added to the UI list (file logging continues
+    //     independently). The user can scroll the existing logs freely. Resuming starts feeding
+    //     new data again from that moment on — backlog accumulated during pause is not replayed
+    //     to the UI; it's already in the log file on disk.
     [ObservableProperty]
-    private bool _autoScroll = true;
+    private bool _isPaused = false;
+
+    public string PauseButtonText => IsPaused ? "继续" : "暂停";
+
+    partial void OnIsPausedChanged(bool value)
+    {
+        OnPropertyChanged(nameof(PauseButtonText));
+    }
 
     [ObservableProperty]
     private bool _sendAsHex = false;
@@ -529,7 +544,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private const int DisplayLogTrimThreshold = MaxDisplayLogs + 200;
     private const int AllLogsTrimThreshold = MaxDisplayLogs * 2 + 400;
     private const int MaxQueuedLogEntries = MaxDisplayLogs * 4;
-    private const int MaxUiLogEntriesPerFlush = 250;
+    // Smaller batches at a fixed cadence give shorter, more uniform UI blocks. Bigger batches feel
+    // like noticeable hitches. With 100 items at 50ms cadence we can sustain ~2000 lines/sec while
+    // keeping each UI flush short enough that the user's wheel/drag input stays responsive.
+    private const int MaxUiLogEntriesPerFlush = 100;
+    private const int FlushIntervalMs = 50;
+    private const int ErrorStatusThrottleMs = 250;
+
+    private DispatcherQueueTimer? _flushTimer;
+    private long _lastErrorStatusTicks;
 
     [ObservableProperty]
     private string _statusMessage = "Ready";
@@ -929,7 +952,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
 
         var filteredSet = new HashSet<LogEntry>(filtered);
-        
+
         // Remove items that no longer match filter (in reverse to maintain indices)
         for (int i = DisplayLogs.Count - 1; i >= 0; i--)
         {
@@ -938,15 +961,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 DisplayLogs.RemoveAt(i);
             }
         }
-        
-        // Add new items that match filter but aren't in DisplayLogs yet
+
+        // Add new items that match filter but aren't in DisplayLogs yet (batch to reduce UI notifications)
         var displaySet = new HashSet<LogEntry>(DisplayLogs);
+        var toAdd = new List<LogEntry>();
         foreach (var log in filtered)
         {
             if (!displaySet.Contains(log))
             {
-                DisplayLogs.Add(log);
+                toAdd.Add(log);
             }
+        }
+        if (toAdd.Count > 0)
+        {
+            DisplayLogs.AddRange(toAdd);
         }
     }
 
@@ -1932,8 +1960,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 _logger.LogTrace("No logs generated after processing, Port={Port}", portName);
                 return;
             }
-            
+
             _logger.LogTrace("Generated {Count} log entries, Port={Port}", newLogs.Count, portName);
+
+            // If the user has paused the live view, the file log above has already captured this
+            // data — do NOT feed it into the UI queue. New data only flows into the UI when
+            // unpaused; the backlog during a pause is intentionally dropped from UI (still on disk).
+            if (IsPaused)
+            {
+                _logger.LogTrace("Paused — skipping UI enqueue for {Count} entries on {Port}",
+                    newLogs.Count, portName);
+                return;
+            }
 
             var queuedLogCount = Interlocked.Add(ref _queuedLogCount, newLogs.Count);
             if (queuedLogCount > MaxQueuedLogEntries)
@@ -1970,10 +2008,30 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        if (!_dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, FlushPendingLogBatches))
+        // Use a 50ms-debounced timer instead of immediately enqueueing the flush.
+        // Why: under error storms or high-throughput data, the previous design kept
+        // re-scheduling itself with zero gap, starving the UI thread of input events
+        // (mouse wheel, selection updates).
+        if (!_dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, StartFlushTimerOnUiThread))
         {
             Interlocked.Exchange(ref _isUiFlushScheduled, 0);
             _logger.LogError("❌ Failed to enqueue merged UI log flush");
+        }
+    }
+
+    private void StartFlushTimerOnUiThread()
+    {
+        if (_flushTimer == null)
+        {
+            _flushTimer = _dispatcherQueue.CreateTimer();
+            _flushTimer.Interval = TimeSpan.FromMilliseconds(FlushIntervalMs);
+            _flushTimer.IsRepeating = false;
+            _flushTimer.Tick += (_, _) => FlushPendingLogBatches();
+        }
+
+        if (!_flushTimer.IsRunning)
+        {
+            _flushTimer.Start();
         }
     }
 
@@ -2034,10 +2092,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     }
                 }
 
-                foreach (var logEntry in pendingBatch.Logs)
-                {
-                    portVm.AddLog(logEntry);
-                }
+                // Note: PortViewModel.Logs / FilteredLogs were previously updated per-item here,
+                // but nothing in the UI binds to them — they were write-only. Each Add fired
+                // CollectionChanged + PropertyChanged events, ran filter checks (locking), and
+                // could trigger O(n) RemoveAt(0) when the per-port cap hit 10000. With 250 entries
+                // per flush at ~20 Hz, that was a major UI-thread tax. Skip it.
             }
 
             if (allLogsToAdd.Count > 0)
@@ -2047,10 +2106,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             if (displayLogsToAdd.Count > 0)
             {
-                foreach (var logEntry in displayLogsToAdd)
-                {
-                    DisplayLogs.Add(logEntry);
-                }
+                DisplayLogs.AddRange(displayLogsToAdd);
             }
 
             TrimDisplayLogs();
@@ -2168,10 +2224,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        for (int i = 0; i < removeCount && DisplayLogs.Count > 0; i++)
-        {
-            DisplayLogs.RemoveAt(0);
-        }
+        DisplayLogs.RemoveFromStart(removeCount);
 
         _logger.LogTrace("Trimmed {CollectionName}: Removed={Removed}, NewCount={Count}, Threshold={Threshold}, Target={Target}",
             nameof(DisplayLogs), removeCount, DisplayLogs.Count, DisplayLogTrimThreshold, MaxDisplayLogs);
@@ -2206,13 +2259,28 @@ public partial class MainViewModel : ObservableObject, IDisposable
         var portName = e.PortName;
         var errorMessage = e.ErrorMessage;
         var exception = e.Exception;
-        
+
+        // Always log on background thread — logging never blocks UI.
+        _logger.LogError(exception, "Error on port {PortName}", portName);
+
+        // Throttle StatusMessage updates. Frame/Overrun error storms can fire 30+/sec
+        // (wrong baud rate, line noise). Every update marshals to the UI thread and
+        // re-renders the status bar, contributing to the wheel/selection lag the user
+        // experiences. Keep the most recent error visible, drop the rest.
+        var nowTicks = DateTime.UtcNow.Ticks;
+        var lastTicks = Interlocked.Read(ref _lastErrorStatusTicks);
+        var elapsedMs = (nowTicks - lastTicks) / TimeSpan.TicksPerMillisecond;
+        if (elapsedMs < ErrorStatusThrottleMs)
+        {
+            return;
+        }
+        Interlocked.Exchange(ref _lastErrorStatusTicks, nowTicks);
+
         _dispatcherQueue.TryEnqueue(() =>
         {
             try
             {
                 StatusMessage = $"Error on {portName}: {errorMessage}";
-                _logger.LogError(exception, "Error on port {PortName}", portName);
             }
             catch (Exception ex)
             {
@@ -2349,6 +2417,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         _filterDebounceTimer?.Dispose();
         _filterDebounceTimer = null;
+        if (_flushTimer != null)
+        {
+            try { _flushTimer.Stop(); } catch { }
+            _flushTimer = null;
+        }
         StopTuningWatch(persistState: false);
         _tuningSendLock.Dispose();
 

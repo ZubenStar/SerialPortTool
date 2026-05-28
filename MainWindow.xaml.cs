@@ -2,11 +2,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
 using SerialPortTool.Helpers;
 using SerialPortTool.ViewModels;
 using System;
-using System.Linq;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 
@@ -25,8 +23,6 @@ public sealed partial class MainWindow : Window
 
     // Flag to track if current text is from selecting history
     private bool _isFromHistorySelection = false;
-    private readonly DispatcherQueueTimer? _autoScrollTimer;
-    private bool _isAutoScrollPending = false;
 
     public MainWindow()
     {
@@ -52,23 +48,9 @@ public sealed partial class MainWindow : Window
             appWindow.Resize(new Windows.Graphics.SizeInt32(1200, 800));
         }
 
-        _autoScrollTimer = DispatcherQueue.CreateTimer();
-        _autoScrollTimer.Interval = TimeSpan.FromMilliseconds(40);
-        _autoScrollTimer.IsRepeating = false;
-        _autoScrollTimer.Tick += (_, _) => PerformPendingAutoScroll();
-
-        // Auto-scroll support for ListView
-        ViewModel.DisplayLogs.CollectionChanged += DisplayLogs_CollectionChanged;
-
-        // Disable auto-scroll when user manually scrolls (defer until loaded)
-        LogsListView.Loaded += (s, args) =>
-        {
-            var scrollViewer = FindScrollViewer(LogsListView);
-            if (scrollViewer != null)
-            {
-                scrollViewer.ViewChanged += LogScrollViewer_ViewChanged;
-            }
-        };
+        // NOTE: log-list auto-scroll, copy, multi-select, and keyboard shortcuts are now
+        // self-contained inside the LogListView UserControl. We only handle the CopyCompleted
+        // event below to push a status message into the ViewModel.
 
         // Subscribe to ViewModel property changes for match count
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
@@ -115,7 +97,7 @@ public sealed partial class MainWindow : Window
             CustomBaudRateTextBox.Visibility = useCustom ? Visibility.Visible : Visibility.Collapsed;
         });
     }
-    
+
     private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(ViewModel.MatchCount))
@@ -139,86 +121,6 @@ public sealed partial class MainWindow : Window
                 MatchCountTextBlock.Visibility = Visibility.Collapsed;
                 SearchBox.BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Red);
             }
-        }
-    }
-    
-    private bool _isAutoScrolling = false;
-    
-    private void LogScrollViewer_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
-    {
-        // Don't disable auto-scroll automatically - let user control it via checkbox
-        // This method is now only used to detect when to re-enable auto-scroll
-        if (!_isAutoScrolling && !e.IsIntermediate && !ViewModel.AutoScroll)
-        {
-            var scrollViewer = sender as ScrollViewer;
-            if (scrollViewer != null)
-            {
-                // Re-enable auto-scroll if user manually scrolls back to bottom
-                var distanceFromBottom = scrollViewer.ScrollableHeight - scrollViewer.VerticalOffset;
-                if (distanceFromBottom <= 10)
-                {
-                    ViewModel.AutoScroll = true;
-                }
-            }
-        }
-    }
-    
-    private static ScrollViewer? FindScrollViewer(DependencyObject depObj)
-    {
-        if (depObj is ScrollViewer sv) return sv;
-        for (int i = 0; i < Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(depObj); i++)
-        {
-            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(depObj, i);
-            var result = FindScrollViewer(child);
-            if (result != null) return result;
-        }
-        return null;
-    }
-
-    private void DisplayLogs_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
-    {
-        // Auto-scroll when new logs are added
-        if (ViewModel?.AutoScroll == true &&
-            e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add &&
-            e.NewItems?.Count > 0)
-        {
-            _isAutoScrollPending = true;
-
-            if (_autoScrollTimer != null)
-            {
-                _autoScrollTimer.Stop();
-                _autoScrollTimer.Start();
-            }
-            else
-            {
-                PerformPendingAutoScroll();
-            }
-        }
-    }
-
-    private void PerformPendingAutoScroll()
-    {
-        if (!_isAutoScrollPending || ViewModel?.AutoScroll != true || ViewModel.DisplayLogs.Count == 0)
-        {
-            _isAutoScrollPending = false;
-            return;
-        }
-
-        try
-        {
-            _isAutoScrolling = true;
-            _isAutoScrollPending = false;
-
-            var lastItem = ViewModel.DisplayLogs[^1];
-            LogsListView.ScrollIntoView(lastItem);
-        }
-        catch (Exception)
-        {
-            _isAutoScrollPending = false;
-        }
-        finally
-        {
-            _isAutoScrolling = false;
         }
     }
 
@@ -559,49 +461,17 @@ public sealed partial class MainWindow : Window
 
     private void SelectAllLogs_Click(object sender, RoutedEventArgs e)
     {
-        LogsListView.SelectAll();
+        LogListView.SelectAll();
     }
 
-    private void SelectAllLogsInList_Click(object sender, RoutedEventArgs e)
+    private void TogglePause_Click(object sender, RoutedEventArgs e)
     {
-        LogsListView.SelectAll();
+        ViewModel.IsPaused = !ViewModel.IsPaused;
     }
 
-    private void CopySelectedLogs_Click(object sender, RoutedEventArgs e)
+    private void LogListView_CopyCompleted(object? sender, int count)
     {
-        CopySelectedLogsToClipboard();
-    }
-
-    private void LogsListView_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
-    {
-        var ctrl = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control);
-        if (ctrl.HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down))
-        {
-            if (e.Key == Windows.System.VirtualKey.C)
-            {
-                CopySelectedLogsToClipboard();
-                e.Handled = true;
-            }
-            else if (e.Key == Windows.System.VirtualKey.A)
-            {
-                LogsListView.SelectAll();
-                e.Handled = true;
-            }
-        }
-    }
-
-    private void CopySelectedLogsToClipboard()
-    {
-        var selectedItems = LogsListView.SelectedItems;
-        if (selectedItems.Count == 0) return;
-
-        var text = string.Join("\n", selectedItems.Cast<Models.LogEntry>().Select(l => l.FormattedText));
-
-        var dataPackage = new Windows.ApplicationModel.DataTransfer.DataPackage();
-        dataPackage.SetText(text);
-        Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dataPackage);
-
-        ViewModel.StatusMessage = $"已复制 {selectedItems.Count} 条日志到剪贴板";
+        ViewModel.StatusMessage = $"已复制 {count} 条日志到剪贴板";
     }
 
     private void CustomBaudRateCheckBox_Changed(object sender, RoutedEventArgs e)
