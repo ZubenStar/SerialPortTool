@@ -1,7 +1,21 @@
 ﻿{
-    "version": "1.8.11",
+    "version": "1.8.12",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-05-28",
+            "version": "1.8.12",
+            "changes": [
+                "Fixed WinUI 3 ListView crash with 'indices larger than Int32.MaxValue - 1' by switching RangeObservableCollection batch updates to Reset notifications",
+                "Debounced settings persistence with 500ms in-memory coalescing to eliminate per-keystroke disk I/O in the send-text box and other property-change save paths",
+                "Reused per-port byte buffer for SerialPort.Read to reduce GC pressure under high-throughput data",
+                "Cached OpenPorts dictionary to remove LINQ scans from GetPortColor and the per-flush stats/sent-log paths",
+                "Rewrote GarbageDataDetector as a zero-allocation single-pass span scan (preserves existing thresholds)",
+                "Stopped firing CollectionChanged notifications for AllLogs (back-buffer only — never bound to UI)",
+                "Removed unused PortViewModel.Logs / FilteredLogs collections and their O(n) RemoveAt(0) trim path",
+                "Guarded hot-path LogTrace calls with IsEnabled to skip argument boxing at production log levels"
+            ]
+        },
         {
             "date": "2026-05-22",
             "version": "1.8.11",
