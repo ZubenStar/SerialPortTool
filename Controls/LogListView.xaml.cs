@@ -106,9 +106,18 @@ public sealed partial class LogListView : UserControl
         // Auto-scroll to the latest entry whenever new items arrive — unless the user has paused.
         // The pause check is also enforced upstream (the ViewModel stops enqueuing UI batches while
         // paused), but checking here too is defense in depth.
+        //
+        // We accept both Add and Reset. RangeObservableCollection batches via Reset (WinUI 3
+        // ListView mishandles multi-item Add notifications), so a Reset here means "a batch of
+        // new items was just appended" for our use case — scrolling to the last item lands on
+        // them. Other Reset producers (Clear, FilterLogs replacing the whole set) are also fine
+        // to scroll to the bottom; pause + a new search both wipe the view anyway.
         if (IsPaused) return;
-        if (e.Action != NotifyCollectionChangedAction.Add) return;
-        if ((e.NewItems?.Count ?? 0) == 0) return;
+        if (e.Action != NotifyCollectionChangedAction.Add &&
+            e.Action != NotifyCollectionChangedAction.Reset)
+            return;
+        if (e.Action == NotifyCollectionChangedAction.Add && (e.NewItems?.Count ?? 0) == 0)
+            return;
 
         _isAutoScrollPending = true;
 

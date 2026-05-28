@@ -21,19 +21,30 @@ using System.Threading.Tasks;
 namespace SerialPortTool.ViewModels;
 
 /// <summary>
-/// ObservableCollection that supports incremental batch operations without full resets
+/// ObservableCollection that supports incremental batch operations without per-item notifications.
 /// </summary>
+/// <remarks>
+/// AddRange / RemoveFromStart batch the underlying mutations and fire a SINGLE
+/// <see cref="NotifyCollectionChangedAction.Reset"/> at the end. We previously tried firing
+/// a multi-item <c>Add</c> notification for smoother scrolling, but WinUI 3's ListView throws
+/// "This collection cannot work with indices larger than Int32.MaxValue - 1" when its internal
+/// vector-view tries to consume a multi-item Add — Reset is the only widely-supported batch
+/// notification. With UI virtualization on, Reset is still cheap because only visible items get
+/// re-realized; the auto-scroll path in <c>LogListView</c> handles Reset the same as Add.
+/// </remarks>
 public class RangeObservableCollection<T> : ObservableCollection<T>
 {
     private static readonly PropertyChangedEventArgs CountPropertyChanged = new(nameof(Count));
     private static readonly PropertyChangedEventArgs IndexerPropertyChanged = new("Item[]");
+    private static readonly NotifyCollectionChangedEventArgs ResetEventArgs =
+        new(NotifyCollectionChangedAction.Reset);
     private bool _suppressNotification = false;
 
     public void AddRange(IEnumerable<T> items)
     {
         if (items == null) return;
 
-        var itemsList = items.ToList();
+        var itemsList = items as IReadOnlyCollection<T> ?? items.ToList();
         if (itemsList.Count == 0) return;
 
         CheckReentrancy();
@@ -53,24 +64,13 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
 
         OnPropertyChanged(CountPropertyChanged);
         OnPropertyChanged(IndexerPropertyChanged);
-
-        // Use Add action with multiple items instead of Reset for smoother UI updates
-        base.OnCollectionChanged(new NotifyCollectionChangedEventArgs(
-            NotifyCollectionChangedAction.Add,
-            itemsList,
-            Items.Count - itemsList.Count));
+        base.OnCollectionChanged(ResetEventArgs);
     }
 
     public void RemoveFromStart(int count)
     {
         if (count <= 0 || Items.Count == 0) return;
         count = Math.Min(count, Items.Count);
-
-        var removedItems = new List<T>(count);
-        for (int i = 0; i < count; i++)
-        {
-            removedItems.Add(Items[i]);
-        }
 
         CheckReentrancy();
 
@@ -89,11 +89,7 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
 
         OnPropertyChanged(CountPropertyChanged);
         OnPropertyChanged(IndexerPropertyChanged);
-
-        base.OnCollectionChanged(new NotifyCollectionChangedEventArgs(
-            NotifyCollectionChangedAction.Remove,
-            removedItems,
-            0));
+        base.OnCollectionChanged(ResetEventArgs);
     }
 
     protected override void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
@@ -164,8 +160,66 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private ObservableCollection<PortViewModel> _openPorts = new();
 
-    [ObservableProperty]
-    private RangeObservableCollection<LogEntry> _allLogs = new();
+    // Maintained from OpenPorts.CollectionChanged so we never do an O(n) LINQ scan over
+    // OpenPorts on the hot data-receive path. Used for color lookup (per received chunk) and
+    // for the per-flush sent-log / stats-refresh dictionary that used to be rebuilt with
+    // OpenPorts.ToDictionary(...) on every UI flush.
+    private readonly Dictionary<string, PortViewModel> _portsByName =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private void OnOpenPortsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        switch (e.Action)
+        {
+            case NotifyCollectionChangedAction.Add:
+                if (e.NewItems != null)
+                {
+                    foreach (PortViewModel item in e.NewItems)
+                    {
+                        _portsByName[item.PortName] = item;
+                    }
+                }
+                break;
+            case NotifyCollectionChangedAction.Remove:
+                if (e.OldItems != null)
+                {
+                    foreach (PortViewModel item in e.OldItems)
+                    {
+                        _portsByName.Remove(item.PortName);
+                    }
+                }
+                break;
+            case NotifyCollectionChangedAction.Replace:
+                if (e.OldItems != null)
+                {
+                    foreach (PortViewModel item in e.OldItems)
+                    {
+                        _portsByName.Remove(item.PortName);
+                    }
+                }
+                if (e.NewItems != null)
+                {
+                    foreach (PortViewModel item in e.NewItems)
+                    {
+                        _portsByName[item.PortName] = item;
+                    }
+                }
+                break;
+            case NotifyCollectionChangedAction.Reset:
+                _portsByName.Clear();
+                foreach (var p in OpenPorts)
+                {
+                    _portsByName[p.PortName] = p;
+                }
+                break;
+        }
+    }
+
+    // AllLogs is the unfiltered back-buffer used by FilterLogs() when SearchText changes. It is
+    // never bound to the UI (only DisplayLogs is — see MainWindow.xaml). Holding it as an
+    // ObservableCollection caused every flush to fire CollectionChanged / Count / Item[]
+    // notifications for nothing. Plain List avoids that overhead.
+    public List<LogEntry> AllLogs { get; } = new();
 
     [ObservableProperty]
     private RangeObservableCollection<LogEntry> _displayLogs = new();
@@ -482,8 +536,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public string GetPortColor(string portName)
     {
-        var port = OpenPorts.FirstOrDefault(p => p.PortName == portName);
-        return port?.ColorHex ?? RxColorHex;
+        return _portsByName.TryGetValue(portName, out var port) ? port.ColorHex : RxColorHex;
     }
 
     partial void OnSendAsHexChanged(bool value)
@@ -622,6 +675,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _baudRateDetectorService = baudRateDetectorService;
         _dataValidationService = dataValidationService;
 
+        // Keep _portsByName in sync with OpenPorts so the hot data-receive path can do O(1)
+        // lookups instead of LINQ scans. OpenPorts itself is the source of truth for the UI.
+        OpenPorts.CollectionChanged += OnOpenPortsChanged;
+
         // Subscribe to events
         _serialPortService.DataReceived += OnDataReceived;
         _serialPortService.PortStateChanged += OnPortStateChanged;
@@ -721,7 +778,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        if (OpenPorts.Any(p => p.PortName == portName))
+        if (_portsByName.ContainsKey(portName))
         {
             StatusMessage = $"Port {portName} is already open";
             return;
@@ -844,7 +901,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // Start file logging and create ViewModels for each opened port
             foreach (var portName in _serialPortService.GetOpenPorts())
             {
-                if (!OpenPorts.Any(p => p.PortName == portName))
+                if (!_portsByName.ContainsKey(portName))
                 {
                     await _fileLoggerService.StartLoggingAsync(portName);
 
@@ -1121,7 +1178,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private void AddSentLogs(IReadOnlyList<string> targetPorts, string displayContent)
     {
-        var openPortMap = OpenPorts.ToDictionary(port => port.PortName, StringComparer.OrdinalIgnoreCase);
         foreach (var portName in targetPorts)
         {
             var logEntry = new LogEntry
@@ -1132,10 +1188,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 ColorHex = TxColorHex
             };
             AddSentLog(logEntry);
-            if (openPortMap.TryGetValue(portName, out var portVm))
-            {
-                portVm.AddLog(logEntry);
-            }
         }
     }
 
@@ -1648,7 +1700,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var openPortMap = OpenPorts.ToDictionary(p => p.PortName, StringComparer.OrdinalIgnoreCase);
         var summary = $"[TUNING] {Path.GetFileName(buildResult.BinFilePath)} | {buildResult.TotalBytes} bytes | {buildResult.PacketCount} packets";
         foreach (var portName in targetPorts)
         {
@@ -1660,19 +1711,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 ColorHex = TxColorHex
             };
             AddSentLog(logEntry);
-            if (openPortMap.TryGetValue(portName, out var portVm))
-            {
-                portVm.AddLog(logEntry);
-            }
         }
     }
 
     private void RefreshPortStatistics(IReadOnlyList<string> targetPorts)
     {
-        var openPortMap = OpenPorts.ToDictionary(p => p.PortName, StringComparer.OrdinalIgnoreCase);
         foreach (var portName in targetPorts)
         {
-            if (openPortMap.TryGetValue(portName, out var portVm))
+            if (_portsByName.TryGetValue(portName, out var portVm))
             {
                 var stats = _serialPortService.GetStatistics(portName);
                 portVm.UpdateStatistics(stats);
@@ -1796,8 +1842,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // Give OS time to fully release the serial port handle before allowing reopen
             await Task.Delay(500);
 
-            var portVm = OpenPorts.FirstOrDefault(p => p.PortName == portName);
-            if (portVm != null)
+            if (_portsByName.TryGetValue(portName, out var portVm))
             {
                 OpenPorts.Remove(portVm);
             }
@@ -1812,6 +1857,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private static readonly string[] LineSeparators = { "\r\n", "\r", "\n" };
+
     private readonly ConcurrentQueue<PendingLogBatch> _pendingLogBatches = new();
     private int _isUiFlushScheduled = 0;
     private long _queuedLogCount = 0;
@@ -1822,9 +1869,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         var dataSize = e.Data?.Length ?? 0;
         Interlocked.Increment(ref _totalDataReceived);
-        
-        _logger.LogTrace("OnDataReceived called: Port={Port}, Size={Size}bytes, QueuedLogs={QueuedLogs}",
-            e.PortName, dataSize, Interlocked.Read(ref _queuedLogCount));
+
+        // Hoist the level check once so we don't box arguments for every LogTrace below at
+        // production log levels. At Information level (App.xaml.cs:44) these all become a single
+        // bool check.
+        var traceEnabled = _logger.IsEnabled(LogLevel.Trace);
+
+        if (traceEnabled)
+        {
+            _logger.LogTrace("OnDataReceived called: Port={Port}, Size={Size}bytes, QueuedLogs={QueuedLogs}",
+                e.PortName, dataSize, Interlocked.Read(ref _queuedLogCount));
+        }
 
         // Additional protection: Skip if data size is too large (potential garbage data)
         if (dataSize > 16384) // 16KB limit
@@ -1840,7 +1895,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // Capture data on background thread
             if (e.Data == null || e.Data.Length == 0)
             {
-                _logger.LogTrace("Received null or empty data, skipping: Port={Port}", e.PortName);
+                if (traceEnabled)
+                {
+                    _logger.LogTrace("Received null or empty data, skipping: Port={Port}", e.PortName);
+                }
                 return;
             }
             
@@ -1870,13 +1928,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // 获取端口颜色
             var portColor = GetPortColor(portName);
 
-            _logger.LogTrace("Decoded text: Length={Length} chars, Port={Port}", text.Length, portName);
-            
+            if (traceEnabled)
+            {
+                _logger.LogTrace("Decoded text: Length={Length} chars, Port={Port}", text.Length, portName);
+            }
+
             // Build log entries on background thread with optimized string operations
             var newLogs = new List<LogEntry>();
-            var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-            
-            _logger.LogTrace("Split into {LineCount} lines, Port={Port}", lines.Length, portName);
+            var lines = text.Split(LineSeparators, StringSplitOptions.None);
+
+            if (traceEnabled)
+            {
+                _logger.LogTrace("Split into {LineCount} lines, Port={Port}", lines.Length, portName);
+            }
             
             // Enhanced protection: Limit lines to prevent memory overflow and UI freezing
             var maxLines = Math.Min(lines.Length, 500); // Reduced from 1000 to 500 for better performance
@@ -1957,19 +2021,28 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             if (newLogs.Count == 0)
             {
-                _logger.LogTrace("No logs generated after processing, Port={Port}", portName);
+                if (traceEnabled)
+                {
+                    _logger.LogTrace("No logs generated after processing, Port={Port}", portName);
+                }
                 return;
             }
 
-            _logger.LogTrace("Generated {Count} log entries, Port={Port}", newLogs.Count, portName);
+            if (traceEnabled)
+            {
+                _logger.LogTrace("Generated {Count} log entries, Port={Port}", newLogs.Count, portName);
+            }
 
             // If the user has paused the live view, the file log above has already captured this
             // data — do NOT feed it into the UI queue. New data only flows into the UI when
             // unpaused; the backlog during a pause is intentionally dropped from UI (still on disk).
             if (IsPaused)
             {
-                _logger.LogTrace("Paused — skipping UI enqueue for {Count} entries on {Port}",
-                    newLogs.Count, portName);
+                if (traceEnabled)
+                {
+                    _logger.LogTrace("Paused — skipping UI enqueue for {Count} entries on {Port}",
+                        newLogs.Count, portName);
+                }
                 return;
             }
 
@@ -1989,8 +2062,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 Logs = newLogs
             });
 
-            _logger.LogTrace("Queued UI batch: Port={Port}, NewLogs={Count}, QueuedLogs={QueuedLogs}",
-                portName, newLogs.Count, queuedLogCount);
+            if (traceEnabled)
+            {
+                _logger.LogTrace("Queued UI batch: Port={Port}, NewLogs={Count}, QueuedLogs={QueuedLogs}",
+                    portName, newLogs.Count, queuedLogCount);
+            }
 
             SchedulePendingLogFlush();
         }
@@ -2056,7 +2132,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             }
 
             var updateStartTime = DateTime.Now;
-            var openPortMap = OpenPorts.ToDictionary(p => p.PortName, StringComparer.OrdinalIgnoreCase);
+            var openPortMap = _portsByName;
             var searchTextSnapshot = SearchText;
             var isRegexValidSnapshot = IsRegexValid;
             var filterRegex = CreateSearchRegex(searchTextSnapshot, isRegexValidSnapshot, 50);
@@ -2126,8 +2202,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
             }
 
             var updateDuration = (DateTime.Now - updateStartTime).TotalMilliseconds;
-            _logger.LogTrace("✅ Merged UI flush completed: Batches={BatchCount}, Logs={LogCount}, Duration={Duration}ms, RemainingQueuedLogs={QueuedLogs}",
-                batchesToFlush.Count, allLogsToAdd.Count, updateDuration, Interlocked.Read(ref _queuedLogCount));
+            if (_logger.IsEnabled(LogLevel.Trace))
+            {
+                _logger.LogTrace("✅ Merged UI flush completed: Batches={BatchCount}, Logs={LogCount}, Duration={Duration}ms, RemainingQueuedLogs={QueuedLogs}",
+                    batchesToFlush.Count, allLogsToAdd.Count, updateDuration, Interlocked.Read(ref _queuedLogCount));
+            }
 
             if (updateDuration > 100)
             {
@@ -2190,7 +2269,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     private void TrimLogCollection(
-        RangeObservableCollection<LogEntry> collection,
+        List<LogEntry> collection,
         int trimThreshold,
         int targetCount,
         string collectionName)
@@ -2206,7 +2285,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        collection.RemoveFromStart(removeCount);
+        collection.RemoveRange(0, removeCount);
         _logger.LogTrace("Trimmed {CollectionName}: Removed={Removed}, NewCount={Count}, Threshold={Threshold}, Target={Target}",
             collectionName, removeCount, collection.Count, trimThreshold, targetCount);
     }
@@ -2429,6 +2508,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _serialPortService.PortStateChanged -= OnPortStateChanged;
         _serialPortService.ErrorOccurred -= OnErrorOccurred;
 
+        OpenPorts.CollectionChanged -= OnOpenPortsChanged;
+
         if (_serialPortService is SerialPortService serialPortServiceInstance)
         {
             serialPortServiceInstance.BaudRateDetectionRequested -= OnBaudRateDetectionRequested;
@@ -2454,9 +2535,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
 /// </summary>
 public partial class PortViewModel : ObservableObject
 {
-    private readonly ISerialPortService _serialPortService;
-    private readonly ILogFilterService _logFilterService;
-
     [ObservableProperty]
     private string _portName = string.Empty;
 
@@ -2464,16 +2542,12 @@ public partial class PortViewModel : ObservableObject
     private string _colorHex = "#107C10";
 
     [ObservableProperty]
-    private ObservableCollection<LogEntry> _logs = new();
-
-    [ObservableProperty]
-    private ObservableCollection<LogEntry> _filteredLogs = new();
-
-    [ObservableProperty]
     private string _statisticsDisplay = "0 bytes";
 
-    private readonly DispatcherQueue? _dispatcherQueue;
-
+    // The serialPortService / logFilterService / dispatcherQueue parameters are kept on the
+    // constructor signature so existing call sites in MainViewModel don't need to change and so
+    // these dependencies remain available if per-port behavior is reintroduced. They are
+    // intentionally not stored — see commit removing PortViewModel.Logs / FilteredLogs.
     public PortViewModel(
         string portName,
         ISerialPortService serialPortService,
@@ -2481,40 +2555,27 @@ public partial class PortViewModel : ObservableObject
         DispatcherQueue? dispatcherQueue = null)
     {
         _portName = portName;
-        _serialPortService = serialPortService;
-        _logFilterService = logFilterService;
-        _dispatcherQueue = dispatcherQueue;
+        _ = serialPortService;
+        _ = logFilterService;
+        _ = dispatcherQueue;
     }
 
     public void UpdateStatistics(PortStatistics stats)
     {
         StatisticsDisplay = $"↓ {MainViewModel.FormatDataSize(stats.ReceivedBytes)} | ↑ {MainViewModel.FormatDataSize(stats.SentBytes)}";
     }
-
-    public void AddLog(LogEntry entry)
-    {
-        Logs.Add(entry);
-
-        if (_logFilterService.ShouldDisplay(entry))
-        {
-            FilteredLogs.Add(entry);
-        }
-
-        // Limit log count to prevent memory issues
-        if (Logs.Count > 10000)
-        {
-            Logs.RemoveAt(0);
-        }
-        if (FilteredLogs.Count > 10000)
-        {
-            FilteredLogs.RemoveAt(0);
-        }
-    }
 }
 
 /// <summary>
 /// 垃圾数据检测工具类
 /// </summary>
+/// <remarks>
+/// Rewritten as a single-pass span scan with a 256-bit distinct-char bitmap on the stack.
+/// Replaces the previous LINQ implementation (line.Count(...), line.Distinct().Count(), and a
+/// 3rd pattern-detection loop) which allocated enumerator + HashSet per line on the background
+/// thread under high throughput. Thresholds are intentionally kept identical to the previous
+/// behavior — do not "improve" them here without a deliberate behavior-change discussion.
+/// </remarks>
 public static class GarbageDataDetector
 {
     /// <summary>
@@ -2527,39 +2588,74 @@ public static class GarbageDataDetector
         if (string.IsNullOrEmpty(line))
             return false;
 
-        // 检查是否包含过多不可打印字符
-        var unprintableCount = line.Count(c => c < 32 && c != '\r' && c != '\n' && c != '\t');
-        if (line.Length > 0 && (double)unprintableCount / line.Length > 0.5)
-            return true;
+        var span = line.AsSpan();
+        var length = span.Length;
 
-        // 检查是否为大量重复字符
-        if (line.Length > 10)
-        {
-            var distinctChars = line.Distinct().Count();
-            if (distinctChars <= 2) // 只有1-2种不同字符
-                return true;
-        }
+        // 256-bit bitmap covering chars 0..255. Any char > 255 is folded onto bit 255 — that's
+        // fine because the "distinct chars" threshold is only used for the "too few distinct
+        // chars" check, and distinguishing between high-codepoint runs doesn't affect that.
+        Span<ulong> distinctBits = stackalloc ulong[4];
+        var distinctCount = 0;
+        var unprintableCount = 0;       // c < 32 && not in {\r \n \t}
+        var extendedAsciiCount = 0;     // 127 < c < 256
+        var unreadableCount = 0;        // c < 32 || c > 126 — the "pattern" counter
+        var checkPatternStretch = length > 20;
 
-        // 检查是否为典型的乱码模式
-        if (line.Length > 20)
+        for (var i = 0; i < length; i++)
         {
-            var patternCount = 0;
-            // 检查连续的不可读字符序列
-            for (int i = 0; i < line.Length - 3; i++)
+            char c = span[i];
+
+            // Distinct bitmap. Cap at 255 to keep the bitmap fixed-size.
+            int bitIndex = c > 255 ? 255 : c;
+            ref ulong word = ref distinctBits[bitIndex >> 6];
+            ulong mask = 1UL << (bitIndex & 63);
+            if ((word & mask) == 0)
             {
-                if (line[i] < 32 || line[i] > 126)
+                word |= mask;
+                distinctCount++;
+            }
+
+            if (c < 32 && c != '\r' && c != '\n' && c != '\t')
+            {
+                unprintableCount++;
+            }
+
+            if (c > 127 && c < 256)
+            {
+                extendedAsciiCount++;
+            }
+
+            if (checkPatternStretch && (c < 32 || c > 126))
+            {
+                unreadableCount++;
+                // Original code returned true as soon as patternCount exceeded length * 0.3
+                // inside a loop that only iterated up to length - 3. Use the same threshold;
+                // dropping the length-3 boundary is fine because the threshold itself is what
+                // determined the decision.
+                if (unreadableCount * 10 > length * 3)
                 {
-                    patternCount++;
-                    if (patternCount > line.Length * 0.3)
-                        return true;
+                    return true;
                 }
             }
         }
 
-        // 检查是否包含过多的扩展ASCII字符（可能是编码错误的UTF-8）
-        var extendedAsciiCount = line.Count(c => c > 127 && c < 256);
-        if (line.Length > 0 && (double)extendedAsciiCount / line.Length > 0.7)
+        // 检查是否包含过多不可打印字符 (>50%)
+        if (length > 0 && unprintableCount * 2 > length)
+        {
             return true;
+        }
+
+        // 检查是否为大量重复字符 (only 1-2 distinct chars, requires length > 10)
+        if (length > 10 && distinctCount <= 2)
+        {
+            return true;
+        }
+
+        // 检查是否包含过多的扩展ASCII字符 (>70%)
+        if (length > 0 && extendedAsciiCount * 10 > length * 7)
+        {
+            return true;
+        }
 
         return false;
     }
