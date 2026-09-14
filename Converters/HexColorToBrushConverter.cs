@@ -2,7 +2,7 @@ using Microsoft.UI;
 using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Media;
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using Windows.UI;
 
 namespace SerialPortTool.Converters;
@@ -12,25 +12,31 @@ namespace SerialPortTool.Converters;
 /// </summary>
 public class HexColorToBrushConverter : IValueConverter
 {
-    private static readonly ConcurrentDictionary<string, SolidColorBrush> _brushCache = new();
+    // Only ever accessed from the UI thread (x:Bind/{Binding} evaluation), so a plain
+    // dictionary avoids ConcurrentDictionary bookkeeping on every item realize.
+    private static readonly Dictionary<string, SolidColorBrush> _brushCache = new();
     private static readonly SolidColorBrush _defaultBrush = new(Colors.Black);
 
     public object Convert(object value, Type targetType, object parameter, string language)
     {
         if (value is string hexColor && !string.IsNullOrEmpty(hexColor))
         {
-            return _brushCache.GetOrAdd(hexColor, key =>
+            if (_brushCache.TryGetValue(hexColor, out var cached))
             {
-                try
-                {
-                    var color = ParseHexColor(key);
-                    return new SolidColorBrush(color);
-                }
-                catch (Exception)
-                {
-                    return _defaultBrush;
-                }
-            });
+                return cached;
+            }
+
+            try
+            {
+                var color = ParseHexColor(hexColor);
+                var brush = new SolidColorBrush(color);
+                _brushCache[hexColor] = brush;
+                return brush;
+            }
+            catch (Exception)
+            {
+                return _defaultBrush;
+            }
         }
         return _defaultBrush;
     }

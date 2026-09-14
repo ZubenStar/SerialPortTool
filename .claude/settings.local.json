@@ -3,7 +3,10 @@
     "allow": [
       "Bash(dotnet build:*)",
       "Bash(find:*)",
-      "Bash(git remote get-url origin 2>/dev/null || echo \"no remote\")"
+      "Bash(git remote get-url origin 2>/dev/null || echo \"no remote\")",
+      "Bash(git *)",
+      "Bash(cmd.exe /c \"where dotnet\")",
+      "Bash(powershell.exe -Command \"Get-Command dotnet | Select-Object -ExpandProperty Source\")"
     ]
   }
 }

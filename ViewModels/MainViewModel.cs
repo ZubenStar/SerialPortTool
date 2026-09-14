@@ -24,13 +24,23 @@ namespace SerialPortTool.ViewModels;
 /// ObservableCollection that supports incremental batch operations without per-item notifications.
 /// </summary>
 /// <remarks>
-/// AddRange / RemoveFromStart batch the underlying mutations and fire a SINGLE
-/// <see cref="NotifyCollectionChangedAction.Reset"/> at the end. We previously tried firing
-/// a multi-item <c>Add</c> notification for smoother scrolling, but WinUI 3's ListView throws
-/// "This collection cannot work with indices larger than Int32.MaxValue - 1" when its internal
-/// vector-view tries to consume a multi-item Add — Reset is the only widely-supported batch
-/// notification. With UI virtualization on, Reset is still cheap because only visible items get
-/// re-realized; the auto-scroll path in <c>LogListView</c> handles Reset the same as Add.
+/// AddRange / RemoveFromStart batch the underlying mutations and publish ONE notification at the
+/// end. We previously tried firing a multi-item <c>Add</c> notification for smoother scrolling, but
+/// WinUI 3's ListView throws "This collection cannot work with indices larger than
+/// Int32.MaxValue - 1" when its internal vector-view tries to consume a multi-item Add — so
+/// <c>Reset</c> used to be our only batch notification.
+///
+/// That reasoning was incomplete. Reset is cheap with respect to *item count*, but not with
+/// respect to *frequency*: it tells ItemsStackPanel "contents unknown", so every realized
+/// container is discarded and the visible window is rebuilt from scratch. At a 50ms flush cadence
+/// that rebuild runs ~20x/sec even when a single line arrived — and the low-rate case is the one
+/// this app normally runs in. The user-visible result is a log view that never settles under the
+/// cursor while wheel-scrolling, despite data flowing at only a few dozen lines per second.
+///
+/// So the notification strategy is now adaptive (see <c>AddRange</c>): small increments go out as
+/// single-item Add notifications, which the ListView consumes incrementally and which preserve the
+/// scroll anchor; only large increments collapse into a Reset. Both shapes are accepted by the
+/// auto-scroll path in <c>LogListView</c>.
 /// </remarks>
 public class RangeObservableCollection<T> : ObservableCollection<T>
 {
@@ -38,6 +48,18 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
     private static readonly PropertyChangedEventArgs IndexerPropertyChanged = new("Item[]");
     private static readonly NotifyCollectionChangedEventArgs ResetEventArgs =
         new(NotifyCollectionChangedAction.Reset);
+
+    /// <summary>
+    /// Increments at or below this size are published as individual single-item Add
+    /// notifications; anything larger collapses into one Reset.
+    /// </summary>
+    /// <remarks>
+    /// 32 covers the normal low-rate case (a 50ms flush typically carries 1-5 lines) so the
+    /// incremental path is taken almost always, while keeping the pathological worst case bounded
+    /// at ~32 notifications per flush if a burst arrives while the user is mid-scroll.
+    /// </remarks>
+    private const int IncrementalAddThreshold = 32;
+
     private bool _suppressNotification = false;
 
     public void AddRange(IEnumerable<T> items)
@@ -49,12 +71,43 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
 
         CheckReentrancy();
 
+        if (itemsList.Count > IncrementalAddThreshold)
+        {
+            // Bulk path: mutate silently, then publish ONE Reset.
+            _suppressNotification = true;
+            try
+            {
+                foreach (var item in itemsList)
+                {
+                    Items.Add(item);
+                }
+            }
+            finally
+            {
+                _suppressNotification = false;
+            }
+
+            OnPropertyChanged(CountPropertyChanged);
+            OnPropertyChanged(IndexerPropertyChanged);
+            base.OnCollectionChanged(ResetEventArgs);
+            return;
+        }
+
+        // Incremental path: one single-item Add per entry, so the ListView realizes only the new
+        // rows and keeps its existing containers and scroll anchor intact.
+        //
+        // Items.Add() writes straight to the backing List<T> and bypasses InsertItem(), so no
+        // notification is raised implicitly — we raise it explicitly. Single-item Add only:
+        // WinUI 3's vector view mishandles multi-item Add payloads.
         _suppressNotification = true;
         try
         {
             foreach (var item in itemsList)
             {
+                var index = Items.Count;
                 Items.Add(item);
+                base.OnCollectionChanged(new NotifyCollectionChangedEventArgs(
+                    NotifyCollectionChangedAction.Add, item, index));
             }
         }
         finally
@@ -64,7 +117,6 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
 
         OnPropertyChanged(CountPropertyChanged);
         OnPropertyChanged(IndexerPropertyChanged);
-        base.OnCollectionChanged(ResetEventArgs);
     }
 
     public void RemoveFromStart(int count)
@@ -77,9 +129,57 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
         _suppressNotification = true;
         try
         {
-            for (int i = 0; i < count; i++)
+            // One O(n) shift instead of `count` separate O(n) shifts. The old loop moved the whole
+            // tail of the list once per removed index — trimming 200 entries out of a 2200-item
+            // ring meant ~440k element moves, on the UI thread, every trim.
+            // ObservableCollection<T> always backs Items with a List<T>, so RemoveRange is
+            // available; the fallback keeps correctness if that detail ever changes.
+            if (Items is List<T> backing)
             {
-                Items.RemoveAt(0);
+                backing.RemoveRange(0, count);
+            }
+            else
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    Items.RemoveAt(0);
+                }
+            }
+        }
+        finally
+        {
+            _suppressNotification = false;
+        }
+
+        OnPropertyChanged(CountPropertyChanged);
+        OnPropertyChanged(IndexerPropertyChanged);
+        base.OnCollectionChanged(ResetEventArgs);
+    }
+
+    /// <summary>
+    /// Removes a contiguous run in one silent mutation plus a single Reset notification.
+    /// Callers removing multiple disjoint runs must go back-to-front so earlier indices stay valid.
+    /// </summary>
+    public void RemoveRange(int index, int count)
+    {
+        if (count <= 0 || index < 0 || index >= Items.Count) return;
+        count = Math.Min(count, Items.Count - index);
+
+        CheckReentrancy();
+
+        _suppressNotification = true;
+        try
+        {
+            if (Items is List<T> backing)
+            {
+                backing.RemoveRange(index, count);
+            }
+            else
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    Items.RemoveAt(index);
+                }
             }
         }
         finally
@@ -603,9 +703,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private const int MaxUiLogEntriesPerFlush = 100;
     private const int FlushIntervalMs = 50;
     private const int ErrorStatusThrottleMs = 250;
+    // Port stat counters don't need 20Hz UI updates; ~4Hz is visually identical and skips
+    // most per-flush GetStatistics/UpdateStatistics work.
+    private const int StatsRefreshIntervalMs = 250;
 
     private DispatcherQueueTimer? _flushTimer;
     private long _lastErrorStatusTicks;
+    // Ports whose stats are due for a UI refresh. Only touched on the UI thread
+    // (FlushPendingLogBatches), so no synchronization needed.
+    private readonly HashSet<string> _pendingStatsPorts = new(StringComparer.OrdinalIgnoreCase);
+    private long _lastStatsRefreshTick;
 
     [ObservableProperty]
     private string _statusMessage = "Ready";
@@ -1010,12 +1117,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         var filteredSet = new HashSet<LogEntry>(filtered);
 
-        // Remove items that no longer match filter (in reverse to maintain indices)
-        for (int i = DisplayLogs.Count - 1; i >= 0; i--)
+        // Remove items that no longer match filter as contiguous runs (back-to-front so
+        // earlier indices stay valid). Per-item RemoveAt moved the whole list tail once
+        // per removal — O(n²) on 2000 items during search; run removal is one shift per
+        // block and one Reset notification per block.
+        int runStart = -1;
+        for (int i = DisplayLogs.Count - 1; i >= -1; i--)
         {
-            if (!filteredSet.Contains(DisplayLogs[i]))
+            var shouldRemove = i >= 0 && !filteredSet.Contains(DisplayLogs[i]);
+            if (shouldRemove && runStart < 0)
             {
-                DisplayLogs.RemoveAt(i);
+                runStart = i;
+            }
+            else if (!shouldRemove && runStart >= 0)
+            {
+                DisplayLogs.RemoveRange(i + 1, runStart - i);
+                runStart = -1;
             }
         }
 
@@ -2140,7 +2257,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
             var estimatedLogCount = batchesToFlush.Sum(batch => batch.Logs.Count);
             var allLogsToAdd = new List<LogEntry>(estimatedLogCount);
             var displayLogsToAdd = new List<LogEntry>(estimatedLogCount);
-            var portsNeedingStatsRefresh = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var pendingBatch in batchesToFlush)
             {
@@ -2151,7 +2267,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 }
 
                 allLogsToAdd.AddRange(pendingBatch.Logs);
-                portsNeedingStatsRefresh.Add(pendingBatch.PortName);
+                _pendingStatsPorts.Add(pendingBatch.PortName);
 
                 if (string.IsNullOrEmpty(searchTextSnapshot))
                 {
@@ -2192,13 +2308,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 ? DisplayLogs.Count
                 : 0;
 
-            foreach (var portName in portsNeedingStatsRefresh)
+            // Refresh port stats at most every StatsRefreshIntervalMs; the exception is the
+            // final flush of a stream (queue drained), where we refresh so the counters
+            // settle on their exact final values.
+            var nowTick = Environment.TickCount64;
+            if (_pendingStatsPorts.Count > 0 &&
+                (nowTick - _lastStatsRefreshTick >= StatsRefreshIntervalMs || _pendingLogBatches.IsEmpty))
             {
-                if (openPortMap.TryGetValue(portName, out var portVm))
+                _lastStatsRefreshTick = nowTick;
+                foreach (var portName in _pendingStatsPorts)
                 {
-                    var stats = _serialPortService.GetStatistics(portName);
-                    portVm.UpdateStatistics(stats);
+                    if (openPortMap.TryGetValue(portName, out var portVm))
+                    {
+                        var stats = _serialPortService.GetStatistics(portName);
+                        portVm.UpdateStatistics(stats);
+                    }
                 }
+                _pendingStatsPorts.Clear();
             }
 
             var updateDuration = (DateTime.Now - updateStartTime).TotalMilliseconds;
