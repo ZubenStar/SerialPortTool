@@ -27,6 +27,8 @@
                 <MenuFlyoutItem Text="打开日志文件夹" Click="OpenLogFolder_Click"/>
             </MenuBarItem>
             <MenuBarItem Title="帮助">
+                <MenuFlyoutItem Text="检查更新" Click="CheckUpdate_Click"/>
+                <MenuFlyoutSeparator/>
                 <MenuFlyoutItem Text="关于" Click="About_Click"/>
             </MenuBarItem>
         </MenuBar>

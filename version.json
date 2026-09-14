@@ -1,7 +1,20 @@
 ﻿{
-    "version": "1.8.13",
+    "version": "2.0.0",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-14",
+            "version": "2.0.0",
+            "changes": [
+                "Version 2.0.0 milestone: distribution moves from a loose file dump to a single per-user installer, with in-app update checking and silent auto-update built in",
+                "Added in-app update checking against GitHub Releases: a silent check a few seconds after startup plus a manual 'Check for updates' entry in the Help menu",
+                "Added the download-and-install flow - the installer is streamed to a temp folder, verified by length and PE header, then launched silently to replace files and restart the app",
+                "Skipping a version is persisted so the silent check stops nagging; the portable ZIP build only notifies and opens the download page instead of replacing files",
+                "Added an Inno Setup per-user installer (no administrator rights, no UAC prompt) so a release is a single Setup.exe instead of hundreds of loose files; the portable ZIP is still published",
+                "Update checks throttle themselves to once per 24 hours and fail silently, keeping the anonymous GitHub API rate limit in mind",
+                "Version comparison parses the release tag numerically instead of comparing strings"
+            ]
+        },
         {
             "date": "2026-09-14",
             "version": "1.8.13",

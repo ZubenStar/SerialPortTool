@@ -112,6 +112,21 @@ jobs:
         DOTNET_CLI_TELEMETRY_OPTOUT: 1
         DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
     
+    - name: Install Inno Setup
+      shell: pwsh
+      run: |
+        choco install innosetup --no-progress -y
+        Write-Host "✓ Installed Inno Setup 6"
+      timeout-minutes: 10
+
+    - name: Build installer
+      shell: pwsh
+      run: |
+        .\scripts\build-installer.ps1 `
+          -Configuration ${{ matrix.configuration }} `
+          -SkipPublish
+      timeout-minutes: 20
+
     - name: Create release package
       shell: pwsh
       run: |
@@ -145,7 +160,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: SerialPortTool-${{ steps.get_version.outputs.version }}-win-${{ matrix.platform }}
-        path: packages/*.zip
+        path: |
+          packages/*.zip
+          packages/installer/*.exe
         retention-days: 30
 
   release:
@@ -192,13 +209,23 @@ jobs:
         
         ## Downloads
         
-        Download the package for 64-bit Windows PCs. The package is self-contained and requires no additional dependencies.
+        Two packages are provided for 64-bit Windows PCs. Both are self-contained and require no additional dependencies.
         
         ## Installation
         
-        1. Download the appropriate ZIP file for your platform
+        **Recommended - installer (enables in-app automatic updates):**
+        
+        1. Download `SerialPortTool-Setup-v$version-win-x64.exe`
+        2. Run it - it installs per-user (no administrator rights required) and creates a Start menu shortcut
+        3. Launch SerialPortTool from the Start menu
+        
+        **Portable ZIP:**
+        
+        1. Download `SerialPortTool-v$version-win-x64.zip`
         2. Extract to a folder of your choice
         3. Run SerialPortTool.exe
+        
+        > Automatic updates only apply to the installed build. The portable build only notifies you and opens the download page.
         
         ## System Requirements
         
@@ -224,6 +251,7 @@ jobs:
       run: |
         mkdir -p release-assets
         find artifacts -name "*.zip" -exec cp {} release-assets/ \;
+        find artifacts -name "*.exe" -exec cp {} release-assets/ \;
         ls -lh release-assets/
     
     - name: Create or update GitHub Release
@@ -234,7 +262,7 @@ jobs:
         VERSION: ${{ steps.get_version.outputs.version }}
       run: |
         shopt -s nullglob
-        assets=(release-assets/*.zip)
+        assets=(release-assets/*.zip release-assets/*.exe)
         
         if [ ${#assets[@]} -eq 0 ]; then
           echo "No release assets found in release-assets/"

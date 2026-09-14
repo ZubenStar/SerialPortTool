@@ -18,6 +18,7 @@ SerialPortTool 面向需要同时盯多个串口的调试与产线场景：多�
 - **Tuning / TOTA 推送**：选择 `.bin` 载荷与 JSON 协议描述文件，广播到所有已打开串口，支持监听文件变化自动重发。
 - **数据发送**：文本 / 十六进制模式，可广播到全部已打开串口。
 - **日志落盘**：串口日志异步批量写盘；应用运行日志（Serilog）可在「工具 → 打开日志文件夹」直接定位。
+- **检查更新 / 自动更新**：启动后静默检查 GitHub Releases，有新版本时提示并可下载安装；「帮助 → 检查更新」可随时手动检查。
 - **现代化界面**：Fluent Design + 云母材质背景，日志列表虚拟化，可跑高吞吐数据流。
 
 ---
@@ -57,9 +58,32 @@ SerialPortTool/
 ├── Models/                          # SerialPortConfig、LogEntry、FilterRule、CommandPreset、PortStatistics
 ├── Services/                        # 串口、波特率检测、数据校验、日志过滤、文件日志、设置、Tuning 协议
 ├── ViewModels/                      # MainViewModel（含 RangeObservableCollection）
-├── scripts/                         # 版本 / 构建信息 / 发布说明 / 清单版本 相关脚本
+├── installer/SerialPortTool.iss     # Inno Setup 安装程序脚本（每用户安装，支持静默替换升级）
+├── scripts/                         # 版本 / 构建信息 / 发布说明 / 清单版本 / 安装包 相关脚本
 └── .github/workflows/release.yml    # 打 tag 触发的发布流水线
 ```
+
+---
+
+## 📥 安装与更新
+
+发布产物有两种，都是自包含的，无需另外安装运行时：
+
+| 方式 | 文件 | 说明 |
+| --- | --- | --- |
+| **安装程序（推荐）** | `SerialPortTool-Setup-v<版本>-win-x64.exe` | 单个文件，安装到 `%LOCALAPPDATA%\Programs\SerialPortTool`。**当前用户级安装，无需管理员权限，不弹 UAC**；创建开始菜单快捷方式，可选桌面快捷方式；可从系统「应用和功能」卸载。 |
+| **便携版** | `SerialPortTool-v<版本>-win-x64.zip` | 解压到任意目录，直接运行 `SerialPortTool.exe`，不写注册表。 |
+
+卸载只清理程序文件，**保留**用户设置（`%LOCALAPPDATA%\SerialPortTool\settings.json`）与运行日志。
+
+### 检查更新
+
+- **启动静默检查**：启动后数秒后台检查一次，只有发现新版本才会提示；距上次检查不足 24 小时不会重复联网。
+- **手动检查**：「帮助 → 检查更新」随时触发，无论结果如何都会给出明确反馈。
+- **更新对话框**（安装版）：可「下载并安装」，或「跳过此版本」（静默检查时）/「前往下载页」（手动检查时），或「稍后 / 关闭」。选择「跳过此版本」后，静默检查不会再提示该版本。
+- **更新对话框**（便携版）：只能「前往下载页」（静默检查时还可「跳过此版本」）。
+- **自动替换**：仅在**安装程序安装的版本**上生效——下载并校验安装包后，程序自动退出、由安装程序静默替换文件并自动重启，用户设置与日志不会丢失。
+- **便携版**：不会自动替换任何文件，只会提示并打开下载页（避免覆盖你自己的解压目录）。
 
 ---
 
@@ -86,6 +110,9 @@ dotnet run
 # 发布自包含版本（与发布流水线一致的参数）
 dotnet publish --configuration Release --runtime win-x64 --self-contained true `
   --output publish/x64 -p:PublishTrimmed=false -p:PublishReadyToRun=false -p:PublishSingleFile=false
+
+# 打包成本地安装程序（需要 Inno Setup 6，产物输出到 packages/installer）
+.\scripts\build-installer.ps1
 ```
 
 > 构建过程会调用 `scripts/` 下的 PowerShell 脚本，因此必须在 Windows 上构建。
@@ -106,7 +133,7 @@ dotnet publish --configuration Release --runtime win-x64 --self-contained true `
   ```powershell
   .\scripts\bump-version.ps1 -BumpType patch
   ```
-- 正式发布：推送 `v*` 形式的 tag（如 `v1.8.12`），GitHub Actions 会校验 `version.json` 与 tag 一致后自动构建 x64 自包含 ZIP 并创建 Release。
+- 正式发布：推送 `v*` 形式的 tag（如 `v2.0.0`），GitHub Actions 会校验 `version.json` 与 tag 一致后自动构建 x64 自包含产物并创建 Release，同时上传 **单文件安装程序 Setup.exe** 与**便携 ZIP**。
 
 ## 🗂️ 运行数据位置
 
@@ -114,6 +141,8 @@ dotnet publish --configuration Release --runtime win-x64 --self-contained true `
 | --- | --- |
 | 应用运行日志（Serilog） | `%USERPROFILE%\Documents\SerialPortTool\DebugLogs\app-<date>.log`（按天滚动，保留 7 天，单文件上限 50 MB） |
 | 用户设置 | `%LOCALAPPDATA%\SerialPortTool\settings.json`（由 `SettingsService` 管理，写入带文件锁） |
+| 更新下载临时目录 | `%TEMP%\SerialPortTool\Update\`（安装包下载落地点，启动时自动清理历史残留） |
+| 安装位置（安装版） | `%LOCALAPPDATA%\Programs\SerialPortTool`（每用户安装，不需要管理员权限） |
 
 ---
 

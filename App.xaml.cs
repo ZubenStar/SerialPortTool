@@ -92,6 +92,8 @@ public partial class App : Application
         services.AddSingleton<ILogFilterService, LogFilterService>();
         services.AddSingleton<IFileLoggerService, FileLoggerService>();
         services.AddSingleton<ISettingsService, SettingsService>();
+        services.AddSingleton<IUpdateService, UpdateService>();
+        services.AddSingleton<IUpdateInstallerService, UpdateInstallerService>();
 
         // Register ViewModels
         services.AddTransient<MainViewModel>();

@@ -2,9 +2,14 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using SerialPortTool.Core.Enums;
 using SerialPortTool.Helpers;
+using SerialPortTool.Models;
+using SerialPortTool.Services;
 using SerialPortTool.ViewModels;
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 
@@ -24,10 +29,25 @@ public sealed partial class MainWindow : Window
     // Flag to track if current text is from selecting history
     private bool _isFromHistorySelection = false;
 
+    // Update-related services. Resolved from the container (Window has a parameterless ctor for XAML).
+    private readonly IUpdateService _updateService;
+    private readonly IUpdateInstallerService _updateInstallerService;
+    private readonly ISettingsService _settingsService;
+
+    // 启动静默检查的延迟，避免与窗口初始化 / 串口扫描抢资源
+    private static readonly TimeSpan SilentUpdateCheckDelay = TimeSpan.FromSeconds(5);
+
+    // 保证同一时刻只有一个更新相关对话框（WinUI 3 不允许并发 ContentDialog）
+    private bool _isUpdateDialogOpen;
+    private bool _silentUpdateCheckStarted;
+
     public MainWindow()
     {
         // IMPORTANT: Get ViewModel BEFORE InitializeComponent for x:Bind to work
         ViewModel = App.Current.Services.GetRequiredService<MainViewModel>();
+        _updateService = App.Current.Services.GetRequiredService<IUpdateService>();
+        _updateInstallerService = App.Current.Services.GetRequiredService<IUpdateInstallerService>();
+        _settingsService = App.Current.Services.GetRequiredService<ISettingsService>();
 
         InitializeComponent();
 
@@ -63,6 +83,9 @@ public sealed partial class MainWindow : Window
 
         // Initialize custom baud rate UI based on saved settings
         InitializeCustomBaudRateUI();
+
+        // 窗口首次激活后再启动静默更新检查（此时 Content.XamlRoot 才可用）
+        Activated += OnFirstActivated;
 
         // Debug: Monitor search history changes
         ViewModel.RecentSearchTexts.CollectionChanged += (s, e) =>
@@ -583,6 +606,409 @@ public sealed partial class MainWindow : Window
             {
                 System.Diagnostics.Debug.WriteLine($"Could not find PortViewModel to change color");
             }
+        }
+    }
+
+    #endregion
+
+    #region Update Checking
+
+    private const string DefaultReleasePageUrl = "https://github.com/ZubenStar/SerialPortTool/releases/latest";
+
+    private void OnFirstActivated(object sender, WindowActivatedEventArgs args)
+    {
+        if (_silentUpdateCheckStarted)
+        {
+            return;
+        }
+
+        _silentUpdateCheckStarted = true;
+        Activated -= OnFirstActivated;
+
+        _ = RunSilentUpdateCheckAsync();
+    }
+
+    /// <summary>
+    /// 启动后的静默检查：网络失败静默、命中「跳过此版本」静默，仅在有新版本时提示。
+    /// </summary>
+    private async Task RunSilentUpdateCheckAsync()
+    {
+        try
+        {
+            await Task.Delay(SilentUpdateCheckDelay);
+
+            var result = await _updateService.CheckAsync(manual: false);
+            if (result.Status != UpdateCheckStatus.UpdateAvailable || result.Info == null)
+            {
+                return;
+            }
+
+            await ShowUpdateAvailableDialogAsync(result.Info, isSilent: true);
+        }
+        catch (Exception ex)
+        {
+            // 静默路径绝不向用户弹错。
+            System.Diagnostics.Debug.WriteLine($"Silent update check failed: {ex.Message}");
+        }
+    }
+
+    private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isUpdateDialogOpen)
+        {
+            return;
+        }
+
+        try
+        {
+            ViewModel.StatusMessage = "正在检查更新…";
+            var result = await _updateService.CheckAsync(manual: true);
+            ViewModel.StatusMessage = string.Empty;
+
+            switch (result.Status)
+            {
+                case UpdateCheckStatus.UpdateAvailable when result.Info != null:
+                    await ShowUpdateAvailableDialogAsync(result.Info, isSilent: false);
+                    break;
+
+                case UpdateCheckStatus.UpToDate:
+                case UpdateCheckStatus.Skipped:
+                    await ShowMessageDialogAsync(
+                        "检查更新",
+                        $"当前已是最新版本（v{VersionInfo.Version}）。");
+                    break;
+
+                default:
+                    await ShowMessageDialogAsync(
+                        "检查更新失败",
+                        $"{result.FailureReason ?? "未知错误"}\n\n你也可以手动前往发布页下载最新版本。",
+                        secondaryText: "前往下载页",
+                        secondaryAction: () => OpenReleasePage(DefaultReleasePageUrl));
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            ViewModel.StatusMessage = string.Empty;
+            await ShowMessageDialogAsync("检查更新失败", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 发现新版本时弹出更新说明。
+    /// </summary>
+    /// <remarks>
+    /// ContentDialog 只有 Primary / Secondary / Close 三个按钮位，因此按场景分配：
+    /// 安装版 + 静默 = 「下载并安装 / 跳过此版本 / 稍后」；
+    /// 安装版 + 手动 = 「下载并安装 / 前往下载页 / 关闭」；
+    /// 便携版（无法自动安装）= 「前往下载页 / [静默时] 跳过此版本 / 稍后」。
+    /// </remarks>
+    private async Task ShowUpdateAvailableDialogAsync(UpdateReleaseInfo info, bool isSilent)
+    {
+        if (_isUpdateDialogOpen)
+        {
+            return;
+        }
+
+        _isUpdateDialogOpen = true;
+        try
+        {
+            var canAutoInstall = _updateService.IsInstalledBuild && info.HasInstaller;
+
+            var panel = new StackPanel
+            {
+                Spacing = 8,
+                Margin = new Microsoft.UI.Xaml.Thickness(0, 8, 0, 0)
+            };
+
+            panel.Children.Add(new TextBlock
+            {
+                Text = $"当前版本: v{VersionInfo.Version}  →  最新版本: v{info.LatestVersion}",
+                FontSize = 13,
+                TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap
+            });
+
+            if (info.PublishedAt > DateTimeOffset.MinValue)
+            {
+                panel.Children.Add(new TextBlock
+                {
+                    Text = $"发布时间: {info.PublishedAt.ToLocalTime():yyyy-MM-dd HH:mm}",
+                    FontSize = 12,
+                    Opacity = 0.8
+                });
+            }
+
+            var notesText = string.IsNullOrWhiteSpace(info.ReleaseNotes)
+                ? "（该版本未提供更新说明）"
+                : info.ReleaseNotes.Trim();
+
+            panel.Children.Add(new TextBox
+            {
+                Text = notesText,
+                IsReadOnly = true,
+                AcceptsReturn = true,
+                TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap,
+                MaxHeight = 220,
+                FontSize = 12
+            });
+
+            if (!_updateService.IsInstalledBuild)
+            {
+                panel.Children.Add(new TextBlock
+                {
+                    Text = "当前为便携版（直接解压运行），将打开下载页，不会自动替换文件。",
+                    FontSize = 11,
+                    Opacity = 0.8,
+                    TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap
+                });
+            }
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = Content.XamlRoot,
+                Title = $"发现新版本 v{info.LatestVersion}",
+                Content = panel,
+                CloseButtonText = isSilent ? "稍后" : "关闭",
+                DefaultButton = ContentDialogButton.Primary
+            };
+
+            if (canAutoInstall)
+            {
+                dialog.PrimaryButtonText = "下载并安装";
+                dialog.SecondaryButtonText = isSilent ? "跳过此版本" : "前往下载页";
+            }
+            else if (isSilent)
+            {
+                // 便携版无法自动安装，但仍要给出下载入口与「跳过此版本」。
+                dialog.PrimaryButtonText = "前往下载页";
+                dialog.SecondaryButtonText = "跳过此版本";
+            }
+            else
+            {
+                dialog.PrimaryButtonText = "前往下载页";
+            }
+
+            var result = await dialog.ShowAsync();
+
+            if (result == ContentDialogResult.Primary)
+            {
+                if (canAutoInstall)
+                {
+                    await DownloadAndInstallAsync(info);
+                }
+                else
+                {
+                    OpenReleasePage(info.ReleasePageUrl);
+                }
+            }
+            else if (result == ContentDialogResult.Secondary)
+            {
+                if (isSilent)
+                {
+                    await _updateService.SkipVersionAsync(info.LatestVersion);
+                    ViewModel.StatusMessage = $"已跳过版本 v{info.LatestVersion}";
+                }
+                else
+                {
+                    OpenReleasePage(info.ReleasePageUrl);
+                }
+            }
+        }
+        finally
+        {
+            _isUpdateDialogOpen = false;
+        }
+    }
+
+    private async Task DownloadAndInstallAsync(UpdateReleaseInfo info)
+    {
+        if (!_updateService.IsInstalledBuild || !info.HasInstaller)
+        {
+            OpenReleasePage(info.ReleasePageUrl);
+            return;
+        }
+
+        if (!await DownloadInstallerWithProgressAsync(info))
+        {
+            // 用户取消或下载失败（服务内部已记录日志）。
+            return;
+        }
+
+        try
+        {
+            // 先把内存中未落盘的设置刷到磁盘，再启动安装器并退出。
+            await _settingsService.FlushAsync();
+            _updateInstallerService.LaunchInstaller();
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageDialogAsync(
+                "无法启动更新程序",
+                $"{ex.Message}\n\n请手动前往发布页下载最新版本。",
+                secondaryText: "前往下载页",
+                secondaryAction: () => OpenReleasePage(info.ReleasePageUrl));
+            return;
+        }
+
+        // 走既有退出路径：App.OnWindowClosed 负责释放服务并强制退出。
+        Close();
+    }
+
+    /// <summary>
+    /// 显示下载进度对话框；返回 <c>true</c> 表示安装包已下载并通过校验。
+    /// </summary>
+    private async Task<bool> DownloadInstallerWithProgressAsync(UpdateReleaseInfo info)
+    {
+        using var cancellation = new CancellationTokenSource();
+
+        var statusText = new TextBlock
+        {
+            Text = "正在下载更新包…",
+            TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap
+        };
+
+        var progressBar = new ProgressBar
+        {
+            Minimum = 0,
+            Maximum = 100,
+            Value = 0,
+            IsIndeterminate = info.SetupSizeBytes <= 0
+        };
+
+        var panel = new StackPanel
+        {
+            Spacing = 12,
+            Margin = new Microsoft.UI.Xaml.Thickness(0, 8, 0, 0)
+        };
+        panel.Children.Add(statusText);
+        panel.Children.Add(progressBar);
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = $"正在下载 v{info.LatestVersion}",
+            Content = panel,
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close
+        };
+
+        var cancelledByUser = false;
+        dialog.CloseButtonClick += (s, e) =>
+        {
+            cancelledByUser = true;
+            cancellation.Cancel();
+        };
+
+        var progress = new Progress<double>(value =>
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                var percent = Math.Clamp(value * 100d, 0d, 100d);
+                progressBar.Value = percent;
+                statusText.Text = $"正在下载更新包… {percent:F0}%";
+            });
+        });
+
+        Task<bool>? downloadTask = null;
+        dialog.Opened += (s, e) =>
+        {
+            downloadTask = _updateInstallerService.DownloadInstallerAsync(
+                info.SetupDownloadUrl!,
+                info.SetupSizeBytes,
+                progress,
+                cancellation.Token);
+
+            _ = HideDialogWhenDownloadCompletesAsync(dialog, downloadTask);
+        };
+
+        // ShowAsync 会在 Hide() 或用户点「取消」后返回。
+        await dialog.ShowAsync();
+
+        if (downloadTask == null)
+        {
+            return false;
+        }
+
+        var downloaded = await downloadTask;
+        return downloaded && !cancelledByUser;
+    }
+
+    private async Task HideDialogWhenDownloadCompletesAsync(ContentDialog dialog, Task<bool> downloadTask)
+    {
+        try
+        {
+            await downloadTask;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Update download failed: {ex.Message}");
+        }
+        finally
+        {
+            // await 内部使用 ConfigureAwait(false)，这里必须回到 UI 线程再关对话框。
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                try
+                {
+                    dialog.Hide();
+                }
+                catch
+                {
+                    // 对话框可能已被「取消」关闭。
+                }
+            });
+        }
+    }
+
+    private async Task ShowMessageDialogAsync(
+        string title,
+        string message,
+        string? secondaryText = null,
+        Action? secondaryAction = null)
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = title,
+            Content = new TextBlock
+            {
+                Text = message,
+                TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap
+            },
+            CloseButtonText = "确定",
+            DefaultButton = ContentDialogButton.Close
+        };
+
+        if (!string.IsNullOrEmpty(secondaryText))
+        {
+            dialog.SecondaryButtonText = secondaryText;
+        }
+
+        var result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.Secondary)
+        {
+            secondaryAction?.Invoke();
+        }
+    }
+
+    private void OpenReleasePage(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = url,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            ViewModel.StatusMessage = $"打开下载页失败: {ex.Message}";
         }
     }
 

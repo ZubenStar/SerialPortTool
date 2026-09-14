@@ -64,9 +64,12 @@ dotnet run
 # Self-contained publish (the settings the release pipeline uses)
 dotnet publish --configuration Release --runtime win-x64 --self-contained true `
   --output publish/x64 -p:PublishTrimmed=false -p:PublishReadyToRun=false -p:PublishSingleFile=false
+
+# Package the publish output into a single Setup.exe (requires Inno Setup 6 → packages/installer)
+.\scripts\build-installer.ps1
 ```
 
-**Prerequisites**: .NET 9 SDK, Windows App SDK 1.6 runtime/build tools, Windows 10 1809+ (Windows 11 recommended). The build invokes PowerShell scripts, so it must run on Windows.
+**Prerequisites**: .NET 9 SDK, Windows App SDK 1.6 runtime/build tools, Windows 10 1809+ (Windows 11 recommended). The build invokes PowerShell scripts, so it must run on Windows. `scripts/build-installer.ps1` additionally needs **Inno Setup 6** (`ISCC.exe`); it fails with an explicit message when it cannot find the compiler.
 
 ### Testing
 There is **no automated test suite**. Verification is manual:
@@ -74,7 +77,9 @@ There is **no automated test suite**. Verification is manual:
 - open several ports simultaneously (open/close/reopen, including with a wrong baud rate first),
 - send/receive at various baud rates, including hex mode,
 - exercise log filtering (plain text + regex) under a high-throughput stream,
-- run a tuning broadcast across ≥2 ports.
+- run a tuning broadcast across ≥2 ports,
+- update path: "Help → Check for updates" against a Release that has a higher version, then a full download → silent replace → auto-restart against an installed older build (see the Update System section),
+- update failure paths: offline, request timeout, and a Release without a `Setup` asset.
 
 ---
 
@@ -92,12 +97,15 @@ SerialPortTool/
 ├── Controls/LogListView.xaml(.cs)   # The only custom UserControl (virtualized log list)
 ├── Converters/                      # BoolToVisibility + InverseBoolToVisibility (one file),
 │                                    # HexColorToBrush — all registered in App.xaml
-├── Core/Enums/                      # ConnectionState, DataFormat, FilterType
+├── Core/Enums/                      # ConnectionState, DataFormat, FilterType, UpdateCheckStatus
 ├── Helpers/                         # VersionInfo, BuildInfo.g.cs (GENERATED)
-├── Models/                          # SerialPortConfig, LogEntry, FilterRule, CommandPreset, PortStatistics
-├── Services/                        # 7 interfaces + 7 implementations (see Service Layer)
+├── Models/                          # SerialPortConfig, LogEntry, FilterRule, CommandPreset, PortStatistics,
+│                                    # UpdateReleaseInfo / UpdateCheckResult
+├── Services/                        # 9 interfaces + 9 implementations (see Service Layer)
 ├── ViewModels/MainViewModel.cs      # Single ViewModel (+ in-file RangeObservableCollection)
-├── scripts/                         # bump-version, generate-buildinfo, generate-release-notes, update-manifest-version
+├── installer/SerialPortTool.iss     # Inno Setup script — per-user install, silent replace/restart on update
+├── scripts/                         # bump-version, generate-buildinfo, generate-release-notes,
+│                                    # update-manifest-version, build-installer
 └── .github/workflows/release.yml    # Tag-driven release pipeline
 ```
 
@@ -113,10 +121,11 @@ SerialPortTool/
 Views (XAML) ←→ ViewModels ←→ Services ←→ Hardware / Infrastructure
 ```
 
-1. **Dependency injection** — everything is registered in `App.xaml.cs:ConfigureServices()` on a plain `ServiceCollection` (`App.xaml.cs:85-101`):
+1. **Dependency injection** — everything is registered in `App.xaml.cs:ConfigureServices()` on a plain `ServiceCollection` (`App.xaml.cs:85-103`):
    - Services are `AddSingleton` (they own shared state, e.g. open ports, regex cache, settings).
    - `MainViewModel` and `MainWindow` are `AddTransient`.
    - Logging is wired through `services.AddLogging(... AddSerilog(dispose: true))`.
+   - `MainWindow` has a parameterless constructor (required by XAML), so it resolves its dependencies with `App.Current.Services.GetRequiredService<T>()` instead of constructor injection. Follow that pattern when a window needs a new service; do not add constructor parameters to `MainWindow`.
 2. **Event-driven** — services raise events (`DataReceived`, `PortStateChanged`, `ErrorOccurred`); ViewModels marshal them to the UI thread with `DispatcherQueue`.
 3. **Async-first** — all I/O (serial, file writing) is async; nothing blocking runs on the UI thread.
 
@@ -131,6 +140,8 @@ Views (XAML) ←→ ViewModels ←→ Services ←→ Hardware / Infrastructure
 | `IFileLoggerService` / `FileLoggerService` | Async batched file writing: `ConcurrentQueue` + periodic flush (100 ms or 100 items), `StreamWriter` with a 64 KB buffer, background thread, reused `StringBuilder`. Hot paths hand a whole batch to `WriteLogs(portName, entries)`; `WriteLogAsync` is for a single entry. |
 | `ISettingsService` / `SettingsService` | Persists user preferences / port configs to `%LOCALAPPDATA%\SerialPortTool\settings.json`. Writes are serialized with a **file lock** (see "do not regress"). |
 | `ITuningProtocolService` / `TuningProtocolService` | Loads a `TuningProtocolDescriptor` (JSON), packs a `.bin` payload and broadcasts it to one or all open ports. **Each port gets its own send worker** so concurrent multi-port sends do not serialize. Every send pre-checks `IsPortOpen`. |
+| `IUpdateService` / `UpdateService` | Checks `api.github.com/repos/ZubenStar/SerialPortTool/releases/latest` for a newer version, compares versions **numerically** via `Version.TryParse`, and owns the 24 h silent-check cache + "skip this version" policy. Static `HttpClient` (needs `User-Agent` + `Accept: application/vnd.github+json`), ~10 s timeout, returns a result object instead of throwing. `IsInstalledBuild` delegates to `InstalledBuildInfo`. |
+| `IUpdateInstallerService` / `UpdateInstallerService` | Streams the `Setup*.exe` Release asset into `%TEMP%\SerialPortTool\Update`, verifies it (length vs. asset `size`, non-empty, `MZ` PE header), then launches it as the **external updater process** with `/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS`. `InstalledBuildInfo` (same file) gates auto-replacement on the exe living under `%LOCALAPPDATA%\Programs\SerialPortTool` **and** the Inno Setup uninstall key existing. |
 
 ### ViewModel Layer
 
@@ -256,12 +267,52 @@ File.AppendAllText(path, entry.ToString());        // never: blocks the UI threa
 
 ---
 
+## Update System
+
+Two singleton services plus one build-time artifact. Deliberately dependency-free — no auto-updater library, no `Newtonsoft.Json`.
+
+### Update check (`UpdateService`)
+
+- Endpoint: `https://api.github.com/repos/ZubenStar/SerialPortTool/releases/latest`. GitHub requires a `User-Agent` header (a missing one returns 403); `Accept: application/vnd.github+json` is sent too.
+- Version comparison is **numeric** (`Version.TryParse` on `tag_name` stripped of a leading `v`). String comparison would rank `1.8.10` below `1.8.9`.
+- Throttling is a hard requirement, not an optimization: anonymous GitHub API calls are capped at 60/hour, so silent checks are cached for 24 h via `Update.LastCheckUtc`.
+- Silent checks must never surface errors — failures log at `Debug` and return a `Failed` result the caller ignores. Never log the raw response body.
+- Settings keys (all **strings**, because `ISettingsService` only has `int`/`string` overloads — do not extend that interface for this):
+  - `Update.LastCheckUtc` — ISO 8601 round-trip timestamp.
+  - `Update.SkippedVersion` — the version the user chose to skip (silent checks stop nagging; manual checks still report it).
+- The installer asset is picked from `assets[]` as the `.exe` whose name contains `Setup`. The portable ZIP is intentionally never used for auto-update.
+
+### Update install (`UpdateInstallerService`)
+
+- Downloads to `%TEMP%\SerialPortTool\Update` with `HttpCompletionOption.ResponseHeadersRead` (streaming, so memory use is independent of package size) and reports throttled progress through `IProgress<double>`.
+- **Verification is mandatory before launching**: non-empty, length equal to the asset `size` (when known), and an `MZ` PE header. Without it a 403/HTML error page would be executed as an installer.
+- The downloaded installer *is* the external updater process, launched with `/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /NOCANCEL`. `CloseApplications=yes` + `RestartApplications=yes` in `installer/SerialPortTool.iss` perform "close the app → replace files → restart it". That is why no bespoke updater executable exists: a hand-rolled one would add antivirus false positives, elevation problems, and half-written app directories.
+- Auto-replacement is gated on `InstalledBuildInfo.IsInstalled()`: the running exe must live under `%LOCALAPPDATA%\Programs\SerialPortTool` **and** the Inno Setup uninstall key must exist. A portable ZIP build therefore only gets a notification plus the download page — it must never silently overwrite a user-chosen folder.
+- Exit reuses the existing shutdown path: flush settings (`ISettingsService.FlushAsync()`) → `LaunchInstaller()` → `MainWindow.Close()` → `App.OnWindowClosed` (5 s hard timeout, `Environment.Exit(0)`). Do not introduce a second exit mechanism.
+- `IProgress<double>` callbacks are produced off the UI thread, so they are marshalled back with `DispatcherQueue.TryEnqueue` before touching the `ProgressBar`.
+
+### Installer (`installer/SerialPortTool.iss` + `scripts/build-installer.ps1`)
+
+- `PrivilegesRequired=lowest` → per-user install into `%LOCALAPPDATA%\Programs\SerialPortTool`, no administrator rights and no UAC prompt. That is what makes a fully silent update possible; moving to `Program Files` would trigger a UAC prompt on every update.
+- The **`AppId` GUID is permanent**. It must stay identical to `InstalledBuildInfo.AppId` (`Services/UpdateInstallerService.cs`); changing either turns every upgrade into a side-by-side install and orphans the previous one in "Apps & features".
+- `AppVersion` is injected on the command line by `scripts/build-installer.ps1` (sourced from `version.json`) — never hard-code a version inside the `.iss`.
+- `[Files]` `Excludes` is injected by the build script as `*.pdb` **plus every framework language folder except `zh-CN` and `en-us`**. A self-contained publish carries ~86 language folders (168 `.mui` files — 37 % of the file count) that no zh/en user will ever load; the portable ZIP already dropped them, so the installer must too. The list is computed by scanning the actual publish output, so an unrelated new folder is never dropped by accident — only language folders are ever excluded.
+- `[Files]` must **not** carry `createallsubdirs`. Inno Setup skips empty directories by default, but that flag also creates directories that became empty *because of* `Excludes`, which leaves 84 empty `xx-YY` folders in the install directory and defeats the whole point of the exclusion. Measured on a real install: with the flag → 93 directories, 84 of them empty; without it → 9 directories, all populated (`Assets`, `Assets\Images`, `en-us`, `Microsoft.UI.Xaml`, `Microsoft.UI.Xaml\Assets`, `runtimes`, `runtimes\win-x64`, `runtimes\win-x64\native`, `zh-CN`). Verified install footprint: 289 files / 169.5 MB (287 payload + `unins000.exe` + `unins000.dat`).
+- `[InstallDelete]` clears `{app}\*` before installing so assemblies and language resources dropped by a newer version do not linger. User settings (`%LOCALAPPDATA%\SerialPortTool`) and logs (`Documents\SerialPortTool`) live outside `{app}` and are preserved by design — uninstall must not delete them either.
+- Compression is `lzma2/ultra64` + `SolidCompression`. The self-contained payload is several hundred MB, so the in-app download must keep its progress bar and cancel button.
+- Inno Setup does not bundle a Simplified Chinese language file. `build-installer.ps1` detects `Languages\ChineseSimplified.isl` next to `ISCC.exe` and only then passes `/DIncludeChinese=1`, so the installer still compiles on a stock Inno Setup install (English UI).
+- The installer does not change the publish settings. `PublishTrimmed=false`, `PublishReadyToRun=false`, `PublishSingleFile=false` remain required for WinUI 3 stability; the fix for "too many files in the install directory" is packaging, not trimming.
+
+---
+
 ## CI/CD and Release
 
 **Workflow**: `.github/workflows/release.yml`, triggered by tags matching `v*`.
 
-Build job: validate `version.json` against the git tag → generate `BuildInfo.g.cs` → restore/build for x64 Release → self-contained publish (no R2R / single-file / trimming) → package a ZIP (strip `*.pdb`, keep only `zh-CN` + `en-us` framework language folders) → upload artifact.
-Release job: generate release notes from the `version.json` changelog → create or update the GitHub Release with the ZIP assets.
+Build job: validate `version.json` against the git tag → generate `BuildInfo.g.cs` → restore/build for x64 Release → self-contained publish (no R2R / single-file / trimming) → **install Inno Setup (chocolatey) and run `scripts/build-installer.ps1 -SkipPublish`** → package a portable ZIP (strip `*.pdb`, keep only `zh-CN` + `en-us` framework language folders) → upload the ZIP **and the Setup.exe** as artifacts.
+Release job: generate release notes from the `version.json` changelog → create or update the GitHub Release with **both** the ZIP and the Setup.exe.
+
+> `scripts/build-installer.ps1` publishes to `publish/x64` itself when run without `-SkipPublish`, so the workflow reuses the already-published output and never produces a second, differently-configured build.
 
 **To release**:
 1. Update `version.json` (version + changelog) — or run `.\scripts\bump-version.ps1 -BumpType patch`, which also commits and tags.
@@ -276,7 +327,10 @@ Release job: generate release notes from the `version.json` changelog → create
 - **Minimum Windows version**: 10.0.17763 (Windows 10 1809).
 - **Publish settings**: `PublishTrimmed=false`, `PublishReadyToRun=false`, `PublishSingleFile=false` — required for WinUI 3 stability.
 - **Language**: C# 13 (the .NET 9 SDK default; `LangVersion` is not pinned). `[ObservableProperty]` is applied to backing fields, not partial properties.
-- **Packaging**: unpackaged (`WindowsPackageType=None`, `WindowsAppSDKSelfContained=true`).
+- **Packaging**: unpackaged (`WindowsPackageType=None`, `WindowsAppSDKSelfContained=true`), distributed either as a per-user Inno Setup installer or as a portable ZIP.
+- **Auto-update scope**: silent file replacement runs **only** for the installed build (`InstalledBuildInfo.IsInstalled()`). The portable ZIP must never be replaced in place — it only shows a notification and opens the download page.
+- **No update framework**: the update feature uses only `System.Net.Http` + `System.Text.Json` from the BCL. `Newtonsoft.Json` stays removed (v1.8.5); do not reintroduce it for this path.
+- **Installer identity**: the `AppId` GUID is shared between `installer/SerialPortTool.iss` and `InstalledBuildInfo.AppId`. They must stay in sync, and the GUID must never change after a release.
 
 ---
 
@@ -298,7 +352,12 @@ Each of these exists because a specific bug caused a crash or an error storm; re
 - **Validation queue lock** (`DataValidationService`, v1.8.10) — the per-port `PortValidationState` queue stays locked. Validation now runs inline on the read thread, but `ResetValidationState` can still be called from the UI thread.
 - **Tuning send pre-check** (`TuningProtocolService`, v1.8.10) — `IsPortOpen` is checked before every send, required because auto-send can fire mid-reconnect and caused `CancellationTokenSource` disposal crashes.
 - **Single-threaded per-port decode/validation** (`SerialPortService`, v1.8.13) — `SerialPort_DataReceived` awaits validation before reading the next chunk, and a garbage verdict arms a ~1 s drop cooldown, so the per-port `Decoder`/`StringBuilder` is only ever touched by one thread. Do not make validation fire-and-forget again.
-- **Shutdown timeout** (`App.xaml.cs:114-160`) — window-close cleanup runs on a thread-pool task with a hard 5-second wall clock; on timeout the app force-exits instead of hanging on a stuck COM handle.
+- **Shutdown timeout** (`App.xaml.cs:116-162`) — window-close cleanup runs on a thread-pool task with a hard 5-second wall clock; on timeout the app force-exits instead of hanging on a stuck COM handle.
+- **Installer verification before launch** (`UpdateInstallerService`, v2.0.0) — the downloaded `Setup*.exe` is rejected unless it is non-empty, matches the Release asset `size`, and starts with `MZ`. Launching an unverified download would execute a 403/HTML error page as an installer on a bad network.
+- **Installed-build gate** (`UpdateInstallerService.InstalledBuildInfo`, v2.0.0) — auto-replacement requires both the `%LOCALAPPDATA%\Programs\SerialPortTool` location **and** the Inno Setup uninstall key. Removing the gate would let the app silently overwrite a user's portable folder.
+- **Silent-check log level** (`UpdateService`, v2.0.0) — failures of the automatic check log at `Debug` only, and silent checks are cached for 24 h. Raising this produces an error storm whenever the machine is offline, and dropping the cache burns through GitHub's 60/hour anonymous limit.
+- **Flush-before-handoff** (`MainWindow.DownloadAndInstallAsync`, v2.0.0) — `ISettingsService.FlushAsync()` completes before the installer is launched. Skipping it loses the last ~500 ms of debounced settings (including `Update.SkippedVersion`) on every auto-update.
+- **Installer / ZIP language-list parity** (`scripts/build-installer.ps1` + `.github/workflows/release.yml`, v2.0.0) — both artifacts keep only the `zh-CN` and `en-us` framework language folders, and the `[Files]` entry must stay free of `createallsubdirs` so the excluded folders do not reappear as empty directories. This degrades silently rather than crashing: drop either half and ISCC still compiles without a warning — the installer just packs 168 extra `.mui` files and/or recreates 84 empty `xx-YY` folders. The kept-language list is duplicated (Inno Setup cannot read the workflow file), so change both sides together. A `Compressing:` line count from the ISCC log catches the first half; only a real install catches the second.
 
 ---
 
@@ -312,6 +371,7 @@ Only the ones that change how you should reason about the code — `version.json
 - **Search history** (v1.5.0 / v1.6.2) — debounced persistence, per-item delete, clear-all with confirmation.
 - **Baud-rate mismatch banner** — surfaced when detection confidence is high, with one-click correction.
 - **Tuning broadcast** — see the Tuning/TOTA section.
+- **Check for updates / auto-update** (v2.0.0) — "Help → Check for updates" for a manual check, plus a silent check a few seconds after the window is first activated. Finding a newer version opens a `ContentDialog` with the release notes and the release page. `ContentDialog` only has Primary / Secondary / Close slots, so the buttons are apportioned per scenario: installed + silent → "Download and install / Skip this version / Later"; installed + manual → "Download and install / Open download page / Close"; portable (cannot self-install) → "Open download page / Skip this version (silent only) / Later". Dialogs are built in code-behind following the `About_Click` pattern, with `XamlRoot = Content.XamlRoot` and a re-entrancy guard because WinUI 3 cannot show two `ContentDialog`s at once.
 
 ---
 
@@ -344,6 +404,8 @@ FileLoggerService.WriteLogs (async batched write to disk)
 - **Port close reliability** — Windows can hold a COM handle after close. Handled by retry + cleanup-delay in `finally`; read "Reliability Mechanisms" before touching `SerialPortService.PortInstance.Dispose`.
 - **Very high baud rates** (>921600) — some data loss is possible; consider larger buffers in `SerialPortService`.
 - **Complex regex** — heavy backtracking can hit the 100 ms timeout. Keep patterns simple for real-time filtering.
+- **Installer language** — Inno Setup ships no Simplified Chinese language file, so the installer wizard falls back to English unless `Languages\ChineseSimplified.isl` is present next to `ISCC.exe`. The application itself is unaffected.
+- **Update download size** — a self-contained WinUI 3 payload is several hundred MB, so a full auto-update is a large download even with `lzma2/ultra64`. Progress and cancel must stay functional.
 
 ---
 
@@ -356,3 +418,4 @@ FileLoggerService.WriteLogs (async batched write to disk)
 | `CLAUDE.md` | Claude Code | Only the pointer to this file |
 | `version.json` | Release tooling / changelog | Every shipping change |
 | `.github/workflows/release.yml` | CI | Release/publish process |
+| `installer/SerialPortTool.iss` + `scripts/build-installer.ps1` | Release tooling | Anything about installation, the `AppId`, install location, or the update hand-off |
