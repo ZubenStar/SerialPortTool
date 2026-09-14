@@ -395,4 +395,7 @@ FodyWeavers.xsd
 # JetBrains Rider
 *.sln.iml
 .idea/
+
+# Local agent-tool leftovers (never part of the build)
 .codex
+.zcode/
