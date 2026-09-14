@@ -23,6 +23,10 @@ public class DataValidationService : IDataValidationService
     private const int MaxConsecutiveInvalidPackets = 10;
     private const int MinPacketsForTrendAnalysis = 20;
     private const double GarbageDataThreshold = 0.8;
+
+    // Below this printable-character ratio a chunk is treated as binary / non-ASCII text and is
+    // passed through untouched instead of being run through the lossy CleanData path.
+    private const double CleanableTextRatio = 0.7;
     
     // 正则表达式模式
     private readonly Regex _printableCharRegex = new(@"^[\x20-\x7E\r\n\t]*$", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
@@ -34,116 +38,133 @@ public class DataValidationService : IDataValidationService
         _logger = logger;
     }
 
-    public async Task<DataValidationResult> ValidateDataAsync(byte[] data, string portName)
+    public Task<DataValidationResult> ValidateDataAsync(byte[] data, string portName)
     {
-        return await Task.Run(() =>
+        // Runs synchronously on the caller's thread. The DataReceived path delivers chunks
+        // per-port in order on the serial driver's worker thread; a Task.Run here hopped to
+        // the pool on every chunk, which both reordered deliveries under load and thrashed
+        // the thread pool at high baud rates. The per-port PortValidationState is only ever
+        // touched by that port's worker thread, so the statistics below stay race-free.
+        return Task.FromResult(ValidateDataCore(data, portName));
+    }
+
+    private DataValidationResult ValidateDataCore(byte[] data, string portName)
+    {
+        var result = new DataValidationResult
         {
-            var result = new DataValidationResult
-            {
-                IsValid = true,
-                QualityScore = 1.0,
-                SuggestedAction = ValidationAction.Normal,
-                ProcessedData = data,
-                ShouldDiscard = false
-            };
+            IsValid = true,
+            QualityScore = 1.0,
+            SuggestedAction = ValidationAction.Normal,
+            ProcessedData = data,
+            ShouldDiscard = false
+        };
 
-            if (data == null || data.Length == 0)
+        if (data == null || data.Length == 0)
+        {
+            result.IsValid = false;
+            result.ShouldDiscard = true;
+            result.Message = "数据为空";
+            return result;
+        }
+
+        try
+        {
+            // 获取或创建端口状态
+            var portState = _portStates.GetOrAdd(portName, _ => new PortValidationState());
+
+            // 计算数据质量评分
+            var text = Encoding.UTF8.GetString(data);
+            var printableRatio = ComputePrintableRatio(text);
+            var qualityScore = CalculateDataQualityScore(data, text, printableRatio);
+            result.QualityScore = qualityScore;
+
+            // 更新端口统计
+            UpdatePortStatistics(portState, qualityScore);
+
+            // 根据质量评分决定处理方式
+            if (qualityScore >= GoodQualityScore)
             {
-                result.IsValid = false;
-                result.ShouldDiscard = true;
-                result.Message = "数据为空";
-                return result;
+                result.IsValid = true;
+                result.SuggestedAction = ValidationAction.Normal;
+                result.Message = "数据质量良好";
             }
-
-            try
+            else if (qualityScore >= MinQualityScore)
             {
-                // 获取或创建端口状态
-                var portState = _portStates.GetOrAdd(portName, _ => new PortValidationState());
+                result.IsValid = true;
 
-                // 计算数据质量评分
-                var qualityScore = CalculateDataQualityScore(data);
-                result.QualityScore = qualityScore;
-
-                // 更新端口统计
-                UpdatePortStatistics(portState, qualityScore);
-
-                // 根据质量评分决定处理方式
-                if (qualityScore >= GoodQualityScore)
+                if (printableRatio >= CleanableTextRatio)
                 {
-                    result.IsValid = true;
-                    result.SuggestedAction = ValidationAction.Normal;
-                    result.Message = "数据质量良好";
-                }
-                else if (qualityScore >= MinQualityScore)
-                {
-                    result.IsValid = true;
                     result.SuggestedAction = ValidationAction.CleanAndProcess;
                     result.ProcessedData = CleanData(data);
                     result.Message = "数据质量一般，已清理";
                 }
                 else
                 {
-                    result.IsValid = false;
-                    result.SuggestedAction = ValidationAction.Discard;
-                    result.ShouldDiscard = true;
-                    result.Message = "数据质量差，建议丢弃";
-
-                    // 检查是否需要触发波特率重新检测
-                    if (portState.ConsecutiveInvalidPackets >= MaxConsecutiveInvalidPackets)
-                    {
-                        result.SuggestedAction = ValidationAction.TriggerBaudRateDetection;
-                        result.Message = "连续收到大量无效数据，建议重新检测波特率";
-                    }
+                    // 二进制 / 非 ASCII 文本：CleanData 会剥离字节从而破坏载荷，改为原样透传。
+                    result.SuggestedAction = ValidationAction.Normal;
+                    result.Message = "数据质量一般，按原始字节处理";
                 }
-
-                // 检查是否为垃圾数据（可能导致死机）
-                if (IsGarbageData(data, qualityScore))
-                {
-                    result.SuggestedAction = ValidationAction.PauseProcessing;
-                    result.ShouldDiscard = true;
-                    result.Message = "检测到可能的垃圾数据，暂停处理以防止死机";
-                    _logger.LogWarning("Garbage data detected on port {PortName}, pausing processing", portName);
-                }
-
-                _logger.LogTrace("Data validation for port {PortName}: Score={Score}, Action={Action}, Message={Message}",
-                    portName, qualityScore, result.SuggestedAction, result.Message);
             }
-            catch (Exception ex)
+            else
             {
-                _logger.LogError(ex, "Error validating data for port {PortName}", portName);
                 result.IsValid = false;
                 result.SuggestedAction = ValidationAction.Discard;
                 result.ShouldDiscard = true;
-                result.Message = $"验证过程出错: {ex.Message}";
+                result.Message = "数据质量差，建议丢弃";
+
+                // 检查是否需要触发波特率重新检测
+                if (portState.ConsecutiveInvalidPackets >= MaxConsecutiveInvalidPackets)
+                {
+                    result.SuggestedAction = ValidationAction.TriggerBaudRateDetection;
+                    result.Message = "连续收到大量无效数据，建议重新检测波特率";
+                }
             }
 
-            return result;
-        });
+            // 检查是否为垃圾数据（可能导致死机）
+            if (IsGarbageData(data, qualityScore))
+            {
+                result.SuggestedAction = ValidationAction.PauseProcessing;
+                result.ShouldDiscard = true;
+                result.Message = "检测到可能的垃圾数据，暂停处理以防止死机";
+                _logger.LogWarning("Garbage data detected on port {PortName}, pausing processing", portName);
+            }
+
+            _logger.LogTrace("Data validation for port {PortName}: Score={Score}, Action={Action}, Message={Message}",
+                portName, qualityScore, result.SuggestedAction, result.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error validating data for port {PortName}", portName);
+            result.IsValid = false;
+            result.SuggestedAction = ValidationAction.Discard;
+            result.ShouldDiscard = true;
+            result.Message = $"验证过程出错: {ex.Message}";
+        }
+
+        return result;
     }
 
-    public async Task<bool> ShouldTriggerBaudRateDetectionAsync(string portName)
+    public Task<bool> ShouldTriggerBaudRateDetectionAsync(string portName)
     {
-        return await Task.Run(() =>
-        {
-            if (!_portStates.TryGetValue(portName, out var portState))
-                return false;
+        // Pure in-memory check — see ValidateDataAsync for why this must not Task.Run.
+        if (!_portStates.TryGetValue(portName, out var portState))
+            return Task.FromResult(false);
 
-            // 检查连续无效数据包数量
-            if (portState.ConsecutiveInvalidPackets >= MaxConsecutiveInvalidPackets)
-                return true;
+        // 检查连续无效数据包数量
+        if (portState.ConsecutiveInvalidPackets >= MaxConsecutiveInvalidPackets)
+            return Task.FromResult(true);
 
-            // 检查平均质量评分
-            if (portState.TotalPackets >= MinPacketsForTrendAnalysis && 
-                portState.AverageQualityScore < MinQualityScore)
-                return true;
+        // 检查平均质量评分
+        if (portState.TotalPackets >= MinPacketsForTrendAnalysis &&
+            portState.AverageQualityScore < MinQualityScore)
+            return Task.FromResult(true);
 
-            // 检查数据质量趋势
-            if (portState.Trend == DataQualityTrend.Deteriorating && 
-                portState.AverageQualityScore < MinQualityScore * 1.5)
-                return true;
+        // 检查数据质量趋势
+        if (portState.Trend == DataQualityTrend.Deteriorating &&
+            portState.AverageQualityScore < MinQualityScore * 1.5)
+            return Task.FromResult(true);
 
-            return false;
-        });
+        return Task.FromResult(false);
     }
 
     public void ResetValidationState(string portName)
@@ -178,55 +199,45 @@ public class DataValidationService : IDataValidationService
         };
     }
 
-    private double CalculateDataQualityScore(byte[] data)
+    private static double ComputePrintableRatio(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return 0.0;
+
+        // 可打印字符比例。\r\n\t 是合法的文本控制字符，不算乱码。
+        var printableChars = text.Count(c => (c >= 32 && c <= 126) || c == '\r' || c == '\n' || c == '\t');
+        return (double)printableChars / text.Length;
+    }
+
+    private double CalculateDataQualityScore(byte[] data, string text, double printableRatio)
     {
         if (data == null || data.Length == 0)
             return 0.0;
 
-        try
+        var score = 0.0;
+
+        // 1. 可打印字符比例 (权重: 0.4)
+        score += printableRatio * 0.4;
+
+        // 2. 常见协议模式匹配 (权重: 0.3)
+        if (_commonProtocolRegex.IsMatch(text))
         {
-            var text = Encoding.UTF8.GetString(data);
-            var score = 0.0;
-
-            // 1. 可打印字符比例 (权重: 0.4)
-            var printableChars = text.Count(c => char.IsControl(c) || (c >= 32 && c <= 126));
-            var printableRatio = (double)printableChars / text.Length;
-            score += printableRatio * 0.4;
-
-            // 2. 常见协议模式匹配 (权重: 0.3)
-            if (_commonProtocolRegex.IsMatch(text))
-            {
-                score += 0.3;
-            }
-            else if (_hexPatternRegex.IsMatch(text) && text.Length > 10)
-            {
-                score += 0.2; // 十六进制数据给部分分数
-            }
-
-            // 3. 字符分布分析 (权重: 0.2)
-            var charDistribution = AnalyzeCharacterDistribution(text);
-            score += charDistribution * 0.2;
-
-            // 4. 数据长度合理性 (权重: 0.1)
-            var lengthScore = CalculateLengthScore(data.Length);
-            score += lengthScore * 0.1;
-
-            return Math.Min(1.0, Math.Max(0.0, score));
+            score += 0.3;
         }
-        catch
+        else if (_hexPatternRegex.IsMatch(text) && text.Length > 10)
         {
-            // UTF-8 解码失败，尝试 ASCII
-            try
-            {
-                var text = Encoding.ASCII.GetString(data);
-                var printableChars = text.Count(c => char.IsControl(c) || (c >= 32 && c <= 126));
-                return (double)printableChars / text.Length * 0.5; // ASCII 解码失败给较低分数
-            }
-            catch
-            {
-                return 0.0; // 完全无法解码
-            }
+            score += 0.2; // 十六进制数据给部分分数
         }
+
+        // 3. 字符分布分析 (权重: 0.2)
+        var charDistribution = AnalyzeCharacterDistribution(text);
+        score += charDistribution * 0.2;
+
+        // 4. 数据长度合理性 (权重: 0.1)
+        var lengthScore = CalculateLengthScore(data.Length);
+        score += lengthScore * 0.1;
+
+        return Math.Min(1.0, Math.Max(0.0, score));
     }
 
     private double AnalyzeCharacterDistribution(string text)
@@ -285,29 +296,18 @@ public class DataValidationService : IDataValidationService
 
     private byte[] CleanData(byte[] data)
     {
-        try
-        {
-            var text = Encoding.UTF8.GetString(data);
-            
-            // 移除不可打印字符（保留控制字符）
-            var cleanedText = new string(text.Where(c => char.IsControl(c) || (c >= 32 && c <= 126)).ToArray());
-            
-            // 限制长度以防止内存问题
-            if (cleanedText.Length > 2048)
-            {
-                cleanedText = cleanedText.Substring(0, 2048);
-            }
+        var text = Encoding.UTF8.GetString(data);
 
-            return Encoding.UTF8.GetBytes(cleanedText);
-        }
-        catch
+        // 移除不可打印字符（保留 \r\n\t 等文本控制字符）
+        var cleanedText = new string(text.Where(c => (c >= 32 && c <= 126) || c == '\r' || c == '\n' || c == '\t').ToArray());
+
+        // 限制长度以防止内存问题
+        if (cleanedText.Length > 2048)
         {
-            // 清理失败，返回原始数据的前1KB
-            var maxLength = Math.Min(data.Length, 1024);
-            var result = new byte[maxLength];
-            Array.Copy(data, result, maxLength);
-            return result;
+            cleanedText = cleanedText.Substring(0, 2048);
         }
+
+        return Encoding.UTF8.GetBytes(cleanedText);
     }
 
     private bool IsGarbageData(byte[] data, double qualityScore)

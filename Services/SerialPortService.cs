@@ -169,7 +169,8 @@ public class SerialPortService : ISerialPortService, IDisposable
                     _logger.LogWarning(ex, "Error unsubscribing from port {PortName} events", portName);
                 }
 
-                // Close the port (CloseAsync already handles GC and cleanup internally)
+                // Close the port (CloseAsync handles event teardown, buffer discard and
+                // timeout-guarded dispose internally)
                 await portInstance.CloseAsync();
 
                 // Clear stale validation state so it doesn't affect next open
@@ -410,6 +411,10 @@ public class SerialPortService : ISerialPortService, IDisposable
         // rates. The data that leaves this method via the DataReceived event is always a
         // freshly-allocated, exact-sized copy so consumers can hold onto it safely.
         private byte[] _readScratch = Array.Empty<byte>();
+
+        // Tick count (Environment.TickCount64) until which incoming chunks are dropped after a
+        // PauseProcessing verdict. Written and read by the same read thread only.
+        private long _validationPauseUntilTicks;
 
         public SerialPortConfig Config { get; }
         public PortStatistics Statistics { get; } = new();
@@ -679,9 +684,10 @@ public class SerialPortService : ISerialPortService, IDisposable
                         _logger.LogWarning(ex, "Error disposing port {PortName} - continuing cleanup", Config.PortName);
                     }
 
-                    // Step 6: Final cleanup
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
+                    // (A full GC.Collect + WaitForPendingFinalizers used to run here on every
+                    // close — tens of milliseconds of blocking that didn't help: the handle is
+                    // released by Dispose() above. The OS handle-release delay after close is
+                    // already handled by the availability-retry loop in OpenPortAsync.)
 
                     Statistics.DisconnectedAt = DateTime.Now;
                     _logger.LogInformation("✅ Port {PortName} fully closed and resources released", Config.PortName);
@@ -719,7 +725,7 @@ public class SerialPortService : ISerialPortService, IDisposable
             }
         }
 
-        private void SerialPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
+        private async void SerialPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
         {
             // Skip processing if port is being closed
             if (_isClosing)
@@ -744,6 +750,14 @@ public class SerialPortService : ISerialPortService, IDisposable
                     Statistics.ReceivedBytes += bytesRead;
                     Statistics.ReceivedMessages++;
 
+                    // After a garbage-data verdict the port is paused for ~1s. Drain and drop
+                    // incoming chunks during that window instead of queueing overlapping
+                    // validation work (the per-port decoder is not thread-safe).
+                    if (Environment.TickCount64 < Volatile.Read(ref _validationPauseUntilTicks))
+                    {
+                        return;
+                    }
+
                     // Hand the consumers an exact-sized copy. They may stash it (the validation
                     // service path awaits before forwarding, and the UI path queues it for the
                     // dispatcher), so they must not see the reused scratch buffer.
@@ -753,7 +767,10 @@ public class SerialPortService : ISerialPortService, IDisposable
                     // 如果有数据验证服务，先验证数据
                     if (_dataValidationService != null)
                     {
-                        _ = ProcessDataWithValidationAsync(buffer);
+                        // Await so the (now synchronous) validation + forwarding finishes before
+                        // the next chunk is read — this keeps the per-port Decoder/StringBuilder
+                        // touched by a single thread only.
+                        await ProcessDataWithValidationAsync(buffer);
                     }
                     else
                     {
@@ -828,9 +845,10 @@ public class SerialPortService : ISerialPortService, IDisposable
                     case ValidationAction.PauseProcessing:
                         _logger.LogWarning("Pausing data processing for {PortName}: {Message}",
                             Config.PortName, validationResult.Message);
-                        
-                        // 暂停一段时间后恢复
-                        await Task.Delay(1000);
+
+                        // Arm the ~1s cooldown handled in SerialPort_DataReceived instead of
+                        // blocking this thread with Task.Delay(1000).
+                        Volatile.Write(ref _validationPauseUntilTicks, Environment.TickCount64 + 1000);
                         break;
                 }
 

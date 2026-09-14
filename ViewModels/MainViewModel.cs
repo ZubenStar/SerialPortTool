@@ -473,6 +473,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
     
     private System.Threading.Timer? _filterDebounceTimer;
 
+    // Compiled-regex cache for the live search filter. FlushPendingLogBatches runs ~20x/sec
+    // while a search is active and FilterLogs runs on every debounced keystroke; both must
+    // reuse the same compiled instance instead of paying milliseconds of RegexOptions.Compiled
+    // codegen on the UI thread each time. Only touched on the UI thread (SearchText setter,
+    // FilterLogs, flush timer), so no synchronization is needed.
+    private string? _cachedSearchRegexPattern;
+    private Regex? _cachedSearchRegex;
+
     [ObservableProperty]
     private bool _isRegexValid = true;
 
@@ -493,7 +501,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            _ = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
+            // Validation only parses the pattern; a non-compiled instance is cheap and the
+            // compiled version is built once (and cached) by GetOrCreateSearchRegex when the
+            // pattern is actually used for filtering.
+            _ = new Regex(SearchText, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
             IsRegexValid = true;
             RegexErrorMessage = string.Empty;
         }
@@ -1059,6 +1070,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // Stop file logging for all ports
             foreach (var port in OpenPorts.ToList())
             {
+                _lineAssemblers.TryRemove(port.PortName, out _);
                 await _fileLoggerService.StopLoggingAsync(port.PortName);
             }
 
@@ -1100,11 +1112,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             try
             {
-                var regex = new Regex(SearchText, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
-                filtered = AllLogs.Where(log =>
-                    regex.IsMatch(log.Content) ||
-                    regex.IsMatch(log.PortName))
-                    .ToList();
+                var regex = GetOrCreateSearchRegex(SearchText, IsRegexValid);
+                if (regex != null)
+                {
+                    filtered = AllLogs.Where(log =>
+                        regex.IsMatch(log.Content) ||
+                        regex.IsMatch(log.PortName))
+                        .ToList();
+                }
+                else
+                {
+                    filtered = new List<LogEntry>();
+                }
+
                 MatchCount = filtered.Count;
             }
             catch (Exception ex)
@@ -1255,26 +1275,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
         DisplayLogs.Add(logEntry);
     }
 
-    private async Task<IReadOnlyList<PortSendResult>> SendDataToPortsAsync(
+    private Task<PortSendResult[]> SendDataToPortsAsync(
         IReadOnlyList<string> targetPorts,
         byte[] data)
     {
-        var sendTasks = targetPorts
-            .Select(portName => Task.Factory.StartNew(
-                () => SendDataToPortWorker(portName, data),
-                CancellationToken.None,
-                TaskCreationOptions.LongRunning,
-                TaskScheduler.Default))
-            .ToArray();
-
-        return await Task.WhenAll(sendTasks);
+        // Plain async sends: writes are async IO, so the old LongRunning dedicated threads
+        // (one per port, blocking on GetResult) bought nothing but thread-per-port waste.
+        return Task.WhenAll(targetPorts.Select(portName => SendDataToPortWorkerAsync(portName, data)));
     }
 
-    private PortSendResult SendDataToPortWorker(string portName, byte[] data)
+    private async Task<PortSendResult> SendDataToPortWorkerAsync(string portName, byte[] data)
     {
         try
         {
-            _serialPortService.SendDataAsync(portName, data).GetAwaiter().GetResult();
+            await _serialPortService.SendDataAsync(portName, data);
             return new PortSendResult
             {
                 PortName = portName,
@@ -1718,24 +1732,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task<IReadOnlyList<PortSendResult>> SendTuningToPortsAsync(
+    private Task<PortSendResult[]> SendTuningToPortsAsync(
         IReadOnlyList<string> targetPorts,
         TuningBuildResult buildResult,
         CancellationToken cancellationToken)
     {
         var delayAfterSegment = BuildTuningDelayPlan(buildResult);
-        var sendTasks = targetPorts
-            .Select(portName => Task.Factory.StartNew(
-                () => SendTuningToPortWorker(portName, buildResult, delayAfterSegment, cancellationToken),
-                cancellationToken,
-                TaskCreationOptions.LongRunning,
-                TaskScheduler.Default))
-            .ToArray();
-
-        return await Task.WhenAll(sendTasks);
+        return Task.WhenAll(targetPorts.Select(
+            portName => SendTuningToPortWorkerAsync(portName, buildResult, delayAfterSegment, cancellationToken)));
     }
 
-    private PortSendResult SendTuningToPortWorker(
+    private async Task<PortSendResult> SendTuningToPortWorkerAsync(
         string portName,
         TuningBuildResult buildResult,
         IReadOnlyList<bool> delayAfterSegment,
@@ -1758,14 +1765,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var segment = buildResult.SendSegments[i];
-                _serialPortService.SendDataAsync(portName, segment.Data).GetAwaiter().GetResult();
+                await _serialPortService.SendDataAsync(portName, segment.Data);
 
                 if (delayAfterSegment[i])
                 {
-                    if (cancellationToken.WaitHandle.WaitOne(buildResult.DelayBetweenPacketsMs))
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                    }
+                    await Task.Delay(buildResult.DelayBetweenPacketsMs, cancellationToken);
                 }
             }
 
@@ -1950,6 +1954,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             StatusMessage = $"Closing port {portName}...";
             _logger.LogInformation("User requested to close port {PortName}", portName);
 
+            // Drop the port's line-assembly buffer; a partial tail line would otherwise leak
+            // into the next session on the same port name.
+            _lineAssemblers.TryRemove(portName, out _);
+
             // Stop file logging
             await _fileLoggerService.StopLoggingAsync(portName);
 
@@ -1974,7 +1982,92 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private static readonly string[] LineSeparators = { "\r\n", "\r", "\n" };
+    // Per-port line assembly state. Serial chunks arrive at arbitrary byte offsets, so a
+    // UTF-8 multi-byte character or a text line can be split across two DataReceived events.
+    // Decoding each chunk in isolation turned split characters into U+FFFD (which the garbage
+    // detector then flagged) and split lines into two broken entries. A persistent Decoder
+    // carries incomplete byte sequences across chunks; a StringBuilder carries the partial
+    // tail line until its newline arrives.
+    private sealed class PortLineAssembler
+    {
+        public readonly StringBuilder Pending = new(128);
+
+        // Scratch char buffer sized to the largest chunk seen (GetMaxCharCount upper bound).
+        public char[] DecodeBuffer = Array.Empty<char>();
+
+        // Decoder is not thread-safe, but all chunks for one port arrive on the serial
+        // driver's single DataReceived worker thread, so access is serialized.
+        public readonly Decoder Utf8Decoder = Encoding.UTF8.GetDecoder();
+    }
+
+    private readonly ConcurrentDictionary<string, PortLineAssembler> _lineAssemblers =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    // If a stream never emits newlines, flush the pending tail as its own entry once it grows
+    // past this size so the buffer stays bounded.
+    private const int MaxPendingLineChars = 16 * 1024;
+
+    // Splits the buffered characters into complete (terminator-delimited) lines, removes
+    // them from `pending`, and leaves the unterminated tail in place for the next chunk.
+    //
+    // Two boundary invariants this scan relies on:
+    //   * It only ever reads `pending[i]` and `pending[i + 1]` (guarded), never `pending[i - 1]`,
+    //     so `i == 0` cannot underflow.
+    //   * A trailing '\r' is left in the buffer instead of being consumed — it may be the first
+    //     half of a "\r\n" whose '\n' arrives in the next chunk. Consuming it early would turn
+    //     that '\n' into a bogus empty line on the next call.
+    private static List<string> ExtractCompleteLines(StringBuilder pending)
+    {
+        var lines = new List<string>();
+        var length = pending.Length;
+        var lineStart = 0; // first char of the line currently being accumulated
+
+        for (var i = 0; i < length; i++)
+        {
+            var c = pending[i];
+
+            if (c == '\r')
+            {
+                // '\r' is the last buffered char: hold it (and the current line) so a '\n'
+                // arriving next time completes this line rather than starting an empty one.
+                if (i + 1 >= length)
+                {
+                    break;
+                }
+
+                lines.Add(pending.ToString(lineStart, i - lineStart));
+
+                // "\r\n" consumes two chars; a lone '\r' consumes only itself.
+                if (pending[i + 1] == '\n')
+                {
+                    i++;
+                }
+
+                lineStart = i + 1;
+            }
+            else if (c == '\n')
+            {
+                lines.Add(pending.ToString(lineStart, i - lineStart));
+                lineStart = i + 1;
+            }
+        }
+
+        // Everything before lineStart belonged to a terminated line; the remainder is the tail.
+        if (lineStart > 0)
+        {
+            pending.Remove(0, lineStart);
+        }
+
+        if (pending.Length > MaxPendingLineChars)
+        {
+            // A stream that never emitted a terminator: flush the over-long tail as one line
+            // (the 1000-char truncation downstream applies to it like any other line).
+            lines.Add(pending.ToString());
+            pending.Clear();
+        }
+
+        return lines;
+    }
 
     private readonly ConcurrentQueue<PendingLogBatch> _pendingLogBatches = new();
     private int _isUiFlushScheduled = 0;
@@ -2018,61 +2111,51 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 }
                 return;
             }
-            
-            // Safe text decoding with fallback
-            string text;
-            try
-            {
-                text = Encoding.UTF8.GetString(e.Data);
-            }
-            catch (Exception)
-            {
-                try
-                {
-                    text = Encoding.ASCII.GetString(e.Data);
-                    _logger.LogDebug("UTF-8 decoding failed for {Port}, using ASCII fallback", e.PortName);
-                }
-                catch (Exception)
-                {
-                    // If both decodings fail, create a safe representation
-                    text = $"[Binary data: {dataSize} bytes]";
-                    _logger.LogWarning("Both UTF-8 and ASCII decoding failed for {Port}, using binary representation", e.PortName);
-                }
-            }
-            
-            var portName = e.PortName;
 
-            // 获取端口颜色
+            // Decode incrementally through the port's persistent decoder so UTF-8 multi-byte
+            // sequences split across chunk boundaries don't become U+FFFD garbage. Encoding.UTF8
+            // uses replacement fallback, so GetString can never throw — there is no decode
+            // failure path to handle here.
+            var portName = e.PortName;
+            var assembler = _lineAssemblers.GetOrAdd(portName, _ => new PortLineAssembler());
+
+            var maxChars = Encoding.UTF8.GetMaxCharCount(e.Data.Length);
+            if (assembler.DecodeBuffer.Length < maxChars)
+            {
+                assembler.DecodeBuffer = new char[maxChars];
+            }
+
+            var charsDecoded = assembler.Utf8Decoder.GetChars(
+                e.Data, 0, e.Data.Length, assembler.DecodeBuffer, 0, flush: false);
+            assembler.Pending.Append(assembler.DecodeBuffer, 0, charsDecoded);
+
             var portColor = GetPortColor(portName);
 
             if (traceEnabled)
             {
-                _logger.LogTrace("Decoded text: Length={Length} chars, Port={Port}", text.Length, portName);
+                _logger.LogTrace("Decoded text: Length={Length} chars, Port={Port}", charsDecoded, portName);
             }
 
-            // Build log entries on background thread with optimized string operations
-            var newLogs = new List<LogEntry>();
-            var lines = text.Split(LineSeparators, StringSplitOptions.None);
+            // Only complete lines (terminated by \r\n, \r or \n) become log entries; the
+            // partial tail stays in the buffer until its newline arrives in a later chunk.
+            var lines = ExtractCompleteLines(assembler.Pending);
 
             if (traceEnabled)
             {
-                _logger.LogTrace("Split into {LineCount} lines, Port={Port}", lines.Length, portName);
+                _logger.LogTrace("Split into {LineCount} lines, Port={Port}", lines.Count, portName);
             }
-            
+
             // Enhanced protection: Limit lines to prevent memory overflow and UI freezing
-            var maxLines = Math.Min(lines.Length, 500); // Reduced from 1000 to 500 for better performance
-            
-            if (lines.Length > maxLines)
+            var maxLines = Math.Min(lines.Count, 500); // Reduced from 1000 to 500 for better performance
+
+            if (lines.Count > maxLines)
             {
                 _logger.LogWarning("⚠️ Line count exceeds limit: Got {Count} lines, capping at {Max}, Port={Port}",
-                    lines.Length, maxLines, portName);
+                    lines.Count, maxLines, portName);
             }
             
             // Pre-allocate to reduce reallocations
-            if (maxLines > 1)
-            {
-                newLogs.Capacity = maxLines;
-            }
+            var newLogs = new List<LogEntry>(maxLines > 1 ? maxLines : 1);
             
             var now = DateTime.Now;
             var validLineCount = 0;
@@ -2110,10 +2193,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 // Limit line length to prevent UI issues
                 if (line.Length > 1000)
                 {
+                    // Log the ORIGINAL length — the previous code logged after appending the
+                    // truncation marker, recording 1000+marker instead of the real size.
+                    var originalLength = line.Length;
                     line = line.Substring(0, 1000) + "...[truncated]";
-                    _logger.LogDebug("Truncated long line: Port={Port}, OriginalLength={Original}", portName, line.Length);
+                    _logger.LogDebug("Truncated long line: Port={Port}, OriginalLength={Original}", portName, originalLength);
                 }
-                
+
                 var logEntry = new LogEntry
                 {
                     PortName = portName,
@@ -2122,11 +2208,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     IsReceived = true,
                     ColorHex = portColor
                 };
-                
+
                 newLogs.Add(logEntry);
-                
-                // Write to log file asynchronously (batched internally)
-                _ = _fileLoggerService.WriteLogAsync(portName, logEntry);
+            }
+
+            // Hand the whole chunk to the file logger in one call. A per-entry fire-and-forget
+            // Task here allocated an async state machine per line and swallowed exceptions;
+            // FileLoggerService already batches internally, so the batch ends up queued anyway.
+            if (newLogs.Count > 0)
+            {
+                _fileLoggerService.WriteLogs(portName, newLogs);
             }
             
             // Log statistics about data quality
@@ -2252,7 +2343,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             var openPortMap = _portsByName;
             var searchTextSnapshot = SearchText;
             var isRegexValidSnapshot = IsRegexValid;
-            var filterRegex = CreateSearchRegex(searchTextSnapshot, isRegexValidSnapshot, 50);
+            var filterRegex = GetOrCreateSearchRegex(searchTextSnapshot, isRegexValidSnapshot);
 
             var estimatedLogCount = batchesToFlush.Sum(batch => batch.Logs.Count);
             var allLogsToAdd = new List<LogEntry>(estimatedLogCount);
@@ -2275,9 +2366,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 }
                 else if (filterRegex != null)
                 {
+                    // The port name is constant for the whole batch — match it once instead of
+                    // running the regex over it for every entry.
+                    var portNameMatches = MatchesSearch(pendingBatch.PortName, filterRegex);
                     foreach (var logEntry in pendingBatch.Logs)
                     {
-                        if (MatchesSearch(logEntry, filterRegex))
+                        if (portNameMatches || MatchesSearch(logEntry.Content, filterRegex))
                         {
                             displayLogsToAdd.Add(logEntry);
                         }
@@ -2355,19 +2449,33 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private Regex? CreateSearchRegex(string searchText, bool isRegexValid, int timeoutMilliseconds)
+    /// <summary>
+    /// Returns the compiled regex for <paramref name="searchText"/>, rebuilding it only when the
+    /// pattern actually changes. Called from the 50ms flush loop and from FilterLogs — both on
+    /// the UI thread, which is why recompiling per call (milliseconds with Compiled) was a
+    /// direct hit on UI responsiveness while a search is active.
+    /// </summary>
+    private Regex? GetOrCreateSearchRegex(string searchText, bool isRegexValid)
     {
         if (string.IsNullOrEmpty(searchText) || !isRegexValid)
         {
             return null;
         }
 
+        if (_cachedSearchRegex != null &&
+            string.Equals(_cachedSearchRegexPattern, searchText, StringComparison.Ordinal))
+        {
+            return _cachedSearchRegex;
+        }
+
         try
         {
-            return new Regex(
+            _cachedSearchRegex = new Regex(
                 searchText,
                 RegexOptions.IgnoreCase | RegexOptions.Compiled,
-                TimeSpan.FromMilliseconds(timeoutMilliseconds));
+                TimeSpan.FromMilliseconds(100));
+            _cachedSearchRegexPattern = searchText;
+            return _cachedSearchRegex;
         }
         catch (Exception ex)
         {
@@ -2376,11 +2484,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private bool MatchesSearch(LogEntry logEntry, Regex filterRegex)
+    private bool MatchesSearch(string text, Regex filterRegex)
     {
         try
         {
-            return filterRegex.IsMatch(logEntry.Content) || filterRegex.IsMatch(logEntry.PortName);
+            return filterRegex.IsMatch(text);
         }
         catch (RegexMatchTimeoutException ex)
         {
@@ -2512,16 +2620,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 if (_baudRateDetectorService != null)
                 {
                     StatusMessage = $"正在为 {portName} 检测最佳波特率...";
-                    
+
                     try
                     {
+                        // The detector opens the port itself; as long as we still hold the port,
+                        // every probe fails with UnauthorizedAccessException and the whole
+                        // detection burns ~40s only to report "无法确定". Close it for the
+                        // duration, then reopen with the detected (or original) baud rate.
+                        await _serialPortService.ClosePortAsync(portName);
+                        await Task.Delay(500);
+
                         var detectionResults = await _baudRateDetectorService.DetectOptimalBaudRateAsync(portName);
-                        
+
                         if (detectionResults.Count > 0 && detectionResults[0].ConfidenceScore > 0.5)
                         {
                             var bestBaudRate = detectionResults[0].BaudRate;
                             StatusMessage = $"建议将 {portName} 波特率设置为 {bestBaudRate} (置信度: {detectionResults[0].ConfidenceScore:F2})";
-                            
+
                             // 触发波特率建议事件，让UI显示警告
                             BaudRateSuggested?.Invoke(this, new BaudRateSuggestionEventArgs
                             {
@@ -2532,23 +2647,39 @@ public partial class MainViewModel : ObservableObject, IDisposable
                                 Confidence = detectionResults[0].ConfidenceScore,
                                 ShouldAutoSwitch = detectionResults[0].ConfidenceScore > 0.8
                             });
-                            
+
                             // 如果置信度很高，可以自动切换
                             if (detectionResults[0].ConfidenceScore > 0.8)
                             {
                                 StatusMessage = $"自动将 {portName} 波特率从 {currentBaudRate} 切换到 {bestBaudRate}";
                                 await SwitchPortBaudRateAsync(portName, bestBaudRate);
                             }
+                            else
+                            {
+                                // 保持端口可用：用原波特率重开，等用户决定是否手动切换。
+                                await ReopenPortWithBaudRateAsync(portName, currentBaudRate);
+                            }
                         }
                         else
                         {
                             StatusMessage = $"无法为 {portName} 确定最佳波特率，请手动检查";
+                            await ReopenPortWithBaudRateAsync(portName, currentBaudRate);
                         }
                     }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "Error during baud rate detection for {PortName}", portName);
                         StatusMessage = $"波特率检测失败: {ex.Message}";
+
+                        // 尽力恢复端口，避免检测失败后端口一直处于关闭状态。
+                        try
+                        {
+                            await ReopenPortWithBaudRateAsync(portName, currentBaudRate);
+                        }
+                        catch (Exception reopenEx)
+                        {
+                            _logger.LogError(reopenEx, "Failed to reopen {PortName} after detection failure", portName);
+                        }
                     }
                 }
                 else
@@ -2569,41 +2700,44 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         try
         {
-            // 关闭当前端口
+            // 关闭当前端口（波特率检测流程中端口可能已被提前关闭，此时为无操作）
             await _serialPortService.ClosePortAsync(portName);
-            
+
             // 等待一段时间确保端口完全释放
             await Task.Delay(500);
-            
-            // 创建新配置
-            var newConfig = new SerialPortConfig
-            {
-                PortName = portName,
-                BaudRate = newBaudRate,
-                DataBits = DataBits,
-                StopBits = StopBits,
-                Parity = Parity
-            };
-            
-            // 重新打开端口
-            var opened = await _serialPortService.OpenPortAsync(newConfig);
-            
-            if (opened)
-            {
-                // 重置验证状态
-                _dataValidationService?.ResetValidationState(portName);
-                
-                _logger.LogInformation("Successfully switched {PortName} to baud rate {BaudRate}", portName, newBaudRate);
-            }
-            else
-            {
-                _logger.LogError("Failed to reopen {PortName} with new baud rate {BaudRate}", portName, newBaudRate);
-            }
+
+            await ReopenPortWithBaudRateAsync(portName, newBaudRate);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error switching baud rate for {PortName}", portName);
             throw;
+        }
+    }
+
+    private async Task ReopenPortWithBaudRateAsync(string portName, int baudRate)
+    {
+        var config = new SerialPortConfig
+        {
+            PortName = portName,
+            BaudRate = baudRate,
+            DataBits = DataBits,
+            StopBits = StopBits,
+            Parity = Parity
+        };
+
+        var opened = await _serialPortService.OpenPortAsync(config);
+
+        if (opened)
+        {
+            // 重置验证状态
+            _dataValidationService?.ResetValidationState(portName);
+
+            _logger.LogInformation("Successfully opened {PortName} with baud rate {BaudRate}", portName, baudRate);
+        }
+        else
+        {
+            _logger.LogError("Failed to reopen {PortName} with baud rate {BaudRate}", portName, baudRate);
         }
     }
 

@@ -28,7 +28,7 @@ SerialPortTool 面向需要同时盯多个串口的调试与产线场景：多�
 | --- | --- |
 | UI 框架 | WinUI 3（Windows App SDK `1.6.241114003`，self-contained） |
 | 运行时 | .NET 9（`net9.0-windows10.0.22621.0`，最低 `10.0.17763.0`） |
-| 语言 | C# 12 |
+| 语言 | C# 13（.NET 9 SDK 默认；未固定 `LangVersion`） |
 | 架构模式 | MVVM（`CommunityToolkit.Mvvm` 8.2.2） |
 | 串口通信 | `System.IO.Ports` 9.0.0 |
 | 依赖注入 | `Microsoft.Extensions.DependencyInjection` 9.0.0（轻量 `ServiceCollection`，不使用 Generic Host） |
@@ -51,9 +51,9 @@ SerialPortTool/
 ├── mic-tota-tuning.json             # Tuning 协议描述文件的示例（非应用配置）
 ├── Assets/Images/                   # logo.ico、logo.png
 ├── Controls/                        # LogListView：唯一的自定义控件（虚拟化日志列表）
-├── Converters/                      # BoolToVisibility / InverseBoolToVisibility / StringToVisibility / HexColorToBrush
+├── Converters/                      # BoolToVisibility / InverseBoolToVisibility / HexColorToBrush
 ├── Core/Enums/                      # ConnectionState、DataFormat、FilterType
-├── Helpers/                         # PerformanceMonitor、VersionInfo、BuildInfo.g.cs（构建时生成）
+├── Helpers/                         # VersionInfo、BuildInfo.g.cs（构建时生成）
 ├── Models/                          # SerialPortConfig、LogEntry、FilterRule、CommandPreset、PortStatistics
 ├── Services/                        # 串口、波特率检测、数据校验、日志过滤、文件日志、设置、Tuning 协议
 ├── ViewModels/                      # MainViewModel（含 RangeObservableCollection）

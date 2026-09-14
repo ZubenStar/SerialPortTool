@@ -13,7 +13,6 @@
             <!-- Converters -->
             <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
             <converters:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibilityConverter"/>
-            <converters:StringToVisibilityConverter x:Key="StringToVisibilityConverter"/>
             <converters:HexColorToBrushConverter x:Key="HexColorToBrushConverter"/>
         </ResourceDictionary>
     </Application.Resources>

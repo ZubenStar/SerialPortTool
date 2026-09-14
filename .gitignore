@@ -399,3 +399,4 @@ FodyWeavers.xsd
 # Local agent-tool leftovers (never part of the build)
 .codex
 .zcode/
+*.json

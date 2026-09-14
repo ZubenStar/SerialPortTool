@@ -35,7 +35,7 @@ Hard rules:
 
 **Tech stack** (trust `SerialPortTool.csproj`, nothing else):
 
-- WinUI 3 (Windows App SDK `1.6.241114003`, self-contained), C# 12, .NET 9
+- WinUI 3 (Windows App SDK `1.6.241114003`, self-contained), C# 13 (the .NET 9 SDK default; `LangVersion` is not pinned), .NET 9
 - MVVM (`CommunityToolkit.Mvvm 8.2.2`)
 - `System.IO.Ports` 9.0.0
 - Serilog 4.0.0 + `Serilog.Sinks.File` 5.0.0 + `Serilog.Extensions.Logging` 8.0.0
@@ -91,9 +91,9 @@ SerialPortTool/
 ├── Assets/Images/                   # logo.ico, logo.png
 ├── Controls/LogListView.xaml(.cs)   # The only custom UserControl (virtualized log list)
 ├── Converters/                      # BoolToVisibility + InverseBoolToVisibility (one file),
-│                                    # StringToVisibility, HexColorToBrush — all registered in App.xaml
+│                                    # HexColorToBrush — all registered in App.xaml
 ├── Core/Enums/                      # ConnectionState, DataFormat, FilterType
-├── Helpers/                         # PerformanceMonitor, VersionInfo, BuildInfo.g.cs (GENERATED)
+├── Helpers/                         # VersionInfo, BuildInfo.g.cs (GENERATED)
 ├── Models/                          # SerialPortConfig, LogEntry, FilterRule, CommandPreset, PortStatistics
 ├── Services/                        # 7 interfaces + 7 implementations (see Service Layer)
 ├── ViewModels/MainViewModel.cs      # Single ViewModel (+ in-file RangeObservableCollection)
@@ -124,11 +124,11 @@ Views (XAML) ←→ ViewModels ←→ Services ←→ Hardware / Infrastructure
 
 | Service | Responsibility & key patterns |
 | --- | --- |
-| `ISerialPortService` / `SerialPortService` | Manages multiple concurrent ports via a concurrent dictionary of `PortInstance`s, each with its own read thread and event handlers. Send/receive, automatic reconnection, integration with baud-rate detection + data validation. |
+| `ISerialPortService` / `SerialPortService` | Manages multiple concurrent ports via a concurrent dictionary of `PortInstance`s, each with its own read thread and event handlers. Send/receive, automatic reconnection, integration with baud-rate detection + data validation. Each port's `SerialPort_DataReceived` validates **inline and forwards before reading the next chunk** (single-threaded per port); a garbage verdict arms a ~1 s drop cooldown. |
 | `IBaudRateDetectorService` / `BaudRateDetectorService` | Analyses incoming data to detect a wrong baud rate; tracks error rate / pattern consistency; suggests corrections. Called on every reception by `SerialPortService`. |
-| `IDataValidationService` / `DataValidationService` | Real-time data-quality assessment (garbage data, encoding issues, quality score). Per-port state (`PortValidationState`) has a **locked** queue (see "do not regress"). |
+| `IDataValidationService` / `DataValidationService` | Real-time data-quality assessment (garbage data, encoding issues, quality score). `ValidateDataAsync` runs **synchronously on the caller's (read) thread** — it is not `Task.Run`-wrapped, so per-port statistics stay ordered. Binary / non-ASCII payloads skip the lossy `CleanData` and pass through unchanged. Per-port state (`PortValidationState`) has a **locked** queue (see "do not regress"). |
 | `ILogFilterService` / `LogFilterService` | Regex/text/log-level/port filtering. Compiled `Regex` objects cached in a `ConcurrentDictionary` with LRU eviction (max 50, clears half) and a **100 ms match timeout** so a pathological pattern cannot freeze the UI. |
-| `IFileLoggerService` / `FileLoggerService` | Async batched file writing: `ConcurrentQueue` + periodic flush (100 ms or 100 items), `StreamWriter` with a 64 KB buffer, background thread, reused `StringBuilder`. |
+| `IFileLoggerService` / `FileLoggerService` | Async batched file writing: `ConcurrentQueue` + periodic flush (100 ms or 100 items), `StreamWriter` with a 64 KB buffer, background thread, reused `StringBuilder`. Hot paths hand a whole batch to `WriteLogs(portName, entries)`; `WriteLogAsync` is for a single entry. |
 | `ISettingsService` / `SettingsService` | Persists user preferences / port configs to `%LOCALAPPDATA%\SerialPortTool\settings.json`. Writes are serialized with a **file lock** (see "do not regress"). |
 | `ITuningProtocolService` / `TuningProtocolService` | Loads a `TuningProtocolDescriptor` (JSON), packs a `.bin` payload and broadcasts it to one or all open ports. **Each port gets its own send worker** so concurrent multi-port sends do not serialize. Every send pre-checks `IsPortOpen`. |
 
@@ -139,10 +139,11 @@ Views (XAML) ←→ ViewModels ←→ Services ←→ Hardware / Infrastructure
 - Logs live in `RangeObservableCollection<T>` (declared inside `ViewModels/MainViewModel.cs`), which raises a single `CollectionChanged` for batch operations. Use `AddRange(IEnumerable<T>)`; for FIFO retention use `RemoveFromStart(int)` (v1.8.3) rather than `RemoveRange`.
 - Pre-allocate list capacity when batching; never add items one-by-one in a loop.
 - Pending updates from background threads are merged before being applied on the UI thread (v1.8.6 flicker fix).
+- Serial chunks are reassembled **per port** before splitting: `PortLineAssembler` (a persistent `Decoder` + `StringBuilder`) carries UTF-8 sequences and partial lines across `DataReceived` events, and `ExtractCompleteLines` emits only terminator-delimited lines (`\n`, `\r`, `\r\n`), leaving a trailing `\r` buffered for the next chunk.
 
 ### Performance-Critical Components
 
-1. **`Models/LogEntry.cs`** — caches formatted text in `_cachedFormattedText`; only `Content`, `PortName`, `Timestamp`, `IsReceived` invalidate it (`LogEntry.cs:90-93`). `ColorHex`, `Format`, `RawData` do **not** participate in `FormattedText`.
+1. **`Models/LogEntry.cs`** — caches formatted text in `_cachedFormattedText`; only `Content`, `PortName`, `Timestamp`, `IsReceived` invalidate it (`LogEntry.cs:85-88`). `ColorHex`, `Format`, `RawData` do **not** participate in `FormattedText`.
    **Gotcha**: if you add a field that belongs in `FormattedText`, add its own `partial void OnXxxChanged(...) => _cachedFormattedText = null;` — otherwise the UI silently keeps showing stale text.
 2. **`RangeObservableCollection`** — batch add/remove with one notification; `AddRange` / `RemoveFromStart` are the fast paths.
 3. **Regex caching** — see `LogFilterService` above (5–10× faster than recompiling).
@@ -274,7 +275,7 @@ Release job: generate release notes from the `version.json` changelog → create
 - **Platform**: x64 Windows only (ARM64 support removed in v1.4.0).
 - **Minimum Windows version**: 10.0.17763 (Windows 10 1809).
 - **Publish settings**: `PublishTrimmed=false`, `PublishReadyToRun=false`, `PublishSingleFile=false` — required for WinUI 3 stability.
-- **Language**: C# 12 (required by `CommunityToolkit.Mvvm` partial properties).
+- **Language**: C# 13 (the .NET 9 SDK default; `LangVersion` is not pinned). `[ObservableProperty]` is applied to backing fields, not partial properties.
 - **Packaging**: unpackaged (`WindowsPackageType=None`, `WindowsAppSDKSelfContained=true`).
 
 ---
@@ -284,12 +285,6 @@ Release job: generate release notes from the `version.json` changelog → create
 - **Application logs**: `%USERPROFILE%\Documents\SerialPortTool\DebugLogs\app-<date>.log` (daily rolling, 7-day retention, 50 MB cap per file — configured in `App.xaml.cs:38-52`). "工具 → 打开日志文件夹" opens the folder.
 - **Log level**: `Information` (`App.xaml.cs:44`).
 - **Global exception handlers** (`App.xaml.cs:57-68`): `AppDomain.UnhandledException` and `TaskScheduler.UnobservedTaskException` are logged via Serilog. Do not remove them — the app used to terminate silently on background-thread exceptions.
-- **Profiling**: `Helpers/PerformanceMonitor.cs`
-  ```csharp
-  using (_perfMonitor.Measure("OperationName")) { … }
-  _perfMonitor.LogReport();
-  ```
-  Operations slower than 100 ms are warned about automatically.
 
 ---
 
@@ -300,8 +295,9 @@ Each of these exists because a specific bug caused a crash or an error storm; re
 - **Settings file lock** (`SettingsService`, v1.8.10) — serializes writes to `settings.json` so the tuning watcher and a port-open path cannot corrupt it.
 - **Reconnect cooldown** (`SerialPortService`, v1.8.10) — a failed reconnect enforces backoff; without it a yanked port produces thousands of `UnauthorizedAccessException`.
 - **Port reopen retry** (`SerialPortService` / `PortInstance.Dispose`, v1.8.11) — on close, `_isClosing` is reset, availability is re-checked while the OS releases the COM handle, and the cleanup delay lives in `Dispose`'s `finally` so it also runs on exception paths.
-- **Validation queue lock** (`DataValidationService`, v1.8.10) — the per-port queue is locked because it was mutated concurrently by the read thread and the validation worker.
+- **Validation queue lock** (`DataValidationService`, v1.8.10) — the per-port `PortValidationState` queue stays locked. Validation now runs inline on the read thread, but `ResetValidationState` can still be called from the UI thread.
 - **Tuning send pre-check** (`TuningProtocolService`, v1.8.10) — `IsPortOpen` is checked before every send, required because auto-send can fire mid-reconnect and caused `CancellationTokenSource` disposal crashes.
+- **Single-threaded per-port decode/validation** (`SerialPortService`, v1.8.13) — `SerialPort_DataReceived` awaits validation before reading the next chunk, and a garbage verdict arms a ~1 s drop cooldown, so the per-port `Decoder`/`StringBuilder` is only ever touched by one thread. Do not make validation fire-and-forget again.
 - **Shutdown timeout** (`App.xaml.cs:114-160`) — window-close cleanup runs on a thread-pool task with a hard 5-second wall clock; on timeout the app force-exits instead of hanging on a stuck COM handle.
 
 ---
@@ -313,7 +309,7 @@ Only the ones that change how you should reason about the code — `version.json
 - **Multi-port management** — open/close individual ports, "open all"/"close all", "scan ports".
 - **Per-port colours** (v1.7.0) — each opened port gets a unique colour from a 10-colour palette stored on `LogEntry.ColorHex`, plus a configurable TX colour. Surfaced through `HexColorToBrushConverter` in `LogListView.xaml`'s `DataTemplate`. New `LogEntry` fields needing colour treatment must go through the same converter.
 - **Log pause toggle** — pauses UI appending without stopping reception; buffering continues while paused and batched updates resume on unpause. Anything touching the data-flow pipeline must respect this.
-- **Search history** (v1.5.0 / v1.6.2) — debounced persistence, per-item delete, clear-all with confirmation; visibility driven by `StringToVisibilityConverter`.
+- **Search history** (v1.5.0 / v1.6.2) — debounced persistence, per-item delete, clear-all with confirmation.
 - **Baud-rate mismatch banner** — surfaced when detection confidence is high, with one-click correction.
 - **Tuning broadcast** — see the Tuning/TOTA section.
 
@@ -338,7 +334,7 @@ RangeObservableCollection.AddRange (batched UI update)
   ↓
 Controls/LogListView.xaml (virtualized ListView, x:Bind)
   ↓
-FileLoggerService.LogAsync (async batched write to disk)
+FileLoggerService.WriteLogs (async batched write to disk)
 ```
 
 ---

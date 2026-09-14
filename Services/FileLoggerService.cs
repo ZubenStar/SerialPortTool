@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -73,6 +74,15 @@ public class FileLoggerService : IFileLoggerService, IDisposable
         }
     }
 
+    public void WriteLogs(string portName, IReadOnlyList<LogEntry> entries)
+    {
+        if (entries.Count == 0) return;
+        if (_loggers.TryGetValue(portName, out var loggerInstance))
+        {
+            loggerInstance.WriteLogs(entries);
+        }
+    }
+
     public string GetLogFilePath(string portName)
     {
         if (_loggers.TryGetValue(portName, out var loggerInstance))
@@ -120,6 +130,7 @@ public class FileLoggerService : IFileLoggerService, IDisposable
         private const int MaxBatchSize = 100;
         private const int FlushIntervalMs = 100;
         private int _queuedCount = 0;
+        private volatile bool _disposed;
 
         public string LogFilePath { get; }
 
@@ -167,6 +178,17 @@ public class FileLoggerService : IFileLoggerService, IDisposable
             }
         }
 
+        public void WriteLogs(IReadOnlyList<LogEntry> entries)
+        {
+            if (_disposed) return;
+
+            foreach (var entry in entries)
+            {
+                _writeQueue.Enqueue(entry);
+            }
+            Interlocked.Add(ref _queuedCount, entries.Count);
+        }
+
         private void FlushCallback(object? state)
         {
             // 定期刷新队列
@@ -178,6 +200,11 @@ public class FileLoggerService : IFileLoggerService, IDisposable
 
         private async Task FlushQueueAsync()
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             if (!_writeLock.Wait(0))
             {
                 // 如果锁被占用,跳过此次刷新
@@ -186,33 +213,7 @@ public class FileLoggerService : IFileLoggerService, IDisposable
 
             try
             {
-                _batchBuffer.Clear();
-                var processed = 0;
-
-                // 批量从队列中取出日志
-                while (processed < MaxBatchSize && _writeQueue.TryDequeue(out var entry))
-                {
-                    var direction = entry.IsReceived ? "RX" : "TX";
-                    _batchBuffer.Append('[')
-                        .Append(entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff"))
-                        .Append("] [")
-                        .Append(direction)
-                        .Append("] ")
-                        .AppendLine(entry.Content);
-                    
-                    processed++;
-                    Interlocked.Decrement(ref _queuedCount);
-                }
-
-                if (processed > 0)
-                {
-                    await _writer.WriteAsync(_batchBuffer.ToString());
-                    await _writer.FlushAsync();
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error flushing log queue");
+                await DrainQueueAsync();
             }
             finally
             {
@@ -220,17 +221,53 @@ public class FileLoggerService : IFileLoggerService, IDisposable
             }
         }
 
+        /// <summary>
+        /// 取出队列中的日志并写入文件。调用方必须已持有 <see cref="_writeLock"/>。
+        /// </summary>
+        private async Task DrainQueueAsync()
+        {
+            _batchBuffer.Clear();
+            var processed = 0;
+
+            // 批量从队列中取出日志
+            while (processed < MaxBatchSize && _writeQueue.TryDequeue(out var entry))
+            {
+                var direction = entry.IsReceived ? "RX" : "TX";
+                _batchBuffer.Append('[')
+                    .Append(entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff"))
+                    .Append("] [")
+                    .Append(direction)
+                    .Append("] ")
+                    .AppendLine(entry.Content);
+
+                processed++;
+                Interlocked.Decrement(ref _queuedCount);
+            }
+
+            if (processed > 0)
+            {
+                await _writer.WriteAsync(_batchBuffer.ToString());
+                await _writer.FlushAsync();
+            }
+        }
+
         public async ValueTask DisposeAsync()
         {
-            // Stop timer
+            // Stop timer first so no new fire-and-forget flushes get scheduled.
             await _flushTimer.DisposeAsync();
 
-            // Flush remaining logs
-            await FlushQueueAsync();
+            // Any flush that was already in flight now bails out at its _disposed check
+            // instead of racing the writer disposal below (the old code could hit
+            // ObjectDisposedException on the StreamWriter and lose the tail of the log).
+            _disposed = true;
 
+            // Final drain happens inside the same lock that guards the writer, so it cannot
+            // interleave with a straggler flush either.
             await _writeLock.WaitAsync();
             try
             {
+                await DrainQueueAsync();
+
                 // Write footer
                 await _writer.WriteLineAsync();
                 await _writer.WriteLineAsync($"========================");
@@ -239,11 +276,14 @@ public class FileLoggerService : IFileLoggerService, IDisposable
                 await _writer.FlushAsync();
 
                 _writer.Dispose();
-                _writeLock.Dispose();
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error disposing logger instance");
+            }
+            finally
+            {
+                _writeLock.Dispose();
             }
         }
     }

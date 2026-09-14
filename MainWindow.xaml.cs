@@ -508,18 +508,7 @@ public sealed partial class MainWindow : Window
         
         BaudRateAlertBorder.Visibility = Visibility.Visible;
     }
-    
-    private void ShowBaudRateAlert(string portName, int currentBaudRate, int suggestedBaudRate, string reason)
-    {
-        _suggestedPortName = portName;
-        _suggestedBaudRate = suggestedBaudRate;
-        
-        BaudRateAlertTitle.Text = $"检测到 {portName} 波特率可能不匹配";
-        BaudRateAlertMessage.Text = $"当前: {currentBaudRate}, 建议: {suggestedBaudRate}\n原因: {reason}";
-        
-        BaudRateAlertBorder.Visibility = Visibility.Visible;
-    }
-    
+
     private void HideBaudRateAlert()
     {
         BaudRateAlertBorder.Visibility = Visibility.Collapsed;

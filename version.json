@@ -1,7 +1,34 @@
 ﻿{
-    "version": "1.8.11",
+    "version": "1.8.13",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-14",
+            "version": "1.8.13",
+            "changes": [
+                "Reassemble serial chunks per port so UTF-8 characters and lines split across reads no longer become replacement characters or broken log entries",
+                "Cache the live-search regex and hand whole batches to the file logger to cut UI-thread work under high-throughput streams",
+                "Send tuning/text payloads to all ports via async I/O instead of a dedicated thread per port",
+                "Run data validation inline on each port's read thread and pause garbage bursts with a short drop cooldown instead of queueing overlapping work",
+                "Pass binary and non-ASCII payloads through unchanged so the text cleaner no longer strips them",
+                "Removed unused code (performance monitor, string-to-visibility converter, an alert overload, LogEntry id) and kept ReadyToRun disabled for WinUI 3 stability",
+                "Bound log-list update frequency with adaptive add/remove-range notifications, a throttled statistics refresh, and a UI-thread brush cache"
+            ]
+        },
+        {
+            "date": "2026-05-28",
+            "version": "1.8.12",
+            "changes": [
+                "Fixed WinUI 3 ListView crash with 'indices larger than Int32.MaxValue - 1' by switching RangeObservableCollection batch updates to Reset notifications",
+                "Debounced settings persistence with 500ms in-memory coalescing to eliminate per-keystroke disk I/O in the send-text box and other property-change save paths",
+                "Reused per-port byte buffer for SerialPort.Read to reduce GC pressure under high-throughput data",
+                "Cached OpenPorts dictionary to remove LINQ scans from GetPortColor and the per-flush stats/sent-log paths",
+                "Rewrote GarbageDataDetector as a zero-allocation single-pass span scan (preserves existing thresholds)",
+                "Stopped firing CollectionChanged notifications for AllLogs (back-buffer only — never bound to UI)",
+                "Removed unused PortViewModel.Logs / FilteredLogs collections and their O(n) RemoveAt(0) trim path",
+                "Guarded hot-path LogTrace calls with IsEnabled to skip argument boxing at production log levels"
+            ]
+        },
         {
             "date": "2026-05-22",
             "version": "1.8.11",

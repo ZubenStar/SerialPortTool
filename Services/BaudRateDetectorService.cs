@@ -27,6 +27,9 @@ public class BaudRateDetectorService : IBaudRateDetectorService
 
     // 用于检测有效数据的正则表达式
     private readonly Regex _validDataRegex = new(@"^[\x20-\x7E\r\n\t]*$", RegexOptions.Compiled);
+
+    // 常见协议模式（CountValidDataBytes 用来给可读数据加分）
+    private readonly Regex _commonPatternRegex = new(@"^(AT|OK|ERROR|READY|[\d\w\s.,!?@#$%^&*()_+=\-\[\]{};:'""<>\\/|`~\r\n\t])*$", RegexOptions.Compiled | RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
     
     // 可打印字符比例阈值
     private const double PrintableCharThreshold = 0.7;
@@ -224,35 +227,20 @@ public class BaudRateDetectorService : IBaudRateDetectorService
         if (data == null || data.Length == 0)
             return 0;
 
-        try
-        {
-            var text = Encoding.UTF8.GetString(data);
-            
-            // 计算可打印字符的数量
-            var printableChars = text.Count(c => char.IsControl(c) || (c >= 32 && c <= 126));
-            
-            // 检查是否有常见的协议模式
-            var hasCommonPatterns = Regex.IsMatch(text, @"^(AT|OK|ERROR|READY|[\d\w\s.,!?@#$%^&*()_+=\-\[\]{};:'""<>\\/|`~\r\n\t])*$", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
-            
-            if (hasCommonPatterns)
-            {
-                printableChars = (int)(printableChars * 1.2); // 给常见模式加分
-            }
+        // Encoding.UTF8.GetString uses replacement fallback and never throws.
+        var text = Encoding.UTF8.GetString(data);
 
-            return Math.Min(printableChars, data.Length);
-        }
-        catch
+        // 可打印字符数量。\r\n\t 是合法的文本控制字符，不算乱码。
+        var printableChars = text.Count(c => (c >= 32 && c <= 126) || c == '\r' || c == '\n' || c == '\t');
+
+        // 检查是否有常见的协议模式（复用缓存的正则，避免每次调用重新解析）
+        var hasCommonPatterns = _commonPatternRegex.IsMatch(text);
+
+        if (hasCommonPatterns)
         {
-            // 如果UTF-8解码失败，尝试ASCII
-            try
-            {
-                var text = Encoding.ASCII.GetString(data);
-                return text.Count(c => char.IsControl(c) || (c >= 32 && c <= 126));
-            }
-            catch
-            {
-                return 0;
-            }
+            printableChars = (int)(printableChars * 1.2); // 给常见模式加分
         }
+
+        return Math.Min(printableChars, data.Length);
     }
 }

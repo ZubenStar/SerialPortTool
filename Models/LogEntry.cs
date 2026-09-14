@@ -10,11 +10,6 @@ namespace SerialPortTool.Models;
 public partial class LogEntry : ObservableObject
 {
     /// <summary>
-    /// 日志ID
-    /// </summary>
-    public Guid Id { get; set; } = Guid.NewGuid();
-
-    /// <summary>
     /// 时间戳
     /// </summary>
     [ObservableProperty]
