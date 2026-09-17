@@ -325,7 +325,16 @@ Two singleton services plus one build-time artifact. Deliberately dependency-fre
 
 **Workflow**: `.github/workflows/release.yml`, triggered by tags matching `v*`.
 
-**Action runtimes** (v2.0.3): all four official actions sit on the Node 24 line — `actions/checkout@v5`, `actions/setup-dotnet@v5`, `actions/upload-artifact@v5`, `actions/download-artifact@v5`. Their `v4` predecessors run on Node 20, which GitHub deprecated: the jobs still pass, but the runner force-migrates them to Node 24 and prints a deprecation banner on every run. Keep the four in step — leaving one action on `v4` is enough to bring the banner back. Node 24 actions need Actions Runner **v2.327.1+** (GitHub-hosted `windows-latest` / `ubuntu-latest` already qualify; a self-hosted runner must be upgraded first). Two reference points when bumping further: `setup-dotnet@v5` also dropped support for very old .NET versions (`9.0.x` is unaffected), and `download-artifact@v5` only changed the output path of a **single artifact downloaded by ID** — this workflow downloads every artifact by path (`path: artifacts`), so it is not affected.
+**Action runtimes** (v2.0.4): every official action must declare `runs.using: node24`, because a Node 20 action still *succeeds* — the runner force-migrates it and only prints a deprecation banner, so a stale version is easy to miss. The runtime does **not** advance together with the major number, which is the trap: `checkout` and `setup-dotnet` need `v5`, but the artifact pair needs one major more than the `v5` written next to them.
+
+| Action | Node 24 floor | Runtime note |
+| --- | --- | --- |
+| `actions/checkout` | `@v5` | `v4` = node20 |
+| `actions/setup-dotnet` | `@v5` | `v4` = node20; `v5` also dropped support for very old .NET versions (`9.0.x` is unaffected) |
+| `actions/upload-artifact` | `@v6` | **`v5` = node20**; `v7` only adds the opt-in `archive: false` direct-upload mode (default is still zipped) |
+| `actions/download-artifact` | `@v7` | **`v5` and `v6` = node20**; `v8` additionally makes a digest mismatch fail the job and stops decompressing by content type |
+
+Node 24 actions require Actions Runner **v2.327.1+** (GitHub-hosted `windows-latest` / `ubuntu-latest` already qualify; a self-hosted runner must be upgraded first). `download-artifact@v5` also changed the output path of a **single artifact downloaded by ID** — this workflow downloads every artifact by path (`path: artifacts`), so it is not affected. Check a candidate version before trusting a release note: `https://raw.githubusercontent.com/actions/<name>/<tag>/action.yml`, field `runs.using`.
 
 Build job: validate `version.json` against the git tag → generate `BuildInfo.g.cs` → restore/build for x64 Release → self-contained publish (no R2R / single-file / trimming) → **install Inno Setup (chocolatey) and run `scripts/build-installer.ps1 -SkipPublish`** → package a portable ZIP (strip `*.pdb`, keep only `zh-CN` + `en-us` framework language folders) → upload the ZIP **and the Setup.exe** as artifacts.
 Release job: generate release notes from the `version.json` changelog → create or update the GitHub Release with **both** the ZIP and the Setup.exe.

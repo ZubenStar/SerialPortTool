@@ -157,7 +157,7 @@ jobs:
         Write-Host "✓ Created package: $packageName.zip"
     
     - name: Upload build artifact
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v6
       with:
         name: SerialPortTool-${{ steps.get_version.outputs.version }}-win-${{ matrix.platform }}
         path: |
@@ -243,7 +243,7 @@ jobs:
         Write-Host "✓ Generated release notes"
     
     - name: Download all artifacts
-      uses: actions/download-artifact@v5
+      uses: actions/download-artifact@v7
       with:
         path: artifacts
     
@@ -284,7 +284,7 @@ jobs:
         fi
     
     - name: Upload release artifacts to release
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v6
       with:
         name: release-notes
         path: release-notes.md

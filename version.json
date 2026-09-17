@@ -1,7 +1,15 @@
 ﻿{
-    "version": "2.0.3",
+    "version": "2.0.4",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-17",
+            "version": "2.0.4",
+            "changes": [
+                "Finished the Node 24 migration of the release pipeline: the artifact actions were still on the deprecated runtime - upload-artifact v5 and download-artifact v5 both target Node 20, so they needed v6 and v7 respectively, one major higher than the checkout/setup-dotnet bumps",
+                "Release runs no longer print any Node.js 20 deprecation warning"
+            ]
+        },
         {
             "date": "2026-09-17",
             "version": "2.0.3",
