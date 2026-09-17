@@ -8,7 +8,7 @@
   <Identity
     Name="SerialPortTool"
     Publisher="CN=YourCompany"
-    Version="2.0.2.0" />
+    Version="2.0.3.0" />
 
   <Properties>
     <DisplayName>串口工具</DisplayName>

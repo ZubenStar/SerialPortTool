@@ -74,6 +74,16 @@ dotnet publish --configuration Release --runtime win-x64 --self-contained true `
 ### Application Icon
 `Assets/Images/logo.ico` **must stay multi-resolution**: it currently carries 16, 20, 24, 28, 32, 40, 48, 56, 64, 96 and 128 px as BMP/DIB entries plus 256 px as a PNG entry. Explorer, the taskbar, the title bar and the small-icon views each request a different frame; an ico holding a single (or only large) frame gets resampled and shows up blurry in the shell — this regressed once and must not happen again. Frames ≤ 24 px are intentionally a bolder, hole-free variant of the symbol, because the connector's pin holes are sub-pixel at that size. `logo.png` is the 1024 px master kept for documentation/branding; the app never loads it.
 
+Three consumers read that file, and they do **not** refresh the same way:
+
+| Consumer | Source of the icon | How it picks up a new icon |
+| --- | --- | --- |
+| Window title bar / taskbar | `AppWindow.SetIcon({app}\Assets\Images\logo.ico)` at startup (`MainWindow.xaml.cs:58-62`) | every launch — always current |
+| `SerialPortTool.exe` inside Explorer | the Win32 icon resource embedded by `<ApplicationIcon>` | shell icon cache |
+| Desktop / Start-menu shortcut | `[Icons] IconFilename` → `{app}\Assets\Images\logo.ico` | shell icon cache + an Explorer repaint |
+
+The bottom two are cached by Windows (per-size `iconcache_*.db` **and** Explorer's in-memory system image list) keyed by source path. A silent auto-update overwrites the same paths and the app exits immediately, so nothing tells Explorer to re-read them — the shortcut keeps showing the previous release's artwork until the user presses F5 or restarts Explorer. That is what the installer's `SHChangeNotify` call exists for (see the Installer section and "do not regress"); bumping the ico to a new name is **not** a fix, the cache key is the path, not the content.
+
 ### Testing
 There is **no automated test suite**. Verification is manual:
 
@@ -306,12 +316,16 @@ Two singleton services plus one build-time artifact. Deliberately dependency-fre
 - Compression is `lzma2/ultra64` + `SolidCompression`. The self-contained payload is several hundred MB, so the in-app download must keep its progress bar and cancel button.
 - Inno Setup does not bundle a Simplified Chinese language file. `build-installer.ps1` detects `Languages\ChineseSimplified.isl` next to `ISCC.exe` and only then passes `/DIncludeChinese=1`, so the installer still compiles on a stock Inno Setup install (English UI).
 - The installer does not change the publish settings. `PublishTrimmed=false`, `PublishReadyToRun=false`, `PublishSingleFile=false` remain required for WinUI 3 stability; the fix for "too many files in the install directory" is packaging, not trimming.
+- `[Icons]` sets `IconFilename: "{app}\Assets\Images\logo.ico"` explicitly for both the Start-menu and the desktop shortcut. Without it the shortcut falls back to the exe's embedded icon, which couples "the shortcut looks right" to "the exe icon resource was embedded correctly" for no benefit — `logo.ico` already ships (it is under `Assets/`, which `[Files]` copies) and is the file the app itself loads at runtime.
+- `[Code] CurStepChanged(ssPostInstall)` calls `SHChangeNotify(SHCNE_ASSOCCHANGED)` (declared as an `external` on `shell32.dll`) before the optional restart. See the "do not regress" entry for why; this must stay unconditional — the interactive path needs it just as much as the silent one.
 
 ---
 
 ## CI/CD and Release
 
 **Workflow**: `.github/workflows/release.yml`, triggered by tags matching `v*`.
+
+**Action runtimes** (v2.0.3): all four official actions sit on the Node 24 line — `actions/checkout@v5`, `actions/setup-dotnet@v5`, `actions/upload-artifact@v5`, `actions/download-artifact@v5`. Their `v4` predecessors run on Node 20, which GitHub deprecated: the jobs still pass, but the runner force-migrates them to Node 24 and prints a deprecation banner on every run. Keep the four in step — leaving one action on `v4` is enough to bring the banner back. Node 24 actions need Actions Runner **v2.327.1+** (GitHub-hosted `windows-latest` / `ubuntu-latest` already qualify; a self-hosted runner must be upgraded first). Two reference points when bumping further: `setup-dotnet@v5` also dropped support for very old .NET versions (`9.0.x` is unaffected), and `download-artifact@v5` only changed the output path of a **single artifact downloaded by ID** — this workflow downloads every artifact by path (`path: artifacts`), so it is not affected.
 
 Build job: validate `version.json` against the git tag → generate `BuildInfo.g.cs` → restore/build for x64 Release → self-contained publish (no R2R / single-file / trimming) → **install Inno Setup (chocolatey) and run `scripts/build-installer.ps1 -SkipPublish`** → package a portable ZIP (strip `*.pdb`, keep only `zh-CN` + `en-us` framework language folders) → upload the ZIP **and the Setup.exe** as artifacts.
 Release job: generate release notes from the `version.json` changelog → create or update the GitHub Release with **both** the ZIP and the Setup.exe.
@@ -361,6 +375,7 @@ Each of these exists because a specific bug caused a crash or an error storm; re
 - **Installed-build gate** (`UpdateInstallerService.InstalledBuildInfo`, v2.0.0) — auto-replacement requires both the `%LOCALAPPDATA%\Programs\SerialPortTool` location **and** the Inno Setup uninstall key. Removing the gate would let the app silently overwrite a user's portable folder.
 - **Silent-check log level** (`UpdateService`, v2.0.0) — failures of the automatic check log at `Debug` only, and silent checks are cached for 24 h. Raising this produces an error storm whenever the machine is offline, and dropping the cache burns through GitHub's 60/hour anonymous limit.
 - **Explicit silent restart** (`installer/SerialPortTool.iss`, v2.0.2) — `RestartApplications=no` plus `[Code] CurStepChanged(ssPostInstall)` → `Exec` of the app under `WizardSilent()`. `RestartApplications=yes` reads like the obvious "restart after update" switch, but it only restarts what Restart Manager closed in the same session, and auto-update exits the app first — so the update installed cleanly and nothing was relaunched. The `[Run]` entry cannot cover silent mode either (`skipifsilent`). Do not re-add `/RESTARTAPPLICATIONS` to `UpdateInstallerService.SilentInstallArguments`: the command-line flag overrides the directive.
+- **Shell icon refresh after install** (`installer/SerialPortTool.iss`, v2.0.3) — `[Code] CurStepChanged(ssPostInstall)` calls `SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0)` before the restart. Windows caches shortcut/file icons in `iconcache_*.db` *and* in Explorer's in-memory system image list; a silent update replaces files at the same paths while the app exits immediately, so Explorer never re-reads them and the desktop/Start-menu shortcut keeps rendering the previous release's icon (reproduced v2.0.1 → v2.0.2, with the new multi-resolution ico already correctly embedded in the exe). Inno's own per-shortcut notification only tells Explorer that *the .lnk* changed, which is not enough to force a re-extract. Note the fix is a notification, not a differently-named icon file: the cache is keyed by source path, so renaming the ico does nothing except make the shortcut point at a file nothing else uses.
 - **Flush-before-handoff** (`MainWindow.DownloadAndInstallAsync`, v2.0.0) — `ISettingsService.FlushAsync()` completes before the installer is launched. Skipping it loses the last ~500 ms of debounced settings (including `Update.SkippedVersion`) on every auto-update.
 - **Installer / ZIP language-list parity** (`scripts/build-installer.ps1` + `.github/workflows/release.yml`, v2.0.0) — both artifacts keep only the `zh-CN` and `en-us` framework language folders, and the `[Files]` entry must stay free of `createallsubdirs` so the excluded folders do not reappear as empty directories. This degrades silently rather than crashing: drop either half and ISCC still compiles without a warning — the installer just packs 168 extra `.mui` files and/or recreates 84 empty `xx-YY` folders. The kept-language list is duplicated (Inno Setup cannot read the workflow file), so change both sides together. A `Compressing:` line count from the ISCC log catches the first half; only a real install catches the second.
 

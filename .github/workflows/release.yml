@@ -18,12 +18,12 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         fetch-depth: 0  # Get all history for proper versioning
     
     - name: Setup .NET
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@v5
       with:
         dotnet-version: '9.0.x'
         dotnet-quality: 'ga'
@@ -157,7 +157,7 @@ jobs:
         Write-Host "✓ Created package: $packageName.zip"
     
     - name: Upload build artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: SerialPortTool-${{ steps.get_version.outputs.version }}-win-${{ matrix.platform }}
         path: |
@@ -173,7 +173,7 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     
     - name: Extract version from tag
       id: get_version
@@ -243,7 +243,7 @@ jobs:
         Write-Host "✓ Generated release notes"
     
     - name: Download all artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v5
       with:
         path: artifacts
     
@@ -284,7 +284,7 @@ jobs:
         fi
     
     - name: Upload release artifacts to release
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: release-notes
         path: release-notes.md

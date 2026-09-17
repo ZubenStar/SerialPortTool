@@ -1,7 +1,17 @@
 ﻿{
-    "version": "2.0.2",
+    "version": "2.0.3",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-17",
+            "version": "2.0.3",
+            "changes": [
+                "Moved the release pipeline to the Node 24 generation of the official GitHub Actions (checkout, setup-dotnet, upload-artifact, download-artifact v5), so release runs stop reporting the deprecated Node 20 runtime",
+                "Fixed desktop and Start-menu shortcuts still showing the previous icon after an update: Windows keeps the old bitmap in its icon cache and in Explorer's in-memory image list, and a silent in-place update never gives the shell a chance to re-read it",
+                "The installer now notifies the shell (SHChangeNotify / SHCNE_ASSOCCHANGED) once the files are in place, so Explorer re-reads the shortcut icons and repaints the desktop immediately instead of waiting for a manual refresh",
+                "Shortcuts now take their icon explicitly from the shipped logo.ico instead of indirectly from the executable's icon resource, so the shortcut icon can no longer drift from the icon that actually ships"
+            ]
+        },
         {
             "date": "2026-09-17",
             "version": "2.0.2",

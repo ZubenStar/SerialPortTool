@@ -96,14 +96,32 @@ Type: filesandordirs; Name: "{app}\*"
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs; Excludes: "{#Excludes}"
 
 [Icons]
-Name: "{group}\{#AppDisplayName}"; Filename: "{app}\{#AppExeName}"
+; IconFilename 显式指向随包发布的 logo.ico，而不是让 Windows 去 exe 里取主图标：
+; 快捷方式图标的来源因此与 exe 的图标资源解耦（exe 图标若哪天没嵌进去，快捷方式也不会跟着错）。
+Name: "{group}\{#AppDisplayName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\Assets\Images\logo.ico"
 Name: "{group}\{cm:UninstallProgram,{#AppDisplayName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppDisplayName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppDisplayName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\Assets\Images\logo.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppDisplayName}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+// ---------------------------------------------------------------------------
+// shell 图标刷新（v2.0.3，不要删除）
+//
+// Windows 会把文件/快捷方式的图标缓存在 iconcache_*.db 和资源管理器进程内的系统
+// 图像列表里。自动更新是「同路径覆盖文件 + 主程序立刻自行退出」，资源管理器既没收到
+// 通知、也没有重绘时机，于是桌面/开始菜单快捷方式会继续显示上一版的图标，直到用户
+// 手动 F5 或重启资源管理器（v2.0.1 换成多尺寸 .ico 后，v2.0.2 仍然复现）。
+// 安装收尾时主动通知 shell，强制重新读取快捷方式图标并重绘桌面。
+// ---------------------------------------------------------------------------
+const
+  SHCNE_ASSOCCHANGED = $08000000;
+  SHCNF_IDLIST = $0000;
+
+procedure SHChangeNotify(wEventId: Longint; uFlags: Longword; dwItem1, dwItem2: Longint);
+  external 'SHChangeNotify@shell32.dll stdcall';
+
 // 静默更新（自动更新路径）下由安装器显式重启主程序，不能依赖 RestartApplications：
 //   1) RestartApplications 只会重启被 Restart Manager 关闭的进程，而自动更新时主程序已自行退出；
 //   2) [Run] 条目带 skipifsilent，在 /SILENT 下不会执行。
@@ -113,6 +131,11 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
 begin
-  if (CurStep = ssPostInstall) and WizardSilent() then
+  if CurStep <> ssPostInstall then
+    Exit;
+
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
+
+  if WizardSilent() then
     Exec(ExpandConstant('{app}\{#AppExeName}'), '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode);
 end;
