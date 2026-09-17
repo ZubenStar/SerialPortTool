@@ -71,6 +71,9 @@ dotnet publish --configuration Release --runtime win-x64 --self-contained true `
 
 **Prerequisites**: .NET 9 SDK, Windows App SDK 1.6 runtime/build tools, Windows 10 1809+ (Windows 11 recommended). The build invokes PowerShell scripts, so it must run on Windows. `scripts/build-installer.ps1` additionally needs **Inno Setup 6** (`ISCC.exe`); it fails with an explicit message when it cannot find the compiler.
 
+### Application Icon
+`Assets/Images/logo.ico` **must stay multi-resolution**: it currently carries 16, 20, 24, 28, 32, 40, 48, 56, 64, 96 and 128 px as BMP/DIB entries plus 256 px as a PNG entry. Explorer, the taskbar, the title bar and the small-icon views each request a different frame; an ico holding a single (or only large) frame gets resampled and shows up blurry in the shell — this regressed once and must not happen again. Frames ≤ 24 px are intentionally a bolder, hole-free variant of the symbol, because the connector's pin holes are sub-pixel at that size. `logo.png` is the 1024 px master kept for documentation/branding; the app never loads it.
+
 ### Testing
 There is **no automated test suite**. Verification is manual:
 
@@ -93,7 +96,7 @@ SerialPortTool/
 ├── SerialPortTool.csproj / .sln
 ├── version.json                     # Single source of truth: version + changelog
 ├── mic-tota-tuning.json             # SAMPLE TuningProtocolDescriptor (not application config)
-├── Assets/Images/                   # logo.ico, logo.png
+├── Assets/Images/                   # logo.ico (multi-size 16–256), logo.png (1024 master)
 ├── Controls/LogListView.xaml(.cs)   # The only custom UserControl (virtualized log list)
 ├── Converters/                      # BoolToVisibility + InverseBoolToVisibility (one file),
 │                                    # HexColorToBrush — all registered in App.xaml

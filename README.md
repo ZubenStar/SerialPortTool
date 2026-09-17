@@ -50,7 +50,7 @@ SerialPortTool/
 ├── SerialPortTool.csproj / .sln
 ├── version.json                     # 版本号与更新日志的唯一来源
 ├── mic-tota-tuning.json             # Tuning 协议描述文件的示例（非应用配置）
-├── Assets/Images/                   # logo.ico、logo.png
+├── Assets/Images/                   # logo.ico（16–256 多尺寸图标）、logo.png（1024 主图）
 ├── Controls/                        # LogListView：唯一的自定义控件（虚拟化日志列表）
 ├── Converters/                      # BoolToVisibility / InverseBoolToVisibility / HexColorToBrush
 ├── Core/Enums/                      # ConnectionState、DataFormat、FilterType

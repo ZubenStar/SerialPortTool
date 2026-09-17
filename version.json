@@ -1,7 +1,16 @@
 ﻿{
-    "version": "2.0.0",
+    "version": "2.0.1",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-17",
+            "version": "2.0.1",
+            "changes": [
+                "Rebuilt the application icon as a genuine multi-resolution .ico (16 to 256 px) so Explorer and the taskbar stop upscaling a single 32 px bitmap, which is what made the desktop icon look blurry",
+                "Added a simplified small-size variant of the icon (filled connector, bolder strokes, larger symbol ratio) so the 16/20/24 px frames stay legible instead of turning into grey mush",
+                "Replaced the icon artwork with a watermark-free, centred composition on a rounded blue-to-cyan gradient"
+            ]
+        },
         {
             "date": "2026-09-14",
             "version": "2.0.0",
