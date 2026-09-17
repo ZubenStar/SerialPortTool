@@ -7,7 +7,6 @@
 ; 可选开关：
 ;   /DIncludeChinese=1  —— 仅当 ISCC 的 Languages\ChineseSimplified.isl 存在时传入
 ;                          （Inno Setup 官方安装包不含简体中文语言文件）
-;   /DRestartFallback=1 —— 兜底重启：/SILENT 下 RestartApplications 未重启主程序时启用
 ;
 ; 注意：版本号一律由命令行注入（与 version.json 同源），禁止在此硬编码第二份副本。
 ; ============================================================================
@@ -22,10 +21,6 @@
 
 #ifndef OutputDir
   #define OutputDir "..\packages\installer"
-#endif
-
-#ifndef RestartFallback
-  #define RestartFallback "0"
 #endif
 
 ; [Files] 的排除列表由 scripts/build-installer.ps1 注入：
@@ -66,10 +61,15 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; {autopf} 在 lowest 下解析为 %LOCALAPPDATA%\Programs\SerialPortTool。
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=commandline
-; 自动更新的关键：/CLOSEAPPLICATIONS 由 Restart Manager 关闭正在运行的主程序，
-; /RESTARTAPPLICATIONS 在文件替换完成后自动把它拉起来。
+; CloseApplications=yes：需要时由 Restart Manager 关闭仍在运行的主程序（例如用户手动双击安装包）。
 CloseApplications=yes
-RestartApplications=yes
+; RestartApplications 必须保持 no，重启主程序由下面 [Code] 段显式完成。
+; 原因：RestartApplications 底层是 Restart Manager 的 RmRestart，它只会重启「本次安装过程中
+; 被 Restart Manager 主动关闭」的进程。自动更新路径下主程序在启动安装器后立即自行退出
+; （MainWindow.DownloadAndInstallAsync → Close() → App.OnWindowClosed → Environment.Exit(0)），
+; Restart Manager 无进程可关，自然也无进程可重启 —— 表现为「更新装完了但程序没再打开」。
+; 保留 no 还能避免与 [Code]/[Run] 的显式重启叠加而拉起两个实例。
+RestartApplications=no
 SetupMutex=SerialPortTool-Setup-Mutex
 ; 应用本身要求 Windows 10 1809+（Windows App SDK 限制），这里放宽以兼容更多 Inno 版本。
 MinVersion=10.0
@@ -104,12 +104,15 @@ Name: "{autodesktop}\{#AppDisplayName}"; Filename: "{app}\{#AppExeName}"; Tasks:
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppDisplayName}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
-// 兜底重启：仅在显式传入 /DRestartFallback=1 时启用。
-// 默认关闭，避免与 /RESTARTAPPLICATIONS 同时生效而拉起两个实例。
+// 静默更新（自动更新路径）下由安装器显式重启主程序，不能依赖 RestartApplications：
+//   1) RestartApplications 只会重启被 Restart Manager 关闭的进程，而自动更新时主程序已自行退出；
+//   2) [Run] 条目带 skipifsilent，在 /SILENT 下不会执行。
+// 因此这里不做任何开关判断 —— 静默模式必定重启。
+// 交互式安装（非静默）由 [Run] 的 postinstall 复选框负责，两边互斥，不会拉起两个实例。
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
 begin
-  if (CurStep = ssPostInstall) and WizardSilent() and ({#RestartFallback} = 1) then
-    Exec(ExpandConstant('{app}\{#AppExeName}'), '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+  if (CurStep = ssPostInstall) and WizardSilent() then
+    Exec(ExpandConstant('{app}\{#AppExeName}'), '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode);
 end;

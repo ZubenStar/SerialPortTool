@@ -1,7 +1,16 @@
 ﻿{
-    "version": "2.0.1",
+    "version": "2.0.2",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-17",
+            "version": "2.0.2",
+            "changes": [
+                "Fixed the app not coming back after an auto-update: the installed build used to install the new files silently and then stay closed",
+                "The installer now restarts the app explicitly in silent mode instead of relying on Restart Manager, which only relaunches processes it closed itself - and the app has already exited by the time the installer runs",
+                "Removed the never-enabled restart fallback switch from the Inno Setup script and the RESTARTAPPLICATIONS flag from the updater's arguments, so exactly one restart path is active and two instances can never be started"
+            ]
+        },
         {
             "date": "2026-09-17",
             "version": "2.0.1",

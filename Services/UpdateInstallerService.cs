@@ -19,16 +19,26 @@ namespace SerialPortTool.Services;
 /// 否则会把 403 / HTML 错误页当作安装包执行。</item>
 /// <item>便携版（非安装版）一律不得执行静默替换，只允许提示并打开下载页。</item>
 /// <item>启动安装器前必须由调用方先 Flush 设置，退出走既有 <c>App.OnWindowClosed</c>（5s 硬超时）路径。</item>
+/// <item>重启主程序由安装包负责（<c>installer/SerialPortTool.iss</c> 的 <c>[Code]</c> 段），
+/// 不得改用 <c>/RESTARTAPPLICATIONS</c>：它只能重启被 Restart Manager 关闭的进程，
+/// 而主程序在安装器启动后已自行退出，结果是更新装完却没有程序被拉起。</item>
 /// </list>
 /// </remarks>
 public sealed class UpdateInstallerService : IUpdateInstallerService
 {
     /// <summary>
-    /// 静默安装参数。Inno Setup 的 <c>CloseApplications</c> / <c>RestartApplications</c> 负责
-    /// 「关闭主程序 → 替换文件 → 自动重启」。
+    /// 静默安装参数。<c>/CLOSEAPPLICATIONS</c> 让安装器在需要时（例如用户手动双击安装包）
+    /// 由 Restart Manager 关闭仍在运行的主程序。
     /// </summary>
+    /// <remarks>
+    /// 刻意**不传** <c>/RESTARTAPPLICATIONS</c>：该开关（对应 <c>[Setup] RestartApplications</c>）
+    /// 只会重启「被 Restart Manager 关闭」的进程，而自动更新路径下主程序在启动安装器后已自行退出，
+    /// 于是更新装完却没有任何进程被拉起。重启改由 <c>installer/SerialPortTool.iss</c> 的
+    /// <c>[Code]</c> 段在静默模式下显式 <c>Exec</c>，<c>RestartApplications</c> 保持 <c>no</c>
+    /// 以避免两条路径同时生效而拉起两个实例。
+    /// </remarks>
     private const string SilentInstallArguments =
-        "/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /NOCANCEL";
+        "/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /NOCANCEL";
 
     private static readonly HttpClient Http = CreateHttpClient();
 
