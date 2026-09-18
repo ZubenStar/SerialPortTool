@@ -6,6 +6,9 @@
             "date": "2026-09-18",
             "version": "2.1.1",
             "changes": [
+                "Tuning / TOTA pushing is now a hidden feature that is off by default: the toolbar row only appears after ticking 工具 → 启用 Tuning 功能, the choice is remembered across restarts, and the default interface shows no Tuning controls at all",
+                "Turning the Tuning switch off stops the file watch but keeps the configured .bin path, protocol JSON and the was-watching preference, so re-enabling the feature restores exactly what was configured",
+                "Removed the bundled mic-tota-tuning.json sample; a tuning protocol descriptor must now be supplied by the user",
                 "Added a single-instance guard: a second launch explains itself and exits instead of competing for the same COM ports and overwriting the settings file, and the application log is now opened for sharing so a second process no longer loses its logging silently",
                 "Settings can no longer be destroyed by a bad read: a settings.json that fails to parse puts the service into a visible read-only state instead of being overwritten with an empty document, and writes are atomic (temp file + replace) so an interrupted write cannot create the truncated file that starts that cycle",
                 "Shutdown no longer leaks COM handles: ports are closed asynchronously while the window tears down, the synchronous fallback path no longer blocks on nested timeouts that abandoned their own work, and queued writes are cancelled before the port is disposed",
@@ -25,7 +28,6 @@
                 "Fixed an infinite loop when a text filter with an empty pattern was used for highlighting",
                 "Tuning descriptor validation now covers the info area fields and rejects integer overflow instead of building a packet with wrong lengths",
                 "The About dialog no longer shows the current time as the build time when the generated build timestamp is missing, which made \"which build am I running?\" unanswerable in exactly the situation where it matters",
-                "Added the missing mic-tota-tuning.json sample that the documentation referenced",
                 "The build now fails when version.json cannot be read instead of stamping a stale hard-coded version, and the release pipeline asserts the manifest version, the assembly version and the presence of both release assets",
                 "The installer refuses to build without an injected version (a 0.0.0 package would permanently break auto-update on every machine that installed it) and no longer installs on Windows versions below 1809",
                 "Removed the dead code, duplicate language-folder rules and stale documentation references found by a full repository audit"

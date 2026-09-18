@@ -95,6 +95,16 @@
                             <FontIcon Glyph="&#xE8B7;" />
                         </MenuFlyoutItem.Icon>
                     </MenuFlyoutItem>
+                    <MenuFlyoutSeparator />
+                    <!-- Hidden-by-default feature: the Tuning / TOTA panel only appears when this is
+                         ticked, and the choice is persisted (ViewModel.IsTuningEnabled). -->
+                    <ToggleMenuFlyoutItem x:Name="TuningEnabledMenuItem"
+                                          Text="启用 Tuning 功能"
+                                          IsChecked="{x:Bind ViewModel.IsTuningEnabled, Mode=TwoWay}">
+                        <ToggleMenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE950;" />
+                        </ToggleMenuFlyoutItem.Icon>
+                    </ToggleMenuFlyoutItem>
                 </MenuBarItem>
                 <MenuBarItem Title="外观">
                     <RadioMenuFlyoutItem x:Name="ThemeSystemMenuItem"
@@ -587,8 +597,12 @@
                             </StackPanel>
                         </Grid>
 
-                        <!-- Row 2: tuning payload + protocol -->
-                        <Grid Grid.Row="1" Margin="0,8,0,0">
+                        <!-- Row 2: tuning payload + protocol. Hidden by default — the whole row is
+                             collapsed until 工具 → 启用 Tuning 功能 is ticked, so an Auto row simply
+                             collapses to zero height and leaves the toolbar single-line. -->
+                        <Grid Grid.Row="1"
+                              Margin="0,8,0,0"
+                              Visibility="{Binding IsTuningEnabled, Converter={StaticResource BoolToVisibilityConverter}}">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="Auto" />

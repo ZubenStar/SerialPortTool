@@ -2,7 +2,7 @@
 
 > **多串口实时监控 / 调试工具** — 基于 WinUI 3 与 .NET 9 构建的 Windows 桌面串口助手。
 
-SerialPortTool 面向需要同时盯多个串口的调试与产线场景：多口并发收发、实时日志筛选、波特率不匹配自动识别，以及通过串口批量推送 tuning / TOTA 固件包。
+SerialPortTool 面向需要同时盯多个串口的调试与产线场景：多口并发收发、实时日志筛选、波特率不匹配自动识别，以及（可选开启的）通过串口批量推送 tuning / TOTA 固件包。
 
 ---
 
@@ -19,7 +19,7 @@ SerialPortTool 面向需要同时盯多个串口的调试与产线场景：多�
   - 暂停日志追加（不中断串口接收）、清空日志。
   - 每个串口独立 RX 颜色 + 可配置 TX 颜色，便于多口对读；日志区支持 `Ctrl+C` 复制、`Ctrl+A` 全选与右键菜单。
   - 每行日志左侧带一条所属串口的「通道色条」，日志上方另有「通道图例」列出 颜色 → 端口 → 收发字节数，多口交织时一眼分清每行的归属。
-- **Tuning / TOTA 推送**：选择 `.bin` 载荷与 JSON 协议描述文件，广播到所有已打开串口，支持监听文件变化自动重发。
+- **Tuning / TOTA 推送（隐藏功能，默认关闭）**：需先在「工具 → 启用 Tuning 功能」中勾选（状态会记住），工具条才会出现 Tuning 面板；选择 `.bin` 载荷与自备的 JSON 协议描述文件后广播到所有已打开串口，支持监听文件变化自动重发。取消勾选会隐藏面板并停止自动监听，但已保存的 `.bin` / JSON 路径与监听偏好都会保留。
 - **数据发送**：文本 / 十六进制模式（十六进制支持空格 / `-` / `,` / `:` 等分隔符与每组可选的 `0x` 前缀），回车或点「发送」即可广播到全部已打开串口。
 - **日志落盘**：串口日志异步批量写盘；应用运行日志（Serilog）可在「工具 → 打开日志文件夹」直接定位。
 - **检查更新 / 自动更新**：启动后静默检查 GitHub Releases，有新版本时提示并可下载安装；「帮助 → 检查更新」可随时手动检查。
@@ -53,7 +53,6 @@ SerialPortTool/
 ├── Package.appxmanifest             # 保留给 MSIX 工具链使用（当前为非打包构建）
 ├── SerialPortTool.csproj / .sln
 ├── version.json                     # 版本号与更新日志的唯一来源
-├── mic-tota-tuning.json             # Tuning 协议描述文件的示例（非应用配置）
 ├── Themes/Tokens.xaml               # 设计令牌：浅色 / 深色 / 高对比三套配色 + 字体间距圆角
 ├── Themes/Controls.xaml             # 按钮族样式与模板（唯一被重新模板化的控件）
 ├── Assets/Images/                   # logo.ico（16–256 多尺寸图标）、logo.png（1024 主图）
@@ -127,7 +126,7 @@ dotnet publish --configuration Release --runtime win-x64 --self-contained true `
 ### 基本使用
 
 1. 「工具 → 扫描串口」，在左侧「可用串口」中选择并打开（可多选并发），或直接点「全部打开」。
-2. 顶部工具条第二行选择 tuning `.bin` 与协议 JSON，点「发送 Tuning」即在所有已打开串口上广播。
+2. （可选）Tuning 推送默认关闭：先在「工具 → 启用 Tuning 功能」勾选，工具条第二行才会出现 Tuning 面板；选择 tuning `.bin` 与协议 JSON，点「发送 Tuning」即在所有已打开串口上广播。再次取消勾选即隐藏面板并停止自动监听（已保存的路径与监听偏好保留）。
 3. 底部输入框输入内容后按 **回车**（或点「发送」）发送到全部已打开串口；勾选「十六进制发送」可发送 hex 字节。
 4. 日志区用搜索框（支持正则）过滤；工具条右侧为 全选 / 复制 / 清空 / 暂停，`Ctrl+C` 复制选中行、`Ctrl+A` 全选。
 5. 出现「检测到波特率可能不匹配」提示时，可直接一键修正。
@@ -166,7 +165,7 @@ dotnet publish --configuration Release --runtime win-x64 --self-contained true `
 | 架构、服务、DI 注册、线程模型、性能与可靠性机制、构建/版本流程、编码约定 | `AGENTS.md` |
 | 任何会随版本发布的内容（功能、修复、重构、性能、构建） | `version.json` 的更新日志 |
 | 发布流水线 | `.github/workflows/release.yml` 与 `AGENTS.md` 的 CI/CD 章节 |
-| Tuning 协议描述格式或示例 | `mic-tota-tuning.json` 与 `AGENTS.md` 的 Tuning 章节 |
+| Tuning 协议描述格式 | `AGENTS.md` 的 Tuning / TOTA 章节（仓库不再附带示例描述文件） |
 
 其他约定：
 

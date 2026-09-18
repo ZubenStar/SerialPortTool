@@ -595,6 +595,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     private string TxColorHexResolved => PortColorPalette.Resolve(TxColorHex, _isDarkTheme);
 
+    /// <summary>Settings key for <see cref="IsTuningEnabled"/>.</summary>
+    private const string TuningEnabledSettingKey = "TuningEnabled";
+
+    /// <summary>
+    /// Master switch for the whole Tuning / TOTA feature. Defaults to <c>false</c>: the panel stays
+    /// hidden and the automatic watch never resumes until the user opts in from 工具 → 启用 Tuning 功能.
+    /// </summary>
+    [ObservableProperty]
+    private bool _isTuningEnabled = false;
+
     [ObservableProperty]
     private string _tuningBinFilePath = string.Empty;
 
@@ -638,6 +648,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly SemaphoreSlim _tuningSendLock = new(1, 1);
     private string _lastTuningBaselineHash = string.Empty;
     private bool _suppressTuningWatchPersistence = false;
+    private bool _skipTuningEnabledPersistence = false;
 
     /// <summary>
     /// Gets the next unused port identity slot.
@@ -942,6 +953,78 @@ public partial class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(TuningWatchButtonText));
     }
 
+    partial void OnIsTuningEnabledChanged(bool value)
+    {
+        if (!_skipTuningEnabledPersistence)
+        {
+            _ = _settingsService.SaveSettingAsync(TuningEnabledSettingKey, value ? 1 : 0);
+        }
+
+        // Recompute first: both branches below depend on an up-to-date CanUseTuning.
+        RefreshTuningAvailability();
+
+        if (!value && IsTuningWatching)
+        {
+            // Hide the feature but keep every saved tuning setting, so re-enabling it restores exactly
+            // what the user had. persistState: false is what preserves the "was watching" preference.
+            StopTuningWatch(persistState: false);
+        }
+
+        if (!value)
+        {
+            TuningStatus = "Tuning 功能未启用";
+        }
+
+        if (_skipTuningEnabledPersistence)
+        {
+            // Startup read: no status message and no resume here — InitializeAsync owns the resume,
+            // after the tuning paths and the listening preference have both been read.
+            return;
+        }
+
+        StatusMessage = value ? "已启用 Tuning 功能" : "已关闭 Tuning 功能";
+
+        if (value)
+        {
+            _ = ResumeTuningWatchIfPreferredAsync();
+        }
+    }
+
+    /// <summary>
+    /// Adopts the master switch read from disk at startup <em>without</em> writing it back, emitting a
+    /// status message, or resuming the watch.
+    /// </summary>
+    public void InitializeTuningEnabled(bool enabled)
+    {
+        _skipTuningEnabledPersistence = true;
+        try
+        {
+            IsTuningEnabled = enabled;
+        }
+        finally
+        {
+            _skipTuningEnabledPersistence = false;
+        }
+    }
+
+    /// <summary>
+    /// Restores the saved "was watching" preference after the user re-enables the feature.
+    /// </summary>
+    private async Task ResumeTuningWatchIfPreferredAsync()
+    {
+        if (!IsTuningEnabled || IsTuningWatching || !CanUseTuning)
+        {
+            return;
+        }
+
+        if (await _settingsService.LoadSettingAsync("TuningIsWatching", 0) != 1)
+        {
+            return;
+        }
+
+        await StartTuningWatchAsync(createBaseline: true);
+    }
+
     private const int MaxDisplayLogs = 2000; // Increased limit with optimizations
     private const int DisplayLogTrimThreshold = MaxDisplayLogs + 200;
     // Trimming removes this much MORE than the overflow, so the next trim is ~600 entries away
@@ -1125,7 +1208,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         RxColorHex = await _settingsService.LoadSettingAsync("RxColorHex", PortColorPalette.DefaultRxHex);
         IsSidebarCollapsed = await _settingsService.LoadSettingAsync(SidebarCollapsedSettingKey, 0) == 1;
 
-        // Load tuning settings. The protocol itself is never defaulted; it must come from the user's JSON file.
+        // Load tuning settings. The master switch is read first: the paths and the listening preference
+        // are still loaded (they are preserved across a disable), but nothing may start listening while
+        // the feature is off. The protocol itself is never defaulted; it must come from the user's JSON.
+        InitializeTuningEnabled(await _settingsService.LoadSettingAsync(TuningEnabledSettingKey, 0) == 1);
         TuningBinFilePath = await _settingsService.LoadSettingAsync("TuningBinFilePath", string.Empty);
         TuningDescriptorFilePath = await _settingsService.LoadSettingAsync("TuningDescriptorFilePath", string.Empty);
         _lastTuningBaselineHash = await _settingsService.LoadSettingAsync("TuningBaselineHash", string.Empty);
@@ -1145,7 +1231,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         await ScanPortsAsync();
 
         var shouldResumeTuningWatch = await _settingsService.LoadSettingAsync("TuningIsWatching", 0) == 1;
-        if (shouldResumeTuningWatch && CanUseTuning)
+        if (IsTuningEnabled && shouldResumeTuningWatch && CanUseTuning)
         {
             await StartTuningWatchAsync(createBaseline: true);
         }
@@ -2373,13 +2459,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private void RefreshTuningAvailability()
     {
-        CanUseTuning = IsTuningDescriptorValid &&
+        // The master switch is first on purpose: with the feature disabled every send/watch entry point
+        // must report "not enabled" rather than a misleading "please pick a .bin file", and no hidden
+        // path may send anything even if something still called into it.
+        CanUseTuning = IsTuningEnabled &&
+                       IsTuningDescriptorValid &&
                        !string.IsNullOrWhiteSpace(TuningBinFilePath) &&
                        File.Exists(TuningBinFilePath);
     }
 
     private string BuildTuningUnavailableMessage()
     {
+        if (!IsTuningEnabled)
+        {
+            return "Tuning 功能未启用";
+        }
+
         if (string.IsNullOrWhiteSpace(TuningBinFilePath))
         {
             return "请选择 tuning bin 文件";

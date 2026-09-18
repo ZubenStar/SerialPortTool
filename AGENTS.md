@@ -18,7 +18,7 @@ Documentation is part of the deliverable: a change that makes the documentation 
 | Architecture, services, DI registrations, threading model, performance/reliability mechanisms, build & version flow, coding conventions | `AGENTS.md` (this file) |
 | Anything that ships (feature, fix, refactor, perf, build/pipeline change) | `version.json` — add/adjust a changelog entry (use `scripts/bump-version.ps1` when cutting a release) |
 | Release / publish pipeline | `.github/workflows/release.yml` **and** the CI/CD section below |
-| The tuning protocol descriptor format or the sample | `mic-tota-tuning.json` **and** the Tuning section below |
+| The tuning protocol descriptor format, or the hidden Tuning feature switch | the Tuning / TOTA section below (there is no bundled sample descriptor) |
 
 Hard rules:
 
@@ -31,7 +31,7 @@ Hard rules:
 
 ## Project Overview
 
-**SerialPortTool (串口工具)** is a Windows desktop serial-port debugging / monitoring tool built with WinUI 3 and .NET 9. It focuses on multi-port simultaneous monitoring, real-time log filtering, baud-rate mismatch detection, and pushing tuning/TOTA firmware payloads over the wire.
+**SerialPortTool (串口工具)** is a Windows desktop serial-port debugging / monitoring tool built with WinUI 3 and .NET 9. It focuses on multi-port simultaneous monitoring, real-time log filtering, baud-rate mismatch detection, and (behind an opt-in hidden switch) pushing tuning/TOTA firmware payloads over the wire.
 
 **Tech stack** (trust `SerialPortTool.csproj`, nothing else):
 
@@ -90,7 +90,7 @@ There is **no automated test suite**. Verification is manual:
 - open several ports simultaneously (open/close/reopen, including with a wrong baud rate first),
 - send/receive at various baud rates, including hex mode,
 - exercise log filtering (plain text + regex) under a high-throughput stream,
-- run a tuning broadcast across ≥2 ports,
+- tuning is hidden by default: on a fresh profile the toolbar must show **no** Tuning row and 工具 → 启用 Tuning 功能 must start unticked. Tick it, select a `.bin` + descriptor, and broadcast across ≥2 ports; then untick it while the watch is running — the panel must disappear, the watch must stop, and re-ticking must bring the panel back and resume the watch (the `.bin` / JSON paths and the was-watching preference survive the untick),
 - appearance: switch 跟随系统 / 浅色 / 深色 from the 外观 menu and check legibility of the log rows, the channel legend, the baud-rate banner, the regex error, the title-bar caption buttons and the dialogs; then restart and confirm the choice survived. Do this with ≥2 ports open so the per-port colours are actually exercised,
 - shell: fold/unfold the rail, resize across the 900 px breakpoint, and maximise/restore to confirm content is not hidden under the caption buttons,
 - update path: "Help → Check for updates" against a Release that has a higher version, then a full download → silent replace → auto-restart against an installed older build (see the Update System section),
@@ -122,7 +122,6 @@ SerialPortTool/
 ├── Package.appxmanifest             # Kept for MSIX tooling; unused assets referenced (see note above)
 ├── SerialPortTool.csproj / .sln
 ├── version.json                     # Single source of truth: version + changelog
-├── mic-tota-tuning.json             # SAMPLE TuningProtocolDescriptor (not application config)
 ├── Assets/Images/                   # logo.ico (multi-size 16–256), logo.png (1024 master)
 ├── Themes/Tokens.xaml               # Design tokens + WinUI lightweight-styling overrides (Light/Dark/HC)
 ├── Themes/Controls.xaml             # Button family styles/templates (the only re-templated controls)
@@ -371,12 +370,21 @@ File.AppendAllText(path, entry.ToString());        // never: blocks the UI threa
 
 ## Tuning / TOTA
 
+**Hidden feature — off and invisible by default.** The whole feature is gated by one switch, `MainViewModel.IsTuningEnabled`, persisted as the settings key `TuningEnabled` (`int`, `0`/`1`, default `0`):
+
+- The only entry point is the 工具 → 启用 Tuning 功能 `ToggleMenuFlyoutItem`, whose `IsChecked` is two-way bound to `IsTuningEnabled`. There is no other way to reveal the panel.
+- The entire second toolbar row (`MainWindow.xaml`, the `Grid Grid.Row="1"` holding the TUNING label, the two file chips, the status text and the 重载 JSON / 开始监听 / 发送 Tuning buttons) binds its `Visibility` to `IsTuningEnabled` through `BoolToVisibilityConverter`. The parent grid row is `Height="Auto"`, so collapsing it leaves the toolbar single-line with no blank strip.
+- `RefreshTuningAvailability` puts `IsTuningEnabled` **first**: `CanUseTuning = IsTuningEnabled && IsTuningDescriptorValid && bin path non-empty && File.Exists(bin)`. Every send/watch entry point already guards on `CanUseTuning` (`SendTuningFileAsync`, `StartTuningWatchAsync`, `RestartTuningWatchAsync`), and `BuildTuningUnavailableMessage` reports "Tuning 功能未启用" before any "please pick a .bin" wording — so a hidden panel cannot be sent through, and the message is never misleading.
+- **Turning it off stops the watch but keeps the configuration.** `OnIsTuningEnabledChanged` calls `StopTuningWatch(persistState: false)`, which reuses `_suppressTuningWatchPersistence` so the saved `TuningIsWatching` preference survives. `TuningBinFilePath` / `TuningDescriptorFilePath` / `TuningBaselineHash` are never cleared. Re-ticking the menu item calls `ResumeTuningWatchIfPreferredAsync`, which resumes the watch only when the stored preference is `1` and `CanUseTuning` is true ("was watching" ⇒ resumes).
+- Startup reads the switch through `InitializeTuningEnabled` (suppression flag `_skipTuningEnabledPersistence`, same shape as the theme's `_skipThemePersistence`): no write-back, no status message, no resume. The resume in `InitializeAsync` is explicitly `IsTuningEnabled && shouldResumeTuningWatch && CanUseTuning`, so a disabled feature can never start a `FileSystemWatcher`.
+
+**Descriptor format.** There is deliberately **no sample descriptor file in the repository** — users supply their own JSON. The format is documented by `TuningProtocolService` + the notes below:
+
 - `TuningProtocolService` **builds** the frames for a `.bin` payload described by a JSON `TuningProtocolDescriptor`. It does not send them: `MainViewModel.SendTuningFileAsync` owns the broadcast (one send worker per port, the delay plan, the `IsPortOpen` pre-check and the baseline-hash bookkeeping).
-- `mic-tota-tuning.json` at the repo root is the **sample / reference** for that descriptor format (it is *not* application configuration, and it is not copied to the output).
-- The parser (`JsonOptions`) sets `PropertyNameCaseInsensitive`, `ReadCommentHandling = Skip` and `AllowTrailingCommas`, so the sample is annotated with `//` comments and the format is meant to be hand-edited. Unknown properties are ignored, so a commented-out alternative (like the `packetFrame.layout` block in the sample) is safe.
+- The parser (`JsonOptions`) sets `PropertyNameCaseInsensitive`, `ReadCommentHandling = Skip` and `AllowTrailingCommas`, so a descriptor may carry `//` comments and trailing commas and is meant to be hand-edited. Unknown properties are ignored, so a commented-out alternative (like a `packetFrame.layout` block) is safe.
 - Validation happens at **load** time (`ValidateDescriptor` → `ValidateField`) and covers `dspMessage.layout`, `tota.headerLayout`, `tota.packetFrame.layout` **and the object form of `tota.infoAreaFields`**. Expression evaluation is `checked`: a length arithmetic overflow and a checksum accumulation overflow both throw `TuningProtocolException` rather than producing a frame whose declared total does not match its bytes.
 - The main window's Tuning panel selects the `.bin` and the JSON descriptor; sends broadcast to **all open ports**, each on its own send worker. Auto-send waits for the `.bin` to stop changing (`WaitForStableTuningFileAsync` returns `false` after ~5 s and the send is skipped) — hashing a file mid-write stored a baseline for content that no longer existed, which then suppressed every later auto-send as "unchanged".
-- If you change the descriptor format, update `mic-tota-tuning.json`, this section, and the README feature blurb in the same change.
+- If you change the descriptor format or the switch, update this section and the README feature blurb in the same change.
 
 ---
 
@@ -600,4 +608,4 @@ Locally generated entries (TX, tuning summaries) enter the same queue through `A
 | `.github/workflows/release.yml` | CI | Release/publish process |
 | `installer/SerialPortTool.iss` + `scripts/build-installer.ps1` | Release tooling | Anything about installation, the `AppId`, install location, or the update hand-off |
 | `scripts/prune-publish-output.ps1` | Build / release tooling | The shipped language folders, `*.pdb`, or the publish-tree pruning step |
-| `mic-tota-tuning.json` | Users writing a tuning descriptor | The descriptor format — the sample and this section change together |
+| Tuning / TOTA: the section above + `ViewModels/MainViewModel.cs` (`IsTuningEnabled`) + `MainWindow.xaml` (menu item, panel `Visibility`) | Users writing a tuning descriptor / maintainers | The descriptor format, the hidden-feature switch, or the send/watch flow |
