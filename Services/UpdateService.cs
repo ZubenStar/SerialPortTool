@@ -21,7 +21,11 @@ namespace SerialPortTool.Services;
 /// <list type="bullet">
 /// <item>版本比较必须使用 <see cref="Version"/> 数值比较，禁止字符串比较（<c>1.8.10</c> 会被判成小于 <c>1.8.9</c>）。</item>
 /// <item>GitHub API 必须携带 <c>User-Agent</c>（否则 403）与 <c>Accept: application/vnd.github+json</c>。</item>
-/// <item>匿名调用限流 60 次/小时，因此静默检查必须走「上次检查时间」缓存，这是可靠性要求而非优化。</item>
+/// <item>静默检查<b>每次启动都联网</b>，不做「成功即 24 小时不查」的节流：那种节流会让刚发布的版本最长一天内
+/// 不被提示（v2.1.2 之前的行为，已被实测复现）。</item>
+/// <item>但<b>失败必须退避</b>（<see cref="SilentFailureBackoffHours"/> 小时，含被限流 403/429），
+/// 否则断网或限流时会随每次启动变成请求风暴——这是可靠性要求而非优化。</item>
+/// <item>手动检查（<c>manual: true</c>）始终立即联网，且不读写任何退避状态。</item>
 /// <item>静默检查失败必须静默（Debug 日志），不得在断网时产生错误风暴。</item>
 /// </list>
 /// </remarks>
@@ -33,10 +37,22 @@ public sealed class UpdateService : IUpdateService
     private const string LatestReleaseApiUrl =
         "https://api.github.com/repos/" + RepoOwner + "/" + RepoName + "/releases/latest";
 
-    /// <summary>静默检查的缓存时长（小时）。</summary>
-    private const int SilentCheckCacheHours = 24;
+    /// <summary>
+    /// 静默检查失败后的退避时长（小时）。成功检查不节流，只有失败才退避。
+    /// </summary>
+    private const int SilentFailureBackoffHours = 1;
 
-    private const string LastCheckKey = "Update.LastCheckUtc";
+    /// <summary>
+    /// 最近一次<b>失败</b>的静默检查时间戳；静默检查成功即清除。
+    /// </summary>
+    private const string SilentFailureUtcKey = "Update.SilentFailureUtc";
+
+    /// <summary>
+    /// v2.1.2 之前用于「成功即 24 小时不查」节流的键（记录最近一次成功检查时间）。
+    /// 现已废弃：新逻辑不读取它，只在首次使用时 best-effort 清理，避免残留失效键。
+    /// </summary>
+    private const string LegacyThrottleKey = "Update.LastCheckUtc";
+
     private const string SkippedVersionKey = "Update.SkippedVersion";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -52,9 +68,12 @@ public sealed class UpdateService : IUpdateService
     private readonly ILogger<UpdateService> _logger;
     private readonly ISettingsService _settingsService;
 
-    /// <summary>内存中缓存的「上次成功检查时间」，由 <see cref="IsRecentCheckAsync"/> 懒加载。</summary>
-    private DateTimeOffset? _lastCheckUtc;
-    private bool _lastCheckLoaded;
+    /// <summary>内存中缓存的「上次失败的静默检查时间」，由 <see cref="GetSilentFailureUtcAsync"/> 懒加载。</summary>
+    private DateTimeOffset? _silentFailureUtc;
+    private bool _silentFailureStateLoaded;
+
+    /// <summary>废弃节流键的清理只做一次，避免每次检查都去拿设置文件锁。</summary>
+    private bool _legacyThrottleKeyCleaned;
 
     private bool _disposed;
 
@@ -75,10 +94,11 @@ public sealed class UpdateService : IUpdateService
             return UpdateCheckResult.Failed("更新服务已释放");
         }
 
-        if (!manual &&
-            await IsRecentCheckAsync(SilentCheckCacheHours, cancellationToken).ConfigureAwait(false))
+        // 只有静默检查受失败退避约束：手动检查永远立即联网，且不读写退避状态。
+        if (!manual && await IsInFailureBackoffAsync(cancellationToken).ConfigureAwait(false))
         {
-            _logger.LogDebug("Skipped silent update check: last check was less than {Hours}h ago", SilentCheckCacheHours);
+            _logger.LogDebug("Skipped silent update check: the previous attempt failed less than {Hours}h ago",
+                SilentFailureBackoffHours);
             return UpdateCheckResult.Skipped();
         }
 
@@ -90,9 +110,7 @@ public sealed class UpdateService : IUpdateService
 
             if (!response.IsSuccessStatusCode)
             {
-                var reason = DescribeHttpFailure(response);
-                LogFailure(manual, null, reason);
-                return UpdateCheckResult.Failed(reason);
+                return await FailAsync(manual, null, DescribeHttpFailure(response)).ConfigureAwait(false);
             }
 
             var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -101,21 +119,17 @@ public sealed class UpdateService : IUpdateService
             var latestVersionText = NormalizeVersionText(release?.TagName);
             if (string.IsNullOrEmpty(latestVersionText))
             {
-                const string emptyReason = "更新信息缺少版本号";
-                LogFailure(manual, null, emptyReason);
-                return UpdateCheckResult.Failed(emptyReason);
+                return await FailAsync(manual, null, "更新信息缺少版本号").ConfigureAwait(false);
             }
 
             if (!Version.TryParse(latestVersionText, out _))
             {
                 // 无法识别的版本号（例如预发布后缀）不能当作「已是最新」，否则会静默漏掉更新。
-                var badVersionReason = $"无法识别的版本号: {latestVersionText}";
-                LogFailure(manual, null, badVersionReason);
-                return UpdateCheckResult.Failed(badVersionReason);
+                return await FailAsync(manual, null, $"无法识别的版本号: {latestVersionText}").ConfigureAwait(false);
             }
 
-            // 检查成功才刷新「上次检查时间」，失败时保留旧值以便下次重试。
-            await MarkCheckedAsync().ConfigureAwait(false);
+            // 这次检查确实联网并拿到了可信结果 → 清除失败退避标记（手动路径不写盘）。
+            await ClearSilentFailureMarkAsync(manual).ConfigureAwait(false);
 
             if (!IsNewerThanCurrent(latestVersionText))
             {
@@ -144,27 +158,19 @@ public sealed class UpdateService : IUpdateService
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            const string timeoutReason = "网络请求超时，请检查网络连接";
-            LogFailure(manual, null, timeoutReason);
-            return UpdateCheckResult.Failed(timeoutReason);
+            return await FailAsync(manual, null, "网络请求超时，请检查网络连接").ConfigureAwait(false);
         }
         catch (HttpRequestException ex)
         {
-            const string networkReason = "无法连接到更新服务器，请检查网络连接";
-            LogFailure(manual, ex, networkReason);
-            return UpdateCheckResult.Failed(networkReason);
+            return await FailAsync(manual, ex, "无法连接到更新服务器，请检查网络连接").ConfigureAwait(false);
         }
         catch (JsonException ex)
         {
-            const string parseReason = "更新信息解析失败";
-            LogFailure(manual, ex, parseReason);
-            return UpdateCheckResult.Failed(parseReason);
+            return await FailAsync(manual, ex, "更新信息解析失败").ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            const string unknownReason = "检查更新时发生未知错误";
-            LogFailure(manual, ex, unknownReason);
-            return UpdateCheckResult.Failed(unknownReason);
+            return await FailAsync(manual, ex, "检查更新时发生未知错误").ConfigureAwait(false);
         }
     }
 
@@ -178,20 +184,6 @@ public sealed class UpdateService : IUpdateService
 
         _logger.LogInformation("User skipped update version {Version}", version);
         return _settingsService.SaveSettingAsync(SkippedVersionKey, version);
-    }
-
-    /// <inheritdoc />
-    public async Task<bool> IsRecentCheckAsync(int withinHours, CancellationToken cancellationToken = default)
-    {
-        if (withinHours <= 0)
-        {
-            return false;
-        }
-
-        await EnsureLastCheckLoadedAsync(cancellationToken).ConfigureAwait(false);
-
-        var lastCheck = _lastCheckUtc;
-        return lastCheck != null && DateTimeOffset.UtcNow - lastCheck.Value < TimeSpan.FromHours(withinHours);
     }
 
     /// <inheritdoc />
@@ -213,47 +205,103 @@ public sealed class UpdateService : IUpdateService
         return client;
     }
 
-    private Task MarkCheckedAsync()
+    /// <summary>
+    /// 静默检查是否处于失败退避窗口内（失败后 <see cref="SilentFailureBackoffHours"/> 小时内不再联网）。
+    /// </summary>
+    private async Task<bool> IsInFailureBackoffAsync(CancellationToken cancellationToken)
     {
-        var now = DateTimeOffset.UtcNow;
-        _lastCheckUtc = now;
-        _lastCheckLoaded = true;
-        return _settingsService.SaveSettingAsync(LastCheckKey, now.ToString("O", CultureInfo.InvariantCulture));
+        var lastFailure = await GetSilentFailureUtcAsync(cancellationToken).ConfigureAwait(false);
+        return lastFailure != null &&
+               DateTimeOffset.UtcNow - lastFailure.Value < TimeSpan.FromHours(SilentFailureBackoffHours);
     }
 
     /// <summary>
-    /// 懒加载「上次成功检查时间」（每个会话只读一次设置）。
+    /// 懒加载「上次失败的静默检查时间」（每个会话只读一次设置）。
     /// </summary>
-    private async Task EnsureLastCheckLoadedAsync(CancellationToken cancellationToken)
+    /// <remarks>
+    /// 时间戳缺失或无法解析时按「没有退避」处理（立即联网），而不是误判为「已被退避」。
+    /// </remarks>
+    private async Task<DateTimeOffset?> GetSilentFailureUtcAsync(CancellationToken cancellationToken)
     {
-        if (_lastCheckLoaded)
+        if (!_silentFailureStateLoaded)
+        {
+            try
+            {
+                var raw = await _settingsService
+                    .LoadSettingAsync(SilentFailureUtcKey, string.Empty)
+                    .ConfigureAwait(false);
+
+                if (!string.IsNullOrWhiteSpace(raw) &&
+                    DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
+                {
+                    _silentFailureUtc = parsed;
+                }
+            }
+            catch (Exception ex)
+            {
+                // 读取失败不应阻断检查流程（不缓存 = 每次都会联网，但不会误判为「已退避」）。
+                _logger.LogDebug(ex, "Failed to read the silent update check failure timestamp");
+            }
+            finally
+            {
+                _silentFailureStateLoaded = true;
+            }
+        }
+
+        await RemoveLegacyThrottleKeyAsync().ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return _silentFailureUtc;
+    }
+
+    /// <summary>
+    /// 静默检查成功后清除失败退避标记。
+    /// </summary>
+    /// <remarks>
+    /// 只有内存中确实存在标记时才写盘：设置写入是整文件 JSON 重写，不能每次启动都无谓重写一遍。
+    /// 手动检查（<paramref name="manual"/>）不读写任何退避状态。
+    /// </remarks>
+    private async Task ClearSilentFailureMarkAsync(bool manual)
+    {
+        if (manual || _silentFailureUtc == null)
         {
             return;
         }
 
+        _silentFailureUtc = null;
+        _silentFailureStateLoaded = true;
+
         try
         {
-            var raw = await _settingsService
-                .LoadSettingAsync(LastCheckKey, string.Empty)
-                .ConfigureAwait(false);
-
-            if (!string.IsNullOrWhiteSpace(raw) &&
-                DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
-            {
-                _lastCheckUtc = parsed;
-            }
+            await _settingsService.DeleteSettingAsync(SilentFailureUtcKey).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            // 缓存读取失败不应阻断检查流程（不缓存 = 每次都会联网，但不会误判为「已检查」）。
-            _logger.LogDebug(ex, "Failed to read last update check timestamp");
+            // 清不掉只影响下一个进程：最坏结果是被多退避一个窗口。
+            _logger.LogDebug(ex, "Failed to clear the silent update check failure timestamp");
         }
-        finally
+    }
+
+    /// <summary>
+    /// v2.1.2 之前用 <c>Update.LastCheckUtc</c>（最近一次成功检查时间）做 24 小时节流，该键现已废弃。
+    /// 首次使用时 best-effort 删除一次；删不掉不影响任何行为（新逻辑不再读取它）。
+    /// </summary>
+    private async Task RemoveLegacyThrottleKeyAsync()
+    {
+        if (_legacyThrottleKeyCleaned)
         {
-            _lastCheckLoaded = true;
+            return;
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
+        _legacyThrottleKeyCleaned = true;
+
+        try
+        {
+            await _settingsService.DeleteSettingAsync(LegacyThrottleKey).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to remove the legacy update throttle timestamp");
+        }
     }
 
     private static UpdateReleaseInfo BuildReleaseInfo(GitHubRelease release, string latestVersionText)
@@ -338,17 +386,41 @@ public sealed class UpdateService : IUpdateService
         return candidate > current;
     }
 
-    private void LogFailure(bool manual, Exception? exception, string reason)
+    /// <summary>
+    /// 统一的失败出口：记日志（手动 = Warning，静默 = Debug），并且只在静默路径登记失败退避。
+    /// </summary>
+    /// <remarks>
+    /// 所有失败分支（HTTP 错误、超时、网络异常、解析失败、未知异常）都必须走这里，否则失败退避会漏：
+    /// 例如被 GitHub 限流（403/429）后仍随每次启动继续请求，就会形成请求风暴。
+    /// </remarks>
+    private async Task<UpdateCheckResult> FailAsync(bool manual, Exception? exception, string reason)
     {
         if (manual)
         {
             _logger.LogWarning(exception, "Manual update check failed: {Reason}", reason);
+            return UpdateCheckResult.Failed(reason);
         }
-        else
+
+        // 静默检查失败只记 Debug，避免断网时刷屏；不得写入完整响应体。
+        _logger.LogDebug(exception, "Silent update check failed: {Reason}", reason);
+
+        var now = DateTimeOffset.UtcNow;
+        _silentFailureUtc = now;
+        _silentFailureStateLoaded = true;
+
+        try
         {
-            // 静默检查失败只记 Debug，避免断网时刷屏；不得写入完整响应体。
-            _logger.LogDebug(exception, "Silent update check failed: {Reason}", reason);
+            await _settingsService
+                .SaveSettingAsync(SilentFailureUtcKey, now.ToString("O", CultureInfo.InvariantCulture))
+                .ConfigureAwait(false);
         }
+        catch (Exception saveEx)
+        {
+            // 退避时间戳写不进去不能改变本次结果（最坏结果只是下次启动会立即重试）。
+            _logger.LogDebug(saveEx, "Failed to persist the silent update check failure timestamp");
+        }
+
+        return UpdateCheckResult.Failed(reason);
     }
 }
 

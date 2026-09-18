@@ -1,7 +1,18 @@
 {
-    "version": "2.1.1",
+    "version": "2.1.2",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-18",
+            "version": "2.1.2",
+            "changes": [
+                "Update checks are no longer throttled by a successful check: every launch now checks GitHub Releases, so a version published minutes after the previous check is reported immediately instead of staying invisible for up to 24 hours",
+                "Only failed checks are throttled now: a failure (offline, timeout, rate limit, unusable response) backs off for one hour, which keeps the anonymous API limit safe without ever hiding a new release",
+                "The app also re-checks every 24 hours while it stays open, so a long-running session no longer has to be restarted to learn about a new version",
+                "Help → Check for updates always hits the network immediately and no longer changes the throttle state, so a manual check cannot push the next silent check back by a day",
+                "The obsolete Update.LastCheckUtc throttle timestamp is cleaned up on the first launch of this build"
+            ]
+        },
         {
             "date": "2026-09-18",
             "version": "2.1.1",

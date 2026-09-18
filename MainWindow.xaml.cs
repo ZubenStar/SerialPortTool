@@ -64,9 +64,16 @@ public sealed partial class MainWindow : Window
     // 启动静默检查的延迟，避免与窗口初始化 / 串口扫描抢资源
     private static readonly TimeSpan SilentUpdateCheckDelay = TimeSpan.FromSeconds(5);
 
+    // 运行期补查周期：程序长时间开着时也能发现新版本（启动检查只在启动那一刻联网）
+    private static readonly TimeSpan RuntimeUpdateCheckInterval = TimeSpan.FromHours(24);
+
     // 保证同一时刻只有一个更新相关对话框（WinUI 3 不允许并发 ContentDialog）
     private bool _isUpdateDialogOpen;
     private bool _silentUpdateCheckStarted;
+
+    // 运行期补查定时器；随窗口关闭停止
+    private DispatcherQueueTimer? _runtimeUpdateCheckTimer;
+    private bool _silentUpdateCheckRunning;
 
     public MainWindow()
     {
@@ -153,6 +160,9 @@ public sealed partial class MainWindow : Window
 
         // 窗口首次激活后再启动静默更新检查（此时 Content.XamlRoot 才可用）
         Activated += OnFirstActivated;
+
+        // 运行期补查定时器随窗口关闭一并停止，避免窗口销毁后仍去弹对话框
+        Closed += (_, _) => StopRuntimeUpdateCheckTimer();
 
         // Debug: Monitor search history changes
         ViewModel.RecentSearchTexts.CollectionChanged += (s, e) =>
@@ -1127,17 +1137,74 @@ public sealed partial class MainWindow : Window
         _silentUpdateCheckStarted = true;
         Activated -= OnFirstActivated;
 
-        _ = RunSilentUpdateCheckAsync();
+        StartRuntimeUpdateCheckTimer();
+        _ = RunSilentUpdateCheckAsync(isStartup: true);
     }
 
     /// <summary>
-    /// 启动后的静默检查：网络失败静默、命中「跳过此版本」静默，仅在有新版本时提示。
+    /// 开启运行期补查：窗口存活期间每 <see cref="RuntimeUpdateCheckInterval"/> 静默检查一次。
     /// </summary>
-    private async Task RunSilentUpdateCheckAsync()
+    /// <remarks>
+    /// 必须用 <see cref="DispatcherQueueTimer"/> 而不是后台定时器：命中新版本时要在 UI 线程弹 ContentDialog，
+    /// 且要与手动检查共用 <c>_isUpdateDialogOpen</c> 这一个并发守卫。窗口关闭时显式停止（构造函数里的
+    /// <c>Closed</c> 订阅），所以既不会拖慢退出，也不会在窗口销毁后再拉起对话框。
+    /// 系统休眠期间定时器不推进，唤醒后最坏延后一个周期，这是已知且可接受的限制。
+    /// </remarks>
+    private void StartRuntimeUpdateCheckTimer()
     {
+        if (_runtimeUpdateCheckTimer != null)
+        {
+            return;
+        }
+
+        var timer = DispatcherQueue.CreateTimer();
+        timer.Interval = RuntimeUpdateCheckInterval;
+        timer.IsRepeating = true;
+        timer.Tick += OnRuntimeUpdateCheckTick;
+        _runtimeUpdateCheckTimer = timer;
+        timer.Start();
+    }
+
+    private void StopRuntimeUpdateCheckTimer()
+    {
+        var timer = _runtimeUpdateCheckTimer;
+        if (timer == null)
+        {
+            return;
+        }
+
+        _runtimeUpdateCheckTimer = null;
+        timer.Stop();
+        timer.Tick -= OnRuntimeUpdateCheckTick;
+    }
+
+    private void OnRuntimeUpdateCheckTick(DispatcherQueueTimer sender, object args)
+    {
+        _ = RunSilentUpdateCheckAsync(isStartup: false);
+    }
+
+    /// <summary>
+    /// 静默检查：网络失败静默、命中「跳过此版本」或处于失败退避窗口时静默，仅在有新版本时提示。
+    /// </summary>
+    /// <param name="isStartup">
+    /// <c>true</c>：启动检查，先延迟 <see cref="SilentUpdateCheckDelay"/> 让窗口初始化 / 串口扫描先跑完；
+    /// <c>false</c>：运行期补查，立即执行。
+    /// </param>
+    private async Task RunSilentUpdateCheckAsync(bool isStartup)
+    {
+        if (_silentUpdateCheckRunning)
+        {
+            // 上一次静默检查尚未结束（例如启动检查的 5s 延迟期间定时器就到点了）：跳过，不要并发发第二次请求。
+            return;
+        }
+
+        _silentUpdateCheckRunning = true;
         try
         {
-            await Task.Delay(SilentUpdateCheckDelay);
+            if (isStartup)
+            {
+                await Task.Delay(SilentUpdateCheckDelay);
+            }
 
             var result = await _updateService.CheckAsync(manual: false);
             if (result.Status != UpdateCheckStatus.UpdateAvailable || result.Info == null)
@@ -1151,6 +1218,10 @@ public sealed partial class MainWindow : Window
         {
             // 静默路径绝不向用户弹错。
             System.Diagnostics.Debug.WriteLine($"Silent update check failed: {ex.Message}");
+        }
+        finally
+        {
+            _silentUpdateCheckRunning = false;
         }
     }
 
