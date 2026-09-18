@@ -25,9 +25,6 @@ public class BaudRateDetectorService : IBaudRateDetectorService
         6000000, 8000000, 12000000
     };
 
-    // 用于检测有效数据的正则表达式
-    private readonly Regex _validDataRegex = new(@"^[\x20-\x7E\r\n\t]*$", RegexOptions.Compiled);
-
     // 常见协议模式（CountValidDataBytes 用来给可读数据加分）
     private readonly Regex _commonPatternRegex = new(@"^(AT|OK|ERROR|READY|[\d\w\s.,!?@#$%^&*()_+=\-\[\]{};:'""<>\\/|`~\r\n\t])*$", RegexOptions.Compiled | RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
     
@@ -42,7 +39,10 @@ public class BaudRateDetectorService : IBaudRateDetectorService
         _logger = logger;
     }
 
-    public async Task<List<BaudRateDetectionResult>> DetectOptimalBaudRateAsync(string portName, int testDurationMs = 2000)
+    public async Task<List<BaudRateDetectionResult>> DetectOptimalBaudRateAsync(
+        string portName,
+        int testDurationMs = 2000,
+        CancellationToken cancellationToken = default)
     {
         var results = new List<BaudRateDetectionResult>();
         
@@ -50,13 +50,22 @@ public class BaudRateDetectorService : IBaudRateDetectorService
 
         foreach (var baudRate in _commonBaudRates)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             try
             {
-                var result = await TestBaudRateAsync(portName, baudRate, testDurationMs);
+                var result = await TestBaudRateAsync(portName, baudRate, testDurationMs, cancellationToken);
                 results.Add(result);
                 
                 _logger.LogDebug("Tested baud rate {BaudRate}: Score={Score}, Valid={Valid}/{Total}",
                     baudRate, result.ConfidenceScore, result.ValidDataCount, result.TotalDataCount);
+            }
+            catch (OperationCanceledException)
+            {
+                // Never swallow cancellation into a "score 0" result — the caller is shutting down and
+                // must be able to tell a cancelled scan apart from a genuinely bad baud rate.
+                _logger.LogInformation("Baud rate detection cancelled for port {PortName}", portName);
+                throw;
             }
             catch (Exception ex)
             {
@@ -73,7 +82,7 @@ public class BaudRateDetectorService : IBaudRateDetectorService
             }
             
             // 在测试之间添加短暂延迟，确保串口资源释放
-            await Task.Delay(200);
+            await Task.Delay(200, cancellationToken);
         }
 
         // 按置信度分数排序
@@ -85,7 +94,11 @@ public class BaudRateDetectorService : IBaudRateDetectorService
         return sortedResults;
     }
 
-    public async Task<BaudRateValidationResult> ValidateBaudRateAsync(string portName, int baudRate, int validationDurationMs = 3000)
+    public async Task<BaudRateValidationResult> ValidateBaudRateAsync(
+        string portName,
+        int baudRate,
+        int validationDurationMs = 3000,
+        CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("Validating baud rate {BaudRate} on port {PortName}", baudRate, portName);
         
@@ -96,7 +109,7 @@ public class BaudRateDetectorService : IBaudRateDetectorService
 
         try
         {
-            var detectionResult = await TestBaudRateAsync(portName, baudRate, validationDurationMs);
+            var detectionResult = await TestBaudRateAsync(portName, baudRate, validationDurationMs, cancellationToken);
             
             result.IsValid = detectionResult.ConfidenceScore > 0.5;
             result.DataQualityScore = detectionResult.ConfidenceScore;
@@ -111,8 +124,9 @@ public class BaudRateDetectorService : IBaudRateDetectorService
             {
                 result.Recommendation = $"波特率 {baudRate} 可能不正确，数据质量评分: {result.DataQualityScore:F2}";
                 
-                // 建议其他可能的波特率
-                var suggestions = await DetectOptimalBaudRateAsync(portName, 1000);
+                // 建议其他可能的波特率。这一轮是完整的 18 个波特率扫描，必须可取消 —— 否则一次
+                // 失败的校验会把调用方拖住额外约 20 秒，关窗也退不出去。
+                var suggestions = await DetectOptimalBaudRateAsync(portName, 1000, cancellationToken);
                 result.SuggestedBaudRates = suggestions
                     .Where(r => r.ConfidenceScore > 0.3 && r.BaudRate != baudRate)
                     .Take(3)
@@ -122,6 +136,11 @@ public class BaudRateDetectorService : IBaudRateDetectorService
 
             _logger.LogInformation("Baud rate validation completed for port {PortName}. Valid: {IsValid}, Score: {Score}",
                 portName, result.IsValid, result.DataQualityScore);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Baud rate validation cancelled for port {PortName}", portName);
+            throw;
         }
         catch (Exception ex)
         {
@@ -138,7 +157,11 @@ public class BaudRateDetectorService : IBaudRateDetectorService
         return new List<int>(_commonBaudRates);
     }
 
-    private async Task<BaudRateDetectionResult> TestBaudRateAsync(string portName, int baudRate, int testDurationMs)
+    private async Task<BaudRateDetectionResult> TestBaudRateAsync(
+        string portName,
+        int baudRate,
+        int testDurationMs,
+        CancellationToken cancellationToken)
     {
         var result = new BaudRateDetectionResult
         {
@@ -152,8 +175,17 @@ public class BaudRateDetectorService : IBaudRateDetectorService
             Handshake = Handshake.None
         };
 
+        // The DataReceived callback runs on the serial driver's worker thread; the loop below reads
+        // the accumulated bytes on this thread. The previous bare List<byte> was written and read
+        // concurrently — a torn/grown-mid-enumeration List is how that ends in an IndexOutOfRange or
+        // a silently short count.
         var receivedData = new List<byte>();
-        var dataReceivedEvent = new ManualResetEvent(false);
+        var receivedDataLock = new object();
+
+        // SemaphoreSlim + await instead of ManualResetEvent + WaitOne(100): the blocking wait parked
+        // a thread-pool thread for the whole scan (~40 s across the rate list), could not be
+        // cancelled, and the event was never disposed.
+        using var dataReceivedSignal = new SemaphoreSlim(0, 1);
 
         serialPort.DataReceived += (sender, e) =>
         {
@@ -163,8 +195,12 @@ public class BaudRateDetectorService : IBaudRateDetectorService
                 {
                     var buffer = new byte[serialPort.BytesToRead];
                     var bytesRead = serialPort.Read(buffer, 0, buffer.Length);
-                    receivedData.AddRange(buffer.Take(bytesRead));
-                    dataReceivedEvent.Set();
+                    lock (receivedDataLock)
+                    {
+                        receivedData.AddRange(buffer.Take(bytesRead));
+                    }
+
+                    TrySignal(dataReceivedSignal);
                 }
             }
             catch (Exception ex)
@@ -178,18 +214,34 @@ public class BaudRateDetectorService : IBaudRateDetectorService
             serialPort.Open();
             
             // 等待数据接收
-            var startTime = DateTime.Now;
-            while ((DateTime.Now - startTime).TotalMilliseconds < testDurationMs)
+            var deadline = Environment.TickCount64 + testDurationMs;
+            while (true)
             {
-                dataReceivedEvent.WaitOne(100);
-                dataReceivedEvent.Reset();
+                var remaining = deadline - Environment.TickCount64;
+                if (remaining <= 0)
+                {
+                    break;
+                }
+
+                // Returns false on timeout; either way the loop re-checks the deadline. Cancellation
+                // throws out of here and is closed down by the finally below.
+                await dataReceivedSignal.WaitAsync(
+                    (int)Math.Min(100, remaining), cancellationToken);
             }
 
-            result.TotalDataCount = receivedData.Count;
+            int totalDataCount;
+            byte[] snapshot;
+            lock (receivedDataLock)
+            {
+                totalDataCount = receivedData.Count;
+                snapshot = receivedData.ToArray();
+            }
+
+            result.TotalDataCount = totalDataCount;
             
             if (result.TotalDataCount >= MinDataBytesForValidation)
             {
-                result.ValidDataCount = CountValidDataBytes(receivedData.ToArray());
+                result.ValidDataCount = CountValidDataBytes(snapshot);
                 result.ConfidenceScore = (double)result.ValidDataCount / result.TotalDataCount;
                 
                 if (result.ConfidenceScore >= PrintableCharThreshold)
@@ -220,6 +272,26 @@ public class BaudRateDetectorService : IBaudRateDetectorService
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Signals <paramref name="signal"/>, tolerating an already-signalled semaphore.
+    /// </summary>
+    /// <remarks>
+    /// The semaphore is capped at 1 so bursts of received chunks do not queue up counts nobody reads;
+    /// <see cref="SemaphoreSlim.Release()"/> throws when that cap is already reached, which is a
+    /// completely normal outcome here (data keeps arriving while the loop is between waits).
+    /// </remarks>
+    private static void TrySignal(SemaphoreSlim signal)
+    {
+        try
+        {
+            signal.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+            // Already signalled — nothing to do.
+        }
     }
 
     private int CountValidDataBytes(byte[] data)

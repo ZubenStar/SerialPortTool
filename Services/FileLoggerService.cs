@@ -20,6 +20,15 @@ public class FileLoggerService : IFileLoggerService, IDisposable
     private readonly ConcurrentDictionary<string, LoggerInstance> _loggers = new();
     private readonly string _logDirectory;
 
+    // Serializes the check-and-create in StartLoggingAsync against itself and against
+    // StopLoggingAsync. A ConcurrentDictionary alone cannot close that window: `ContainsKey` followed
+    // by `_loggers[port] = instance` lets two concurrent starts both build an instance, and the loser
+    // was silently dropped — leaking its 64 KB StreamWriter (an open file handle) and its 100 ms
+    // flush timer forever, plus leaving a stray half-written log file on disk.
+    //
+    // Start/Stop are per-port lifecycle calls, not hot paths, so a single service-wide lock is fine.
+    private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+
     public FileLoggerService(ILogger<FileLoggerService> logger)
     {
         _logger = logger;
@@ -34,16 +43,17 @@ public class FileLoggerService : IFileLoggerService, IDisposable
         _logger.LogInformation("FileLoggerService initialized. Log directory: {LogDirectory}", _logDirectory);
     }
 
-    public Task StartLoggingAsync(string portName)
+    public async Task StartLoggingAsync(string portName)
     {
-        if (_loggers.ContainsKey(portName))
-        {
-            _logger.LogWarning("Logging already started for port {PortName}", portName);
-            return Task.CompletedTask;
-        }
-
+        await _lifecycleLock.WaitAsync();
         try
         {
+            if (_loggers.ContainsKey(portName))
+            {
+                _logger.LogWarning("Logging already started for port {PortName}", portName);
+                return;
+            }
+
             var loggerInstance = new LoggerInstance(portName, _logDirectory, _logger);
             _loggers[portName] = loggerInstance;
             _logger.LogInformation("Started logging for port {PortName}", portName);
@@ -53,16 +63,26 @@ public class FileLoggerService : IFileLoggerService, IDisposable
             _logger.LogError(ex, "Error starting logging for port {PortName}", portName);
             throw;
         }
-
-        return Task.CompletedTask;
+        finally
+        {
+            _lifecycleLock.Release();
+        }
     }
 
     public async Task StopLoggingAsync(string portName)
     {
-        if (_loggers.TryRemove(portName, out var loggerInstance))
+        await _lifecycleLock.WaitAsync();
+        try
         {
-            await loggerInstance.DisposeAsync();
-            _logger.LogInformation("Stopped logging for port {PortName}", portName);
+            if (_loggers.TryRemove(portName, out var loggerInstance))
+            {
+                await loggerInstance.DisposeAsync();
+                _logger.LogInformation("Stopped logging for port {PortName}", portName);
+            }
+        }
+        finally
+        {
+            _lifecycleLock.Release();
         }
     }
 
@@ -99,21 +119,30 @@ public class FileLoggerService : IFileLoggerService, IDisposable
 
     public void Dispose()
     {
-        foreach (var logger in _loggers.Values)
+        foreach (var portName in _loggers.Keys.ToList())
         {
+            if (!_loggers.TryRemove(portName, out var logger))
+            {
+                continue;
+            }
+
             try
             {
+                // Bounded: DisposeAsync's own awaits are on the writer/timer only, and a wedged disk
+                // must not hold up shutdown. A timeout here abandons the flush, which is logged.
                 if (!logger.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2)))
                 {
-                    _logger.LogWarning("FileLogger dispose timed out");
+                    _logger.LogWarning("FileLogger dispose timed out for port {PortName}", portName);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Error disposing file logger");
+                _logger.LogWarning(ex, "Error disposing file logger for port {PortName}", portName);
             }
         }
+
         _loggers.Clear();
+        _lifecycleLock.Dispose();
     }
 
     /// <summary>
@@ -131,6 +160,12 @@ public class FileLoggerService : IFileLoggerService, IDisposable
         private const int FlushIntervalMs = 100;
         private int _queuedCount = 0;
         private volatile bool _disposed;
+
+        // Idempotent teardown: a second DisposeAsync waits for the first instead of running the
+        // writer/timer disposal a second time (which threw ObjectDisposedException).
+        private int _disposeState;
+        private readonly TaskCompletionSource _disposeCompleted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public string LogFilePath { get; }
 
@@ -253,37 +288,53 @@ public class FileLoggerService : IFileLoggerService, IDisposable
 
         public async ValueTask DisposeAsync()
         {
-            // Stop timer first so no new fire-and-forget flushes get scheduled.
-            await _flushTimer.DisposeAsync();
+            if (Interlocked.Exchange(ref _disposeState, 1) == 1)
+            {
+                // Someone else is already tearing this instance down (a lost StartLogging race, or a
+                // Stop racing the service Dispose). Wait for that one instead of re-running the
+                // disposal against an already-disposed writer and lock.
+                await _disposeCompleted.Task;
+                return;
+            }
 
-            // Any flush that was already in flight now bails out at its _disposed check
-            // instead of racing the writer disposal below (the old code could hit
-            // ObjectDisposedException on the StreamWriter and lose the tail of the log).
-            _disposed = true;
-
-            // Final drain happens inside the same lock that guards the writer, so it cannot
-            // interleave with a straggler flush either.
-            await _writeLock.WaitAsync();
             try
             {
-                await DrainQueueAsync();
+                // Stop timer first so no new fire-and-forget flushes get scheduled.
+                await _flushTimer.DisposeAsync();
 
-                // Write footer
-                await _writer.WriteLineAsync();
-                await _writer.WriteLineAsync($"========================");
-                await _writer.WriteLineAsync($"Stopped: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-                await _writer.WriteLineAsync($"========================");
-                await _writer.FlushAsync();
+                // Any flush that was already in flight now bails out at its _disposed check
+                // instead of racing the writer disposal below (the old code could hit
+                // ObjectDisposedException on the StreamWriter and lose the tail of the log).
+                _disposed = true;
 
-                _writer.Dispose();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error disposing logger instance");
+                // Final drain happens inside the same lock that guards the writer, so it cannot
+                // interleave with a straggler flush either.
+                await _writeLock.WaitAsync();
+                try
+                {
+                    await DrainQueueAsync();
+
+                    // Write footer
+                    await _writer.WriteLineAsync();
+                    await _writer.WriteLineAsync($"========================");
+                    await _writer.WriteLineAsync($"Stopped: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                    await _writer.WriteLineAsync($"========================");
+                    await _writer.FlushAsync();
+
+                    _writer.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error disposing logger instance");
+                }
+                finally
+                {
+                    _writeLock.Dispose();
+                }
             }
             finally
             {
-                _writeLock.Dispose();
+                _disposeCompleted.TrySetResult();
             }
         }
     }

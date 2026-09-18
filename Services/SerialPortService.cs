@@ -16,27 +16,31 @@ namespace SerialPortTool.Services;
 /// <summary>
 /// 串口服务实现
 /// </summary>
-public class SerialPortService : ISerialPortService, IDisposable
+public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposable
 {
     private readonly ILogger<SerialPortService> _logger;
     private readonly ConcurrentDictionary<string, PortInstance> _ports = new();
     private readonly ConcurrentDictionary<string, DateTime> _lastReconnectAttempt = new();
     private readonly IDataValidationService? _dataValidationService;
-    private readonly IBaudRateDetectorService? _baudRateDetectorService;
     private static readonly TimeSpan ReconnectCooldown = TimeSpan.FromSeconds(3);
+
+    /// <summary>Set once, from the teardown path. Guards double teardown, not new opens.</summary>
+    private volatile bool _disposed;
 
     public event EventHandler<DataReceivedEventArgs>? DataReceived;
     public event EventHandler<PortStateChangedEventArgs>? PortStateChanged;
     public event EventHandler<ErrorEventArgs>? ErrorOccurred;
     public event EventHandler<BaudRateDetectionRequestedEventArgs>? BaudRateDetectionRequested;
 
+    // The old constructor also took an IBaudRateDetectorService and threaded it down to every
+    // PortInstance, where it was stored and never read — baud-rate detection is driven from
+    // MainViewModel, which owns the "close the port, probe, reopen" flow. The parameter is gone so the
+    // dependency is no longer implied.
     public SerialPortService(ILogger<SerialPortService> logger,
-        IDataValidationService? dataValidationService = null,
-        IBaudRateDetectorService? baudRateDetectorService = null)
+        IDataValidationService? dataValidationService = null)
     {
         _logger = logger;
         _dataValidationService = dataValidationService;
-        _baudRateDetectorService = baudRateDetectorService;
     }
 
     public Task<IEnumerable<string>> GetAvailablePortsAsync()
@@ -98,7 +102,7 @@ public class SerialPortService : ISerialPortService, IDisposable
                 _logger.LogInformation("Port {PortName} became available after waiting for handle release", config.PortName);
             }
 
-            var portInstance = new PortInstance(config, _logger, _dataValidationService, _baudRateDetectorService, this);
+            var portInstance = new PortInstance(config, _logger, _dataValidationService, this);
             
             // Subscribe to events
             portInstance.DataReceived += OnPortDataReceived;
@@ -129,13 +133,36 @@ public class SerialPortService : ISerialPortService, IDisposable
             
             if (opened)
             {
-                _ports[config.PortName] = portInstance;
+                // TryAdd, not the indexer: the ContainsKey check at the top of this method is separated
+                // from here by several awaits (availability probe, up to 3 open attempts with 500 ms
+                // backoff), so two concurrent open calls for the same port can both get this far. With
+                // the indexer the loser's instance was overwritten and dropped — an open SerialPort
+                // that nothing ever disposes. The loser is closed here instead.
+                if (!_ports.TryAdd(config.PortName, portInstance))
+                {
+                    _logger.LogWarning(
+                        "Port {PortName} was already registered by a concurrent open; discarding the duplicate instance",
+                        config.PortName);
+                    try
+                    {
+                        portInstance.BeginShutdown();
+                        portInstance.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error disposing the duplicate instance for port {PortName}", config.PortName);
+                    }
+
+                    return false;
+                }
+
                 RaisePortStateChanged(config.PortName, ConnectionState.Disconnected, ConnectionState.Connected);
                 _logger.LogInformation("Port {PortName} opened successfully", config.PortName);
                 return true;
             }
             else
             {
+                portInstance.BeginShutdown();
                 portInstance.Dispose();
                 _logger.LogError("Failed to open port {PortName} after {MaxRetries} attempts",
                     config.PortName, maxRetries);
@@ -374,21 +401,89 @@ public class SerialPortService : ISerialPortService, IDisposable
         });
     }
 
+    /// <summary>
+    /// Synchronous, best-effort teardown.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The real path is <see cref="DisposeAsync"/>: the container is torn down through
+    /// <c>ServiceProvider.DisposeAsync()</c> in <c>App.OnWindowClosed</c>, which prefers
+    /// <see cref="IAsyncDisposable"/>. This method exists so a synchronously disposed container still
+    /// closes the ports instead of leaking every COM handle.
+    /// </para>
+    /// <para>
+    /// No <c>Task.Run(...).Wait(timeout)</c> here on purpose. <c>SerialPort.Close()</c> is already a
+    /// synchronous call, so wrapping it in a task we then wait on with a timeout bounds nothing: the
+    /// wait returns <c>false</c> and the task keeps running, so the port ends up being disposed while
+    /// its own <c>Close()</c> is still in flight. That is where the "ports leak / the handle is used
+    /// after close" class of bugs came from.
+    /// </para>
+    /// </remarks>
     public void Dispose()
     {
-        // Use timeout to prevent hanging on close
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+
+        foreach (var portName in _ports.Keys.ToList())
+        {
+            DisposePortInstance(portName, "Dispose");
+        }
+
+        _ports.Clear();
+    }
+
+    /// <summary>
+    /// Closes every port asynchronously, then disposes any instance that could not be closed.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+
         try
         {
-            if (!CloseAllPortsAsync().Wait(TimeSpan.FromSeconds(3)))
-            {
-                _logger?.LogWarning("CloseAllPortsAsync timed out during Dispose");
-            }
+            await CloseAllPortsAsync();
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Error during SerialPortService.Dispose");
+            _logger?.LogWarning(ex, "Error during SerialPortService.DisposeAsync");
         }
+
+        // Anything still present failed to close (or never got its turn). Dispose it synchronously
+        // rather than dropping the reference: a dropped PortInstance is a SerialPort that is never
+        // disposed, i.e. a leaked COM handle — which then shows up as "the port won't reopen".
+        foreach (var portName in _ports.Keys.ToList())
+        {
+            DisposePortInstance(portName, "DisposeAsync");
+        }
+
         _ports.Clear();
+    }
+
+    private void DisposePortInstance(string portName, string caller)
+    {
+        if (!_ports.TryRemove(portName, out var portInstance))
+        {
+            return;
+        }
+
+        try
+        {
+            // Stop in-flight sends first, then close: the other order lets a queued write land on a
+            // half-disposed port.
+            portInstance.BeginShutdown();
+            portInstance.Dispose();
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Error disposing port {PortName} during {Caller}", portName, caller);
+        }
     }
 
     /// <summary>
@@ -400,9 +495,16 @@ public class SerialPortService : ISerialPortService, IDisposable
         private readonly SemaphoreSlim _writeLock = new(1, 1);
         private readonly ILogger _logger;
         private readonly IDataValidationService? _dataValidationService;
-        private readonly IBaudRateDetectorService? _baudRateDetectorService;
         private readonly SerialPortService _parentService;
         private volatile bool _isClosing = false; // Flag to prevent DataReceived during close
+
+        // Cancels writes that are already waiting on / inside a send when the port is closing.
+        // Null while the port is not open, so a send on a closed port fails fast with
+        // InvalidOperationException instead of blocking on the write lock.
+        //
+        // Deliberately never disposed — see Dispose() below for why both this and _writeLock are
+        // handed to the GC instead of being torn down.
+        private CancellationTokenSource? _writeCts;
 
         // Reused scratch buffer for SerialPort.Read(...). The DataReceived event is delivered on a
         // single worker thread per port (the SerialPort internal "DataReceived" thread), and the
@@ -425,13 +527,11 @@ public class SerialPortService : ISerialPortService, IDisposable
 
         public PortInstance(SerialPortConfig config, ILogger logger,
             IDataValidationService? dataValidationService,
-            IBaudRateDetectorService? baudRateDetectorService,
             SerialPortService parentService)
         {
             Config = config;
             _logger = logger;
             _dataValidationService = dataValidationService;
-            _baudRateDetectorService = baudRateDetectorService;
             _parentService = parentService;
             Statistics.PortName = config.PortName;
         }
@@ -443,6 +543,10 @@ public class SerialPortService : ISerialPortService, IDisposable
                 // Reset closing flag - ensures clean state for reopen after previous close
                 _isClosing = false;
 
+                // Fresh cancellation source per session: the previous one was cancelled by the close
+                // path, and reusing it would make every send after a reopen fail immediately.
+                Volatile.Write(ref _writeCts, new CancellationTokenSource());
+
                 SerialPort? port = null;
                 try
                 {
@@ -452,6 +556,10 @@ public class SerialPortService : ISerialPortService, IDisposable
                         var oldPort = _serialPort;
                         _serialPort = null;
                         
+                        // Every step of this teardown used to be an empty catch. A port that fails to
+                        // close is exactly the situation where the user reports "it won't reopen", so
+                        // swallowing the reason left nothing to diagnose with. None of it is fatal, so
+                        // the errors are logged rather than propagated.
                         try
                         {
                             // Unsubscribe events first
@@ -460,27 +568,38 @@ public class SerialPortService : ISerialPortService, IDisposable
                                 oldPort.DataReceived -= SerialPort_DataReceived;
                                 oldPort.ErrorReceived -= SerialPort_ErrorReceived;
                             }
-                            catch { }
-                            
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "Error unsubscribing from the previous instance of port {PortName}", Config.PortName);
+                            }
+
                             // Close if open
                             if (oldPort.IsOpen)
                             {
-                                try { oldPort.Close(); } catch { }
+                                try
+                                {
+                                    oldPort.Close();
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogWarning(ex, "Error closing the previous instance of port {PortName}", Config.PortName);
+                                }
                             }
-                            
+
                             // Dispose - catch known .NET bug
                             try
                             {
                                 oldPort.Dispose();
                             }
-                            catch (NullReferenceException)
+                            catch (NullReferenceException ex)
                             {
-                                // Known .NET SerialPort bug - safe to ignore
+                                // Known .NET SerialPort bug - safe to ignore, but still worth recording.
+                                _logger.LogDebug(ex, "Ignored the known NullReferenceException from SerialPort.Dispose() on port {PortName}", Config.PortName);
                             }
                         }
-                        catch
+                        catch (Exception ex)
                         {
-                            // Ignore all disposal errors
+                            _logger.LogWarning(ex, "Unexpected error disposing the previous instance of port {PortName}", Config.PortName);
                         }
                     }
 
@@ -543,9 +662,11 @@ public class SerialPortService : ISerialPortService, IDisposable
                             
                             port.Dispose();
                         }
-                        catch
+                        catch (Exception cleanupEx)
                         {
-                            // Ignore cleanup errors
+                            // Not fatal (the open already failed), but a handle that refuses to close
+                            // here is what makes the next open attempt fail with "access denied".
+                            _logger.LogWarning(cleanupEx, "Error cleaning up the failed open of port {PortName}", Config.PortName);
                         }
                     }
                     
@@ -558,141 +679,119 @@ public class SerialPortService : ISerialPortService, IDisposable
             });
         }
 
+        /// <summary>
+        /// Stops this session: no more received data is processed and in-flight sends are aborted.
+        /// </summary>
+        /// <remarks>
+        /// Used by the teardown paths, which must stop writers *before* closing the port — closing
+        /// first lets a queued write land on a half-disposed <see cref="SerialPort"/>.
+        /// </remarks>
+        public void BeginShutdown()
+        {
+            _isClosing = true;
+            Interlocked.Exchange(ref _writeCts, null)?.Cancel();
+        }
+
         public Task CloseAsync()
         {
-            return Task.Run(() =>
+            // Runs on a pool thread: Close() can block on a wedged driver, and callers await this from
+            // the UI thread.
+            return Task.Run(CloseCore);
+        }
+
+        private void CloseCore()
+        {
+            BeginShutdown();
+
+            if (_serialPort == null)
             {
-                // Set closing flag FIRST to stop DataReceived processing
-                _isClosing = true;
+                _logger.LogDebug("CloseCore called but _serialPort is already null");
+                return;
+            }
 
-                if (_serialPort == null)
-                {
-                    _logger.LogDebug("CloseAsync called but _serialPort is already null");
-                    return;
-                }
+            var port = _serialPort;
+            _serialPort = null;
 
-                var port = _serialPort;
-                _serialPort = null;
+            try
+            {
+                _logger.LogDebug("Starting close sequence for port {PortName}", Config.PortName);
 
+                // Step 1: Unsubscribe from events FIRST to prevent callbacks during disposal
                 try
                 {
-                    _logger.LogDebug("Starting ENHANCED close sequence for port {PortName}", Config.PortName);
-
-                    // Step 1: Unsubscribe from events FIRST to prevent callbacks during disposal
-                    try
-                    {
-                        port.DataReceived -= SerialPort_DataReceived;
-                        port.ErrorReceived -= SerialPort_ErrorReceived;
-                        _logger.LogDebug("Unsubscribed from events for port {PortName}", Config.PortName);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogDebug(ex, "Error unsubscribing from events for port {PortName}", Config.PortName);
-                    }
-
-                    // Wait a bit for any in-flight event handlers to complete
-                    Thread.Sleep(50);
-
-                    // Step 2: Discard any buffered data to prevent blocking
-                    try
-                    {
-                        if (port.IsOpen)
-                        {
-                            port.DiscardInBuffer();
-                            port.DiscardOutBuffer();
-                            _logger.LogDebug("Discarded buffers for port {PortName}", Config.PortName);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogDebug(ex, "Error discarding buffers for port {PortName}", Config.PortName);
-                    }
-
-                    // Step 3: Try to close with timeout
-                    if (port.IsOpen)
-                    {
-                        bool closed = false;
-
-                        // Use a separate task with timeout to close the port
-                        var closeTask = Task.Run(() =>
-                        {
-                            try
-                            {
-                                port.Close();
-                                return true;
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogWarning(ex, "Error in close task for port {PortName}", Config.PortName);
-                                return false;
-                            }
-                        });
-
-                        // Wait for close with timeout (3 seconds)
-                        if (closeTask.Wait(TimeSpan.FromSeconds(3)))
-                        {
-                            closed = closeTask.Result;
-                            if (closed)
-                            {
-                                _logger.LogInformation("✅ Port {PortName} closed successfully", Config.PortName);
-                            }
-                        }
-                        else
-                        {
-                            _logger.LogWarning("⚠️ Port {PortName} close timed out after 3 seconds, forcing cleanup", Config.PortName);
-                        }
-
-                        if (!closed)
-                        {
-                            _logger.LogWarning("⚠️ Port {PortName} could not be closed normally, forcing disposal", Config.PortName);
-                        }
-                    }
-                    else
-                    {
-                        _logger.LogDebug("Port {PortName} was already closed", Config.PortName);
-                    }
-
-                    _logger.LogDebug("Port {PortName} close operations completed", Config.PortName);
+                    port.DataReceived -= SerialPort_DataReceived;
+                    port.ErrorReceived -= SerialPort_ErrorReceived;
+                    _logger.LogDebug("Unsubscribed from events for port {PortName}", Config.PortName);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "❌ CRITICAL error during port {PortName} close operations", Config.PortName);
+                    _logger.LogWarning(ex, "Error unsubscribing from events for port {PortName}", Config.PortName);
                 }
-                finally
+
+                // Wait a bit for any in-flight event handlers to complete
+                Thread.Sleep(50);
+
+                // Step 2: Discard any buffered data to prevent blocking
+                try
                 {
-                    // Step 5: Always try to dispose with timeout, catching ALL exceptions
+                    if (port.IsOpen)
+                    {
+                        port.DiscardInBuffer();
+                        port.DiscardOutBuffer();
+                        _logger.LogDebug("Discarded buffers for port {PortName}", Config.PortName);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error discarding buffers for port {PortName}", Config.PortName);
+                }
+
+                // Step 3: Close. Called directly rather than through Task.Run(...).Wait(timeout):
+                // the timeout never bounded anything, because a wait that gives up leaves the Close
+                // running on another thread while this one proceeds to Dispose the same port.
+                if (port.IsOpen)
+                {
                     try
                     {
-                        var disposeTask = Task.Run(() =>
-                        {
-                            try { port.Dispose(); return true; }
-                            catch { return false; }
-                        });
-
-                        if (disposeTask.Wait(TimeSpan.FromSeconds(2)))
-                        {
-                            if (disposeTask.Result)
-                                _logger.LogDebug("Port {PortName} disposed successfully", Config.PortName);
-                        }
-                        else
-                        {
-                            _logger.LogWarning("Port {PortName} Dispose() timed out, abandoning", Config.PortName);
-                        }
+                        port.Close();
+                        _logger.LogInformation("Port {PortName} closed successfully", Config.PortName);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Error disposing port {PortName} - continuing cleanup", Config.PortName);
+                        _logger.LogWarning(ex, "Error closing port {PortName}; forcing disposal", Config.PortName);
                     }
-
-                    // (A full GC.Collect + WaitForPendingFinalizers used to run here on every
-                    // close — tens of milliseconds of blocking that didn't help: the handle is
-                    // released by Dispose() above. The OS handle-release delay after close is
-                    // already handled by the availability-retry loop in OpenPortAsync.)
-
-                    Statistics.DisconnectedAt = DateTime.Now;
-                    _logger.LogInformation("✅ Port {PortName} fully closed and resources released", Config.PortName);
                 }
-            });
+                else
+                {
+                    _logger.LogDebug("Port {PortName} was already closed", Config.PortName);
+                }
+
+                _logger.LogDebug("Port {PortName} close operations completed", Config.PortName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "CRITICAL error during port {PortName} close operations", Config.PortName);
+            }
+            finally
+            {
+                try
+                {
+                    port.Dispose();
+                    _logger.LogDebug("Port {PortName} disposed successfully", Config.PortName);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error disposing port {PortName} - continuing cleanup", Config.PortName);
+                }
+
+                // (A full GC.Collect + WaitForPendingFinalizers used to run here on every
+                // close — tens of milliseconds of blocking that didn't help: the handle is
+                // released by Dispose() above. The OS handle-release delay after close is
+                // already handled by the availability-retry loop in OpenPortAsync.)
+
+                Statistics.DisconnectedAt = DateTime.Now;
+                _logger.LogInformation("Port {PortName} fully closed and resources released", Config.PortName);
+            }
         }
 
         public async Task ReconnectAsync()
@@ -705,12 +804,17 @@ public class SerialPortService : ISerialPortService, IDisposable
 
         public async Task SendDataAsync(byte[] data)
         {
-            await _writeLock.WaitAsync();
+            // Fail fast on a closed/closing port: taking _writeLock would otherwise succeed and the
+            // write would only be rejected after the port had already been disposed underneath us.
+            var writeCts = Volatile.Read(ref _writeCts)
+                ?? throw new InvalidOperationException($"Port {Config.PortName} is not open");
+
+            await _writeLock.WaitAsync(writeCts.Token);
             try
             {
                 if (_serialPort?.IsOpen == true)
                 {
-                    await _serialPort.BaseStream.WriteAsync(data, 0, data.Length);
+                    await _serialPort.BaseStream.WriteAsync(data, 0, data.Length, writeCts.Token);
                     Statistics.SentBytes += data.Length;
                     Statistics.SentMessages++;
                 }
@@ -969,17 +1073,25 @@ public class SerialPortService : ISerialPortService, IDisposable
             }
             finally
             {
+                // Stop any send that is still waiting on / inside the write lock.
+                BeginShutdown();
+
                 // Always give time for OS to fully release the handle, even if disposal threw
                 try { Thread.Sleep(100); } catch { }
 
-                try
-                {
-                    _writeLock.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Error disposing write lock for port {PortName}", Config.PortName);
-                }
+                // _writeLock and _writeCts are deliberately NOT disposed.
+                //
+                // Disposing the semaphore here is what produced the ObjectDisposedException on
+                // shutdown: a send that was already inside the lock (or about to call WaitAsync) hits
+                // a disposed object — either on WaitAsync, or on the Release() in its finally block,
+                // which no try/catch there could distinguish from a real bug. Cancelling first does
+                // not help, because the loser of that race is always the straggler.
+                //
+                // Neither object holds an unmanaged resource in this usage (SemaphoreSlim only
+                // allocates a wait handle if AvailableWaitHandle is touched, which it never is here;
+                // the CancellationTokenSource never uses CancelAfter), so letting the GC collect them
+                // together with the PortInstance is correct and, unlike the disposal, cannot throw.
+                _ = _writeLock;
             }
         }
     }

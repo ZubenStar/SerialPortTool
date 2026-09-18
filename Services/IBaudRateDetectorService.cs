@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace SerialPortTool.Services;
@@ -13,8 +14,13 @@ public interface IBaudRateDetectorService
     /// </summary>
     /// <param name="portName">串口名称</param>
     /// <param name="testDurationMs">每个波特率的测试时间(毫秒)</param>
+    /// <param name="cancellationToken">取消标记。整个扫描是 18 个波特率 × 测试时长（默认约 40 秒），
+    /// 期间每个波特率都会独占打开一次串口，关窗时必须能中止。</param>
     /// <returns>检测到的波特率列表，按匹配度排序</returns>
-    Task<List<BaudRateDetectionResult>> DetectOptimalBaudRateAsync(string portName, int testDurationMs = 2000);
+    Task<List<BaudRateDetectionResult>> DetectOptimalBaudRateAsync(
+        string portName,
+        int testDurationMs = 2000,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// 验证当前波特率是否正确
@@ -22,8 +28,13 @@ public interface IBaudRateDetectorService
     /// <param name="portName">串口名称</param>
     /// <param name="baudRate">当前波特率</param>
     /// <param name="validationDurationMs">验证时间(毫秒)</param>
+    /// <param name="cancellationToken">取消标记（失败时本方法内部还会再跑一轮完整扫描，更需要可取消）</param>
     /// <returns>验证结果</returns>
-    Task<BaudRateValidationResult> ValidateBaudRateAsync(string portName, int baudRate, int validationDurationMs = 3000);
+    Task<BaudRateValidationResult> ValidateBaudRateAsync(
+        string portName,
+        int baudRate,
+        int validationDurationMs = 3000,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// 获取常用的波特率列表

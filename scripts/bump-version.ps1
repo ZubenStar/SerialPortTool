@@ -83,8 +83,12 @@ $newChangelogEntry = @{
 $newChangelog = @($newChangelogEntry) + $versionJson.changelog
 $versionJson.changelog = $newChangelog
 
-# Save version.json
-$versionJson | ConvertTo-Json -Depth 10 | Set-Content $versionJsonPath -Encoding UTF8
+# Save version.json. BOM-less UTF-8 on purpose: Set-Content -Encoding UTF8 writes a BOM on Windows
+# PowerShell 5.1 but not on PowerShell 7, so the same script produced a different file depending on
+# which shell invoked it — and the encoding flip alone rewrote the whole file in the diff.
+$jsonText = $versionJson | ConvertTo-Json -Depth 10
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($versionJsonPath, $jsonText, $utf8NoBom)
 Write-Host "✓ Updated version.json" -ForegroundColor Green
 Write-Host "✓ Version will be automatically read by build system" -ForegroundColor Green
 

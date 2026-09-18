@@ -33,28 +33,31 @@ public static class VersionInfo
     }
 
     /// <summary>
-    /// Gets the build date/time from compile-time generated constant
+    /// Gets the build date/time from compile-time generated constant.
     /// </summary>
+    /// <remarks>
+    /// Falls back to the raw <see cref="BuildInfo.BuildTimeUtc"/> string, never to <c>DateTime.Now</c>.
+    /// Returning the current time meant the About dialog showed "构建时间: " + right-now whenever the
+    /// generated constant was missing or unparseable — indistinguishable from a correct value, and it
+    /// made "which build am I running?" unanswerable in exactly the situation where that matters.
+    /// </remarks>
     public static string BuildTime
     {
         get
         {
-            try
+            var raw = BuildInfo.BuildTimeUtc;
+
+            if (DateTime.TryParse(
+                    raw,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal,
+                    out var buildTimeUtc))
             {
-                // Use build time from generated BuildInfo class (UTC timestamp)
-                if (DateTime.TryParse(BuildInfo.BuildTimeUtc, out var buildTimeUtc))
-                {
-                    // Convert UTC to local time for display
-                    return buildTimeUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
-                }
+                // Convert UTC to local time for display
+                return buildTimeUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
             }
-            catch
-            {
-                // Fallback if BuildInfo is not available
-            }
-            
-            // Final fallback: use current time
-            return DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+            return string.IsNullOrWhiteSpace(raw) ? "unknown" : raw;
         }
     }
 

@@ -1,6 +1,5 @@
 using System;
 using CommunityToolkit.Mvvm.ComponentModel;
-using SerialPortTool.Core.Enums;
 
 namespace SerialPortTool.Models;
 
@@ -33,11 +32,10 @@ public partial class LogEntry : ObservableObject
     [ObservableProperty]
     private byte[]? _rawData;
 
-    /// <summary>
-    /// 数据格式
-    /// </summary>
-    [ObservableProperty]
-    private DataFormat _format = DataFormat.Text;
+    // `Format` (DataFormat) used to live here. Nothing read it — not the display path, not the file
+    // logger, not the filters — and the only other consumer of DataFormat was CommandPreset, itself
+    // unused. Both are gone rather than left as an implicit "the app supports formats" contract that
+    // no code honours.
 
     /// <summary>
     /// 是否为接收数据(false为发送数据)

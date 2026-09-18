@@ -32,6 +32,14 @@ if (-not (Test-Path $versionJsonPath)) {
 }
 
 $version = (Get-Content $versionJsonPath -Raw | ConvertFrom-Json).version.Trim()
+
+# The .iss has no fallback for #AppVersion on purpose (a 0.0.0 install package permanently breaks the
+# auto-update path on every machine that installs it), so validate it here where the message is useful.
+if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+    Write-Error "version.json 'version' must be three numeric parts (e.g. 2.1.0); got '$version'"
+    exit 1
+}
+
 Write-Host "Version: $version" -ForegroundColor Gray
 
 # ---- 2. 自包含发布（参数与 .github/workflows/release.yml 保持一致） ----
@@ -101,19 +109,21 @@ if (-not (Test-Path $issPath)) {
 
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
-# 框架语言资源过滤：与 .github/workflows/release.yml 的便携 ZIP 保持完全一致的保留清单。
+# 框架语言资源过滤：规则（保留清单 + 目录名模式）集中在 scripts/prune-publish-output.ps1，
+# 便携 ZIP 侧（release.yml）调用同一个脚本，不再各自维护一份拷贝。
 # 自包含发布默认带 80+ 个语言目录，每个含 Microsoft.ui.xaml*.mui，对中英文用户毫无用处。
-$keptLanguageDirs = @('zh-CN', 'en-us')
-$excludedLanguageDirs = Get-ChildItem $publishDir -Directory | Where-Object {
-    $_.Name -match '^[a-z]{2,3}(?:-[A-Za-z0-9]+)+$' -and
-    $_.Name -notin $keptLanguageDirs
-}
+# 这里就地裁剪 publish 目录，安装包与便携 ZIP 因此拿到完全一致的树。
+$pruneScript = Join-Path $scriptDir "prune-publish-output.ps1"
+# The callee sets $ErrorActionPreference = "Stop" itself, so a missing directory aborts this script
+# through the terminating error — no $LASTEXITCODE check is needed (and none is wanted: it would still
+# hold a stale value on the -SkipPublish path, where no native command has run yet).
+$removedLanguageDirs = @(& $pruneScript -Path $publishDir)
 
-$excludePatterns = @('*.pdb') + ($excludedLanguageDirs | ForEach-Object { "$($_.Name)\*" })
-$excludeValue = $excludePatterns -join ','
+Write-Host ("Removed {0} framework language folder(s) from the publish output" -f
+    $removedLanguageDirs.Count) -ForegroundColor Gray
 
-Write-Host ("Excluding {0} framework language folder(s); keeping {1}" -f
-    $excludedLanguageDirs.Count, ($keptLanguageDirs -join ', ')) -ForegroundColor Gray
+# Pruning already deleted them, so Excludes only carries the debug-symbol guard for a direct ISCC run.
+$excludeValue = '*.pdb'
 
 $isccArgs = @(
     "/DAppVersion=$version"

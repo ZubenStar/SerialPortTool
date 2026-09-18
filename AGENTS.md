@@ -96,6 +96,21 @@ There is **no automated test suite**. Verification is manual:
 - update path: "Help → Check for updates" against a Release that has a higher version, then a full download → silent replace → auto-restart against an installed older build (see the Update System section),
 - update failure paths: offline, request timeout, and a Release without a `Setup` asset.
 
+Added in v2.1.1 — each of these is a regression that was actually reported or reproduced:
+
+- **shutdown**: open 3 ports, then close the window while data is streaming. No `ObjectDisposedException` in the log, the process is gone within a second, and the ports reopen afterwards (repeat open/close/reopen on the same port 10 times).
+- **single instance**: launch a second copy while the first is running — one message box, no second window, a `Warning` in the app log, and `settings.json` unchanged. On a two-user or multi-session machine, confirm the second *user* is not blocked.
+- **settings safety**: truncate `settings.json` (or replace its contents with `{`), start the app, and confirm the file is byte-identical afterwards, the status bar reports the read-only state, and port configs/colours survive once the file is repaired.
+- **log cap**: stream past 2000 lines and keep wheel-scrolling up — the view must settle instead of being rebuilt ~20 times per second, and the log must oscillate rather than sit pinned at the cap.
+- **sent logs**: pause the view, send a few hundred frames, unpause — `AllLogs`/`DisplayLogs` must not have grown without bound, and sent lines must respect an active search filter.
+- **clipboard**: hold the clipboard open in another process (or copy repeatedly in a browser) and press Ctrl+C — the copy fails with a status message, the app stays alive.
+- **send box**: Enter sends; nothing is sent twice; the button is disabled while a send is in flight.
+- **hex input**: `0x0A 0x0B` and `A0-0B` both send the expected bytes; `A0x0B` is rejected as an odd-length payload rather than silently mangled.
+- **custom baud rate**: `0` and `999999999` are rejected with a message; a valid value still opens.
+- **port colour**: with several ports open and history on screen, change one port's colour — every row of that port (and the legend and swatch) changes together, sent rows keep the TX colour.
+- **baud-rate detection**: trigger a detection and close the window mid-scan — the process exits promptly and the port is left closed, not half-reopened.
+- **tuning**: start auto-send, then keep writing the `.bin` continuously — sends are skipped with "仍在写入" rather than sending a partial file; once writing stops, the next change sends normally.
+
 ---
 
 ## Repository Layout
@@ -114,18 +129,17 @@ SerialPortTool/
 ├── Controls/LogListView.xaml(.cs)   # The only custom UserControl (virtualized log list)
 ├── Converters/                      # BoolToVisibility + InverseBoolToVisibility (one file),
 │                                    # HexColorToBrush — all registered in App.xaml
-├── Core/Enums/                      # ConnectionState, DataFormat, FilterType, UpdateCheckStatus,
-│                                    # AppThemePreference
+├── Core/Enums/                      # ConnectionState, FilterType, UpdateCheckStatus, AppThemePreference
 ├── Helpers/                         # VersionInfo, BuildInfo.g.cs (GENERATED)
-├── Models/                          # SerialPortConfig, LogEntry, FilterRule, CommandPreset, PortStatistics,
+├── Models/                          # SerialPortConfig, LogEntry, FilterRule, PortStatistics,
 │                                    # PortColorSlot / PortColorPalette (port identity palette),
 │                                    # UpdateReleaseInfo / UpdateCheckResult
 ├── Services/                        # 9 interfaces + 9 implementations (see Service Layer)
 ├── ViewModels/MainViewModel.cs      # Single ViewModel (+ in-file RangeObservableCollection,
 │                                    # PortViewModel, PortColorOption)
 ├── installer/SerialPortTool.iss     # Inno Setup script — per-user install, silent replace/restart on update
-├── scripts/                         # bump-version, generate-buildinfo, generate-release-notes,
-│                                    # update-manifest-version, build-installer
+├── scripts/                         # bump-version, generate-buildinfo, update-manifest-version,
+│                                    # build-installer, prune-publish-output
 └── .github/workflows/release.yml    # Tag-driven release pipeline
 ```
 
@@ -153,24 +167,28 @@ Views (XAML) ←→ ViewModels ←→ Services ←→ Hardware / Infrastructure
 
 | Service | Responsibility & key patterns |
 | --- | --- |
-| `ISerialPortService` / `SerialPortService` | Manages multiple concurrent ports via a concurrent dictionary of `PortInstance`s, each with its own read thread and event handlers. Send/receive, automatic reconnection, integration with baud-rate detection + data validation. Each port's `SerialPort_DataReceived` validates **inline and forwards before reading the next chunk** (single-threaded per port); a garbage verdict arms a ~1 s drop cooldown. |
-| `IBaudRateDetectorService` / `BaudRateDetectorService` | Analyses incoming data to detect a wrong baud rate; tracks error rate / pattern consistency; suggests corrections. Called on every reception by `SerialPortService`. |
-| `IDataValidationService` / `DataValidationService` | Real-time data-quality assessment (garbage data, encoding issues, quality score). `ValidateDataAsync` runs **synchronously on the caller's (read) thread** — it is not `Task.Run`-wrapped, so per-port statistics stay ordered. Binary / non-ASCII payloads skip the lossy `CleanData` and pass through unchanged. Per-port state (`PortValidationState`) has a **locked** queue (see "do not regress"). |
-| `ILogFilterService` / `LogFilterService` | Regex/text/log-level/port filtering. Compiled `Regex` objects cached in a `ConcurrentDictionary` with LRU eviction (max 50, clears half) and a **100 ms match timeout** so a pathological pattern cannot freeze the UI. |
-| `IFileLoggerService` / `FileLoggerService` | Async batched file writing: `ConcurrentQueue` + periodic flush (100 ms or 100 items), `StreamWriter` with a 64 KB buffer, background thread, reused `StringBuilder`. Hot paths hand a whole batch to `WriteLogs(portName, entries)`; `WriteLogAsync` is for a single entry. |
-| `ISettingsService` / `SettingsService` | Persists user preferences / port configs to `%LOCALAPPDATA%\SerialPortTool\settings.json`. Writes are serialized with a **file lock** (see "do not regress"). |
-| `ITuningProtocolService` / `TuningProtocolService` | Loads a `TuningProtocolDescriptor` (JSON), packs a `.bin` payload and broadcasts it to one or all open ports. **Each port gets its own send worker** so concurrent multi-port sends do not serialize. Every send pre-checks `IsPortOpen`. |
+| `ISerialPortService` / `SerialPortService` | Manages multiple concurrent ports via a concurrent dictionary of `PortInstance`s, each with its own read thread and event handlers. Send/receive, automatic reconnection, integration with data validation. Each port's `SerialPort_DataReceived` validates **inline and forwards before reading the next chunk** (single-threaded per port); a garbage verdict arms a ~1 s drop cooldown. Implements **`IAsyncDisposable`** — the container is torn down through `ServiceProvider.DisposeAsync()`, so real closing happens there; `Dispose()` is a synchronous best-effort fallback with no `Task.Run(...).Wait(timeout)`. |
+| `IBaudRateDetectorService` / `BaudRateDetectorService` | Probes candidate baud rates by **opening the port itself** for a short listen window and scoring the printable-character ratio. It is **not** on the receive path: `SerialPortService` does not depend on it at all (that constructor parameter was dead and has been removed). The flow is driven from `MainViewModel.OnBaudRateDetectionRequested` → close the port → `DetectOptimalBaudRateAsync` → reopen. Both public methods take a `CancellationToken`; the whole scan is ~40 s (18 rates × test window) and is cancelled on window close. |
+| `IDataValidationService` / `DataValidationService` | Real-time data-quality assessment (garbage data, encoding issues, quality score). `ValidateDataAsync` runs **synchronously on the caller's (read) thread** — it is not `Task.Run`-wrapped, so per-port statistics stay ordered. Binary / non-ASCII payloads skip the lossy `CleanData` and pass through unchanged. Per-port state (`PortValidationState`) has a **locked** queue (see "do not regress"). Hot-path helpers (`ComputePrintableRatio`, `AnalyzeCharacterDistribution`, `IsGarbageData`) are allocation-free span/bitmap scans — do not reintroduce LINQ there. |
+| `ILogFilterService` / `LogFilterService` | Regex/text/log-level/port filtering. Compiled `Regex` objects cached in a `ConcurrentDictionary` with a **100 ms match timeout** so a pathological pattern cannot freeze the UI. Eviction is *arbitrary*, not LRU: once the cache reaches 50 entries, half of the current keys are dropped (`ConcurrentDictionary` has no ordering to exploit). Currently unused by the UI — the live search filter is `MainViewModel`'s own cached regex — but it is registered and its `FiltersChanged` event has no subscribers yet. |
+| `IFileLoggerService` / `FileLoggerService` | Async batched file writing: `ConcurrentQueue` + periodic flush (100 ms or 100 items), `StreamWriter` with a 64 KB buffer, background thread, reused `StringBuilder`. Hot paths hand a whole batch to `WriteLogs(portName, entries)`; `WriteLogAsync` is for a single entry. Start/Stop are serialized by a service-wide `_lifecycleLock` (see "do not regress"); `LoggerInstance.DisposeAsync` is idempotent. |
+| `ISettingsService` / `SettingsService` | Persists user preferences / port configs to `%LOCALAPPDATA%\SerialPortTool\settings.json`. Writes are serialized with a **file lock** and are **atomic** (same-directory temp file + `File.Move(overwrite: true)`). A file that exists but cannot be read/parsed puts the service into a **read-only protection state** for the rest of the session — see "do not regress". Raises `SettingsLoadFailed` once, which `MainViewModel` surfaces in the status bar. |
+| `ITuningProtocolService` / `TuningProtocolService` | Loads a `TuningProtocolDescriptor` (JSON — comments and trailing commas are allowed), packs a `.bin` payload into TOTA packet frames. It does **not** send: `MainViewModel.SendTuningFileAsync` owns the broadcast (one send worker per port, delay plan, `IsPortOpen` pre-check, baseline-hash bookkeeping). |
 | `IUpdateService` / `UpdateService` | Checks `api.github.com/repos/ZubenStar/SerialPortTool/releases/latest` for a newer version, compares versions **numerically** via `Version.TryParse`, and owns the 24 h silent-check cache + "skip this version" policy. Static `HttpClient` (needs `User-Agent` + `Accept: application/vnd.github+json`), ~10 s timeout, returns a result object instead of throwing. `IsInstalledBuild` delegates to `InstalledBuildInfo`. |
 | `IUpdateInstallerService` / `UpdateInstallerService` | Streams the `Setup*.exe` Release asset into `%TEMP%\SerialPortTool\Update`, verifies it (length vs. asset `size`, non-empty, `MZ` PE header), then launches it as the **external updater process** with `/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /NOCANCEL` (never `/RESTARTAPPLICATIONS` — see the Update System section). `InstalledBuildInfo` (same file) gates auto-replacement on the exe living under `%LOCALAPPDATA%\Programs\SerialPortTool` **and** the Inno Setup uninstall key existing. |
 
 ### ViewModel Layer
 
-`MainViewModel` (~2300 lines) coordinates everything: log collection, filtering, search history, port lifecycle, tuning. Performance-critical details:
+`MainViewModel` (~3000 lines) coordinates everything: log collection, filtering, search history, port lifecycle, tuning. Performance-critical details:
 
 - Logs live in `RangeObservableCollection<T>` (declared inside `ViewModels/MainViewModel.cs`), which raises a single `CollectionChanged` for batch operations. Use `AddRange(IEnumerable<T>)`; for FIFO retention use `RemoveFromStart(int)` (v1.8.3) rather than `RemoveRange`.
 - Pre-allocate list capacity when batching; never add items one-by-one in a loop.
 - Pending updates from background threads are merged before being applied on the UI thread (v1.8.6 flicker fix).
+- `_portsByName` is a **`ConcurrentDictionary`**, written on the UI thread from `OpenPorts.CollectionChanged` and read from each port's read thread in `GetPortColor` / `GetPortDisplayColor`. Keep it concurrent — a plain `Dictionary` here is a data race on the hottest path in the app.
+- **Every** log entry takes the same route: received lines are queued by `OnDataReceived`, and locally generated entries (TX, tuning summaries) go through `AddSentLog` → the same `_pendingLogBatches` queue → `FlushPendingLogBatches`. Never write to `AllLogs`/`DisplayLogs` directly: that bypasses the FIFO trim, the search filter, the batch window and the queued-count cap.
 - Serial chunks are reassembled **per port** before splitting: `PortLineAssembler` (a persistent `Decoder` + `StringBuilder`) carries UTF-8 sequences and partial lines across `DataReceived` events, and `ExtractCompleteLines` emits only terminator-delimited lines (`\n`, `\r`, `\r\n`), leaving a trailing `\r` buffered for the next chunk.
+- Re-filtering has exactly one entry point: `RequestFilterLogs()` (a 150 ms debounce on a reused `System.Threading.Timer`). `FilterLogs()` itself is private. Do not call a full rebuild synchronously from a UI handler — three of them used to, which cancelled out the debounce entirely.
+- Long-running background flows take `_shutdownCts.Token` (cancelled in `Dispose`) and marshal UI updates with `RunOnUiThread`. Do not pass an `async` lambda to `DispatcherQueue.TryEnqueue`: it is a de-facto `async void` whose exceptions land in the XAML unhandled-exception handler and whose continuations outlive the window.
 
 ### Performance-Critical Components
 
@@ -186,34 +204,42 @@ Views (XAML) ←→ ViewModels ←→ Services ←→ Hardware / Infrastructure
    - `FormattedText` stays `OneTime` (it never changes after construction). `ColorHex` is deliberately `OneWay`, because an appearance switch re-colours rows that are already on screen; the extra `PropertyChanged` wiring is attached only to realized containers, which is bounded by the viewport, not by list length.
    - Selection: `Ctrl+C` copies, `Ctrl+A` selects all, right-click opens a `MenuFlyout` (`LogListView.xaml:24-29`). `SelectAll()` / `CopySelection()` are the public entry points the toolbar uses; `CopySelection()` returns `false` when nothing is selected so the caller can say so.
 
-### Log Buffer Trim Thresholds (`ViewModels/MainViewModel.cs:894-906`)
+### Log Buffer Trim Thresholds (`ViewModels/MainViewModel.cs`)
 
 Collections intentionally overshoot before trimming — trimming on every overflow caused flicker up to v1.8.6:
 
 ```csharp
-private const int MaxDisplayLogs          = 2000;                     // steady-state size of DisplayLogs
-private const int DisplayLogTrimThreshold = MaxDisplayLogs + 200;     // trim only above 2200
-private const int AllLogsTrimThreshold    = MaxDisplayLogs * 2 + 400; // 4400 — unfiltered back-buffer
-private const int MaxQueuedLogEntries     = MaxDisplayLogs * 4;       // 8000 — pending-update queue cap
-private const int StatsRefreshIntervalMs  = 250;                      // stats refresh throttle (~4 Hz)
+private const int MaxDisplayLogs          = 2000;                        // cap on DisplayLogs
+private const int DisplayLogTrimThreshold = MaxDisplayLogs + 200;        // trim only above 2200
+private const int DisplayLogTrimHeadroom  = 400;                         // trim down to 1600, not to 2000
+private const int AllLogsTrimThreshold    = MaxDisplayLogs * 2 + 400;    // 4400 — unfiltered back-buffer
+private const int MaxQueuedLogEntries     = MaxDisplayLogs * 4;          // 8000 — pending-update queue cap
+private const int StatsRefreshIntervalMs  = 250;                         // stats refresh throttle (~4 Hz)
 ```
 
 Raising `MaxDisplayLogs` without raising the thresholds reintroduces the overflow→trim→overflow flicker.
+
+`DisplayLogTrimHeadroom` is the second half of that fix. `RemoveFromStart` publishes a `Reset`, and a `Reset` discards every realized ListView container — so trimming *down to* the cap meant a full rebuild on every 50 ms flush once the buffer was full (~20 Hz, forever). Trimming to `MaxDisplayLogs - DisplayLogTrimHeadroom` puts the next trim ~600 entries away. The list therefore oscillates between 1600 and 2200 rather than sitting pinned at the cap. A multi-item `Remove` notification would preserve the scroll anchor and is the better fix, but WinUI 3's vector view is known to mishandle multi-item collection notifications (that is why multi-item `Add` was abandoned) and the failure is an uncatchable exception inside the ListView's own handler — do not switch without verifying it on this framework version first.
 
 ### Version Management
 
 `version.json` is the **single source of truth** (version + changelog). The flow:
 
-1. MSBuild reads `version.json` at evaluation time with a regex → `Version`, `AssemblyVersion`, `FileVersion`, `InformationalVersion` (`SerialPortTool.csproj:18-34`).
-2. `UpdateManifestVersion` target runs `scripts/update-manifest-version.ps1` before build to sync the `Package.appxmanifest` `Identity` version.
-3. `GenerateBuildInfo` target runs `scripts/generate-buildinfo.ps1` before compile → `Helpers/BuildInfo.g.cs` (UTC build timestamp, surfaced via `Helpers/VersionInfo.cs` in the About dialog).
+1. MSBuild reads `version.json` at evaluation time → `Version`, `AssemblyVersion`, `FileVersion`, `InformationalVersion` (`SerialPortTool.csproj`). The regex is **anchored to the opening brace** (`(?m)^\s*\{\s*"version"\s*:\s*"([^"]+)"`), so it can only match the top-level key. A bare `"version"\s*:\s*"…"` matches the first occurrence *anywhere*, which becomes a changelog entry the moment the top-level key is reordered — and the build then silently stamps the wrong version on the assembly, the About dialog and the installer. There is **no hard-coded fallback**: it used to be `1.7.0` while the project was on 2.1.0.
+2. The `ValidateVersion` target (`BeforeTargets="BeforeBuild"`) fails the build when the version is missing or not three numeric parts. Nothing downstream (manifest sync, compile, installer) ever sees an empty version.
+3. `UpdateManifestVersion` target runs `scripts/update-manifest-version.ps1` before build to sync the `Package.appxmanifest` `Identity` version. The script fails (non-zero exit) on a missing file, a missing `Identity` element, or a post-condition mismatch — it used to warn and `exit 0`, which MSBuild reports as success while the manifest keeps the previous release's version.
+4. `GenerateBuildInfo` target runs `scripts/generate-buildinfo.ps1` before compile → `Helpers/BuildInfo.g.cs` (UTC build timestamp, surfaced via `Helpers/VersionInfo.cs` in the About dialog).
 
 **Bump the version** by editing `version.json` only, or:
 ```powershell
 .\scripts\bump-version.ps1 -BumpType patch
 ```
 
-> **Script gotcha (fixed, do not reintroduce):** `scripts/update-manifest-version.ps1` must use `${1}`/`${2}` group references, **never** `$1`/`$2`. A version starting with a digit made .NET parse `$11.7.0.0` as the non-existent group `$11`, which silently replaced the whole `<Identity …/>` element with the literal `$11.7.0.0" />` (broken from v1.7.0 until it was repaired). The script now warns and no-ops when no `Identity` match is found.
+> **Script gotcha (fixed, do not reintroduce):** `scripts/update-manifest-version.ps1` must use `${1}`/`${3}` group references, **never** `$1`/`$3`. A version starting with a digit made .NET parse `$11.7.0.0` as the non-existent group `$11`, which silently replaced the whole `<Identity …/>` element with the literal `$11.7.0.0" />` (broken from v1.7.0 until it was repaired). The script now **fails the build** when it finds no `Identity` match or when the resulting attribute is not the requested version.
+
+> **Script encoding convention.** Every script writes text through `[System.IO.File]::WriteAllText` with an explicit `UTF8Encoding($false)` (BOM-less), **except** `update-manifest-version.ps1`, which must keep the UTF-8 **BOM** for `Package.appxmanifest` (the MSIX tooling expects it). `Set-Content -Encoding UTF8` is the trap: Windows PowerShell 5.1 and PowerShell 7 write different bytes for the same literal, so the same script produced a whole-file diff depending on which shell ran it. `bump-version.ps1`, `generate-buildinfo.ps1`, `update-manifest-version.ps1` and `prune-publish-output.ps1` are the scripts that touch files.
+
+> **Removed, do not restore:** `scripts/generate-release-notes.ps1`. The release job generates the notes inline (`.github/workflows/release.yml`), and the orphaned script had drifted to an old format that only mentioned the ZIP.
 
 ---
 
@@ -286,37 +312,46 @@ Two consequences worth remembering:
 
 ### Handling serial-port events
 
-Services raise events on background threads; always marshal to the UI thread:
+Services raise events on background threads. The receive path does **not** marshal per event — it
+queues into `_pendingLogBatches` and lets the 50 ms UI flush apply the batch, which is what keeps a
+high-throughput stream from starving the UI thread of input:
 
 ```csharp
-_serialPortService.DataReceived += async (sender, e) =>
-{
-    await DispatcherQueue.EnqueueAsync(() =>
-    {
-        DisplayLogs.AddRange(batch); // UI-bound collections only on the UI thread
-    });
-};
+// OnDataReceived (background): decode → split lines → enqueue
+_fileLoggerService.WriteLogs(portName, newLogs);   // disk, batched, background
+_pendingLogBatches.Enqueue(new PendingLogBatch { PortName = portName, Logs = newLogs });
+SchedulePendingLogFlush();                          // one Low-priority dispatcher work item + 50 ms timer
+
+// FlushPendingLogBatches (UI thread): AllLogs.AddRange → DisplayLogs.AddRange → trim → stats
 ```
+
+Anything that touches a UI-bound collection must run on the UI thread. Use `RunOnUiThread(Action)` (the
+ViewModel) or `DispatcherQueue.TryEnqueue` — and never hand `TryEnqueue` an `async` lambda.
 
 ### Batch collection updates
 
 ```csharp
 var newLogs = new List<LogEntry>(capacity: estimatedSize);
 // … populate …
-DisplayLogs.AddRange(newLogs); // one notification — never add in a loop
+_pendingLogBatches.Enqueue(new PendingLogBatch { PortName = portName, Logs = newLogs });
+// NOT: DisplayLogs.AddRange(...) from a background thread, and not one Add per entry either.
 ```
 
 ### Regex filtering
 
 ```csharp
-if (_logFilterService.ShouldDisplay(entry)) { … } // cached compiled regex
-if (Regex.IsMatch(text, pattern)) { … }           // avoid: compiles every call
+GetOrCreateSearchRegex(SearchText, IsRegexValid);   // cached compiled instance, rebuilt on pattern change
+Regex.IsMatch(text, pattern);                       // avoid: compiles on every call
 ```
+
+`ILogFilterService` holds a separate rule-based cache (`ShouldDisplay`, 100 ms timeout) but nothing
+calls it yet — see the Service Layer note.
 
 ### File logging
 
 ```csharp
-await _fileLoggerService.LogAsync(entry);          // batched, background thread
+_fileLoggerService.WriteLogs(portName, entries);   // whole batch, queued, 64 KB buffered writer
+await _fileLoggerService.WriteLogAsync(portName, entry); // single entry
 File.AppendAllText(path, entry.ToString());        // never: blocks the UI thread
 ```
 
@@ -324,9 +359,9 @@ File.AppendAllText(path, entry.ToString());        // never: blocks the UI threa
 
 ## Common Development Scenarios
 
-**New log filter type** — add the enum value in `Core/Enums/FilterType.cs`, handle it in `LogFilterService.ShouldDisplay()`, add UI in the filter panel if needed, and keep any expensive operation cached.
+**New log filter type** — add the enum value in `Core/Enums/FilterType.cs`, handle it in `LogFilterService.MatchesFilter()` / `ShouldDisplay()`, add UI in the filter panel if needed, and keep any expensive operation cached. Note that the live search box is a *separate* mechanism (`MainViewModel.GetOrCreateSearchRegex` + `FlushPendingLogBatches`), so a new rule type in `LogFilterService` will not appear in the search box's behaviour until the service is actually wired up.
 
-**Baud-rate detection patterns** — edit `BaudRateDetectorService.AnalyzeDataQuality()`; adjust confidence thresholds in `SuggestBaudRate()`; validate against real device data at multiple baud rates.
+**Baud-rate scoring** — the scoring lives in `BaudRateDetectorService.TestBaudRateAsync` (per-candidate listen window) and `CountValidDataBytes` (printable ratio, with a bonus for `_commonPatternRegex`). Thresholds are `PrintableCharThreshold` (0.7) and `MinDataBytesForValidation` (10). There is no `AnalyzeDataQuality` / `SuggestBaudRate` method — earlier revisions of this file referenced them and they never existed. Validate changes against real device data at multiple baud rates, including the cancel path (close the window mid-scan).
 
 **New custom control** — follow the `UserControl`-wrapping-a-`ListView` pattern in `Controls/LogListView.xaml` so compiled `x:Bind` keeps working.
 
@@ -336,9 +371,11 @@ File.AppendAllText(path, entry.ToString());        // never: blocks the UI threa
 
 ## Tuning / TOTA
 
-- `TuningProtocolService` sends a `.bin` payload described by a JSON `TuningProtocolDescriptor`. `mic-tota-tuning.json` at the repo root is the **sample** for that descriptor format (it is *not* application configuration).
-- The main window's Tuning panel selects the `.bin` and the JSON descriptor; sends broadcast to **all open ports**, each on its own send worker.
-- Every send checks `IsPortOpen` first — auto-send can fire while a port is mid-reconnect.
+- `TuningProtocolService` **builds** the frames for a `.bin` payload described by a JSON `TuningProtocolDescriptor`. It does not send them: `MainViewModel.SendTuningFileAsync` owns the broadcast (one send worker per port, the delay plan, the `IsPortOpen` pre-check and the baseline-hash bookkeeping).
+- `mic-tota-tuning.json` at the repo root is the **sample / reference** for that descriptor format (it is *not* application configuration, and it is not copied to the output).
+- The parser (`JsonOptions`) sets `PropertyNameCaseInsensitive`, `ReadCommentHandling = Skip` and `AllowTrailingCommas`, so the sample is annotated with `//` comments and the format is meant to be hand-edited. Unknown properties are ignored, so a commented-out alternative (like the `packetFrame.layout` block in the sample) is safe.
+- Validation happens at **load** time (`ValidateDescriptor` → `ValidateField`) and covers `dspMessage.layout`, `tota.headerLayout`, `tota.packetFrame.layout` **and the object form of `tota.infoAreaFields`**. Expression evaluation is `checked`: a length arithmetic overflow and a checksum accumulation overflow both throw `TuningProtocolException` rather than producing a frame whose declared total does not match its bytes.
+- The main window's Tuning panel selects the `.bin` and the JSON descriptor; sends broadcast to **all open ports**, each on its own send worker. Auto-send waits for the `.bin` to stop changing (`WaitForStableTuningFileAsync` returns `false` after ~5 s and the send is skipped) — hashing a file mid-write stored a baseline for content that no longer existed, which then suppressed every later auto-send as "unchanged".
 - If you change the descriptor format, update `mic-tota-tuning.json`, this section, and the README feature blurb in the same change.
 
 ---
@@ -372,9 +409,12 @@ Two singleton services plus one build-time artifact. Deliberately dependency-fre
 
 - `PrivilegesRequired=lowest` → per-user install into `%LOCALAPPDATA%\Programs\SerialPortTool`, no administrator rights and no UAC prompt. That is what makes a fully silent update possible; moving to `Program Files` would trigger a UAC prompt on every update.
 - The **`AppId` GUID is permanent**. It must stay identical to `InstalledBuildInfo.AppId` (`Services/UpdateInstallerService.cs`); changing either turns every upgrade into a side-by-side install and orphans the previous one in "Apps & features".
-- `AppVersion` is injected on the command line by `scripts/build-installer.ps1` (sourced from `version.json`) — never hard-code a version inside the `.iss`.
-- `[Files]` `Excludes` is injected by the build script as `*.pdb` **plus every framework language folder except `zh-CN` and `en-us`**. A self-contained publish carries ~86 language folders (168 `.mui` files — 37 % of the file count) that no zh/en user will ever load; the portable ZIP already dropped them, so the installer must too. The list is computed by scanning the actual publish output, so an unrelated new folder is never dropped by accident — only language folders are ever excluded.
-- `[Files]` must **not** carry `createallsubdirs`. Inno Setup skips empty directories by default, but that flag also creates directories that became empty *because of* `Excludes`, which leaves 84 empty `xx-YY` folders in the install directory and defeats the whole point of the exclusion. Measured on a real install: with the flag → 93 directories, 84 of them empty; without it → 9 directories, all populated (`Assets`, `Assets\Images`, `en-us`, `Microsoft.UI.Xaml`, `Microsoft.UI.Xaml\Assets`, `runtimes`, `runtimes\win-x64`, `runtimes\win-x64\native`, `zh-CN`). Verified install footprint: 289 files / 169.5 MB (287 payload + `unins000.exe` + `unins000.dat`).
+- `AppVersion` is injected on the command line by `scripts/build-installer.ps1` (sourced from `version.json`) — never hard-code a version inside the `.iss`. There is **no fallback define**: `#ifndef AppVersion` is a `#error`, because compiling the `.iss` directly used to produce a `0.0.0` package, and `UpdateService` compares versions numerically — such a package permanently breaks the update path on every machine that installs it. `build-installer.ps1` also asserts the version is three numeric parts before invoking ISCC.
+- `MinVersion` is `10.0.17763` (Windows 10 1809), matching `TargetPlatformMinVersion` in the csproj. `MinVersion=10.0` let the installer succeed on 1607/1709 and the app then crashed on first launch — and because the files were already on disk it read as an application bug rather than "your Windows is too old".
+- The **framework language folders** are pruned from the publish directory by `scripts/prune-publish-output.ps1`, which `build-installer.ps1` runs before ISCC and `.github/workflows/release.yml` runs before zipping. That script is the single source for both the kept list (`zh-CN`, `en-us`) and the classification rule; the two call sites used to keep their own copies of the list and the pattern, which is exactly the kind of duplication that drifts. Because pruning happens on the *publish* tree, the installer payload and the portable ZIP are identical by construction. `[Files] Excludes` is now only the `*.pdb` guard.
+- The classification is **name AND content**, not name alone: a top-level folder is a language folder only if its name looks like a BCP-47 tag (`^[a-z]{2,3}(?:-[A-Za-z0-9]+)*$`) **and** every file inside it is a `.mui` or `*.resources.dll`. A name-only rule is not safe to apply blindly to a build output — `de`, `lib`, `sdk`, `www` all match the name pattern, and deleting `lib` would break the app with no error anywhere. The content check is what makes it a deletion rule rather than a guess.
+- Measured on a real Release publish (validated against `scripts/prune-publish-output.ps1`): 89 top-level folders / 456 files / 165.9 MB before, 5 folders / 287 files / 164.1 MB after. The 84 removed folders match the "84 empty `xx-YY`" figure below. Note the surviving names are `Assets`, `en-us`, `Microsoft.UI.Xaml`, `runtimes`, `zh-CN` — this project's publish output contains **no** bare two-letter language folders, so a rule that also tolerated them was never needed; the earlier belief that they leaked through was not reproducible.
+- `[Files]` must **not** carry `createallsubdirs`. Inno Setup skips empty directories by default, but that flag also creates directories that became empty *because of* an exclusion, which leaves 84 empty `xx-YY` folders in the install directory and defeats the whole point of the exclusion. Measured on a real install: with the flag → 93 directories, 84 of them empty; without it → 9 directories, all populated (`Assets`, `Assets\Images`, `en-us`, `Microsoft.UI.Xaml`, `Microsoft.UI.Xaml\Assets`, `runtimes`, `runtimes\win-x64`, `runtimes\win-x64\native`, `zh-CN`). Verified install footprint: 289 files / 169.5 MB (287 payload + `unins000.exe` + `unins000.dat`).
 - `[InstallDelete]` clears `{app}\*` before installing so assemblies and language resources dropped by a newer version do not linger. User settings (`%LOCALAPPDATA%\SerialPortTool`) and logs (`Documents\SerialPortTool`) live outside `{app}` and are preserved by design — uninstall must not delete them either.
 - Compression is `lzma2/ultra64` + `SolidCompression`. The self-contained payload is several hundred MB, so the in-app download must keep its progress bar and cancel button.
 - Inno Setup does not bundle a Simplified Chinese language file. `build-installer.ps1` detects `Languages\ChineseSimplified.isl` next to `ISCC.exe` and only then passes `/DIncludeChinese=1`, so the installer still compiles on a stock Inno Setup install (English UI).
@@ -399,8 +439,14 @@ Two singleton services plus one build-time artifact. Deliberately dependency-fre
 
 Node 24 actions require Actions Runner **v2.327.1+** (GitHub-hosted `windows-latest` / `ubuntu-latest` already qualify; a self-hosted runner must be upgraded first). `download-artifact@v5` also changed the output path of a **single artifact downloaded by ID** — this workflow downloads every artifact by path (`path: artifacts`), so it is not affected. Check a candidate version before trusting a release note: `https://raw.githubusercontent.com/actions/<name>/<tag>/action.yml`, field `runs.using`.
 
-Build job: validate `version.json` against the git tag → generate `BuildInfo.g.cs` → restore/build for x64 Release → self-contained publish (no R2R / single-file / trimming) → **install Inno Setup (chocolatey) and run `scripts/build-installer.ps1 -SkipPublish`** → package a portable ZIP (strip `*.pdb`, keep only `zh-CN` + `en-us` framework language folders) → upload the ZIP **and the Setup.exe** as artifacts.
-Release job: generate release notes from the `version.json` changelog → create or update the GitHub Release with **both** the ZIP and the Setup.exe.
+Build job: validate `version.json` against the git tag → generate `BuildInfo.g.cs` → restore/build for x64 Release → self-contained publish (no R2R / single-file / trimming) → **assert that `Package.appxmanifest` and the published `SerialPortTool.dll` carry the tag version** → **install Inno Setup (chocolatey) and run `scripts/build-installer.ps1 -SkipPublish`** (which prunes the publish tree first) → package a portable ZIP using the same `scripts/prune-publish-output.ps1` → assert the ZIP is not empty → upload the ZIP **and the Setup.exe** as artifacts.
+Release job: generate release notes from the `version.json` changelog → copy the artifacts into `release-assets/`, **asserting that both a `.zip` and a `.exe` are present** → create or update the GitHub Release with both.
+
+The three assertion groups exist because each failure mode used to publish a Release anyway:
+
+- **manifest / assembly version** — the manifest sync script used to `exit 0` when it could not find the `Identity` element, and the csproj had a hard-coded version fallback. Either one produces a build whose About dialog, file properties and `Package.appxmanifest` disagree with the tag, with nothing red in the log.
+- **ZIP not empty** — `Compress-Archive` writes a perfectly valid archive from an empty directory; the only symptom would be a portable download that unpacks to nothing.
+- **a `.exe` in `release-assets/`** — the old check rejected only a completely empty set, so a run where the installer step produced nothing still published a Release with a ZIP and no `Setup.exe`, leaving the in-app auto-update (which looks for the `Setup*` asset) with nothing to download.
 
 > `scripts/build-installer.ps1` publishes to `publish/x64` itself when run without `-SkipPublish`, so the workflow reuses the already-published output and never produces a second, differently-configured build.
 
@@ -414,7 +460,8 @@ Release job: generate release notes from the `version.json` changelog → create
 ## Important Constraints
 
 - **Platform**: x64 Windows only (ARM64 support removed in v1.4.0).
-- **Minimum Windows version**: 10.0.17763 (Windows 10 1809).
+- **Minimum Windows version**: 10.0.17763 (Windows 10 1809). Enforced in two places that must stay in sync: `TargetPlatformMinVersion` (csproj) and `[Setup] MinVersion` (installer).
+- **Single instance**: exactly one process per user session. The guard is a named mutex in `App`'s constructor, taken before `App.xaml` is loaded; a second launch logs a warning, shows a message box and exits. Activation-argument forwarding (`AppInstance.RedirectActivationToAsync`) is deliberately **not** implemented — it would add a dependency on `Microsoft.Windows.AppLifecycle`'s unpackaged behaviour for no functional gain.
 - **Publish settings**: `PublishTrimmed=false`, `PublishReadyToRun=false`, `PublishSingleFile=false` — required for WinUI 3 stability.
 - **Language**: C# 13 (the .NET 9 SDK default; `LangVersion` is not pinned). `[ObservableProperty]` is applied to backing fields, not partial properties.
 - **Packaging**: unpackaged (`WindowsPackageType=None`, `WindowsAppSDKSelfContained=true`), distributed either as a per-user Inno Setup installer or as a portable ZIP.
@@ -426,8 +473,11 @@ Release job: generate release notes from the `version.json` changelog → create
 
 ## Debugging
 
-- **Application logs**: `%USERPROFILE%\Documents\SerialPortTool\DebugLogs\app-<date>.log` (daily rolling, 7-day retention, 50 MB cap per file — configured in `App.xaml.cs:62-76`). "工具 → 打开日志文件夹" opens the folder.
-- **Log level**: `Information` (`App.xaml.cs:67`).
+- **Application logs**: `%USERPROFILE%\Documents\SerialPortTool\DebugLogs\app-<date>.log` (daily rolling, 7-day retention, 50 MB cap per file — configured in `App.xaml.cs`). "工具 → 打开日志文件夹" opens the folder.
+- **The File sink is `shared: true`.** Without it only the first process can open the daily file and Serilog's File sink swallows its own failures, so a second instance logged *nothing at all* — the reason a duplicate launch used to look like "the app started and the log is empty".
+- **Log level**: `Information` (`App.xaml.cs`).
+- **A rejected duplicate launch is in the log**: `TryAcquireSingleInstanceMutex` runs before `InitializeComponent()`, so the second process writes a `Warning` before exiting. If a launch produces no window, that is the first thing to look for.
+- **Settings are read-only after a parse failure**: `%LOCALAPPDATA%\SerialPortTool\settings.json` is left exactly as-is and the status bar reports it. A user who wants a clean slate must fix or delete the file (or use `ISettingsService.ClearAsync()`).
 - **Global exception handlers** (`App.xaml.cs:81-98`) — three channels, all three are needed:
   - `Application.UnhandledException` → logged at `Fatal`. This is the only channel that sees an exception the XAML framework raises on the UI thread (binding evaluation, template instantiation, window construction). It was added in v2.1.0 after a startup failure produced a completely empty log.
   - `AppDomain.UnhandledException` → background-thread exceptions. Do not remove it; the app used to terminate silently on those.
@@ -444,10 +494,26 @@ Release job: generate release notes from the `version.json` changelog → create
 Each of these exists because a specific bug caused a crash or an error storm; removing them looks like simplification right up to the next incident.
 
 - **Settings file lock** (`SettingsService`, v1.8.10) — serializes writes to `settings.json` so the tuning watcher and a port-open path cannot corrupt it.
+- **Settings read-only protection** (`SettingsService`, v2.1.1) — a `settings.json` that exists but cannot be read or parsed sets `_loadFailed`, and every write path (cache-fill, delete, flush) refuses to persist from then on, reporting once through `SettingsLoadFailed`. The old behaviour assigned an empty dictionary to the cache and flushed it on the next 500 ms tick, replacing the user's port configs, appearance, colours and search history with `{}`. A zero-byte file counts as a failure too — that is the classic half-written result of the non-atomic writer this pairs with.
+- **Atomic settings write** (`SettingsService`, v2.1.1) — serialize to `settings.json.tmp` in the same directory, then `File.Move(tmp, dest, overwrite: true)`. Same-volume rename is atomic, so a crash, power loss or full disk leaves either the complete old file or the complete new one, never a truncated one. `UnauthorizedAccessException`/`IOException` are handled explicitly and leave the original untouched. Do not go back to `File.WriteAllText` on the real path — that is what *created* the truncated file the read-only protection above has to cope with.
 - **Reconnect cooldown** (`SerialPortService`, v1.8.10) — a failed reconnect enforces backoff; without it a yanked port produces thousands of `UnauthorizedAccessException`.
 - **Port reopen retry** (`SerialPortService` / `PortInstance.Dispose`, v1.8.11) — on close, `_isClosing` is reset, availability is re-checked while the OS releases the COM handle, and the cleanup delay lives in `Dispose`'s `finally` so it also runs on exception paths.
+- **No sync-over-async teardown** (`SerialPortService`, v2.1.1) — `IAsyncDisposable.DisposeAsync` is the real path; the synchronous `Dispose()` closes each port directly. Do **not** reintroduce `Task.Run(Close).Wait(timeout)`: the timeout bounds nothing (the task keeps running and the port gets disposed underneath it) and the abandoned work is what leaked COM handles. `_ports` is never cleared without disposing the instances it holds.
+- **`_writeLock` / `_writeCts` are intentionally not disposed** (`PortInstance.Dispose`, v2.1.1) — disposing the write semaphore raced in-flight sends, which then threw `ObjectDisposedException` from their own `finally { _writeLock.Release(); }`. That single line was the shutdown crash. Neither object holds an unmanaged resource in this usage (`AvailableWaitHandle` is never touched, no `CancelAfter`), so letting the GC collect them with the `PortInstance` is correct — and cannot throw.
 - **Validation queue lock** (`DataValidationService`, v1.8.10) — the per-port `PortValidationState` queue stays locked. Validation now runs inline on the read thread, but `ResetValidationState` can still be called from the UI thread.
-- **Tuning send pre-check** (`TuningProtocolService`, v1.8.10) — `IsPortOpen` is checked before every send, required because auto-send can fire mid-reconnect and caused `CancellationTokenSource` disposal crashes.
+- **Tuning send pre-check** (`MainViewModel.SendTuningToPortWorkerAsync`, v1.8.10) — `IsPortOpen` is checked before every tuning send, required because auto-send can fire mid-reconnect and caused `CancellationTokenSource` disposal crashes. It lives in the ViewModel, not in `TuningProtocolService` (which only builds frames).
+- **Single-instance mutex** (`App`, v2.1.1) — one process per user session, taken before `App.xaml` loads. Two instances fight for the same COM handles and, because `SettingsService`'s lock is process-local, overwrite each other's `settings.json`. The mutex is deliberately never released: the OS closes the handle when the process dies, including on a crash, whereas releasing it on window close would let a second instance start during teardown.
+- **Idempotent logger disposal** (`FileLoggerService.LoggerInstance`, v2.1.1) — `DisposeAsync` runs once; a second caller awaits the first instead of re-disposing the writer and timer. Combined with `_lifecycleLock` around Start/Stop, this closes the check-then-act window that used to leak a `LoggerInstance` (a 64 KB `StreamWriter` file handle plus a 100 ms timer) whenever two starts raced for the same port.
+- **Port registration is atomic** (`SerialPortService.OpenPortAsync`, v2.1.1) — `_ports.TryAdd`; the loser of a concurrent open disposes its own instance. The `ContainsKey` check at the top is separated from the registration by the availability probe and up to three open attempts, so the indexer assignment silently dropped the loser's open `SerialPort`.
+- **One open request per port** (`MainViewModel._openingPorts`, v2.1.1) — `OpenPortCommand.ExecuteAsync` is also called directly from the port list's `SelectionChanged`, which bypasses `CanExecute` entirely; the atomic claim in `finally` is what prevents a double-open.
+- **Clipboard failures are caught** (`Controls/LogListView.xaml.cs`, v2.1.1) — `Clipboard.SetContent` throws `COMException` whenever another process holds the clipboard open, which is routine. Unhandled it reached the XAML unhandled-exception handler and terminated the process, reachable by accident through a toolbar button and Ctrl+C. The failure now raises `CopyFailed` and becomes a status message.
+- **`LogListView` re-subscribes on `Loaded`** (`Controls/LogListView.xaml.cs`, v2.1.1) — the `ItemsSource` dependency property is not re-assigned across an unload/load cycle, so the property-changed callback does not run again and the `CollectionChanged` subscription (auto-scroll) stayed gone for the rest of the session.
+- **Filter re-entry has one entry point** (`MainViewModel.RequestFilterLogs`, v2.1.1) — the search dropdown selection, the dropdown closing and the Enter key each called the synchronous O(n) rebuild *on top of* the debounce their own `SearchText` assignment had already armed. `FilterLogs()` is private now; call `RequestFilterLogs()`.
+- **`WaitForStableTuningFileAsync` reports instability** (`MainViewModel`, v2.1.1) — it returns `false` instead of falling through silently after the retry budget. Hashing a `.bin` that is still being written stored a baseline for content that no longer existed, which suppressed every later auto-send as "content unchanged".
+- **Hex input is parsed per group** (`MainViewModel.TryParseHexInput`, v2.1.1) — a global `Replace("0x", "")` corrupted any payload containing those characters (`A0x0B` → `A0B`). The prefix is per-group notation and is only stripped at the start of a group.
+- **`checked` arithmetic in the tuning builder** (`TuningProtocolService`, v2.1.1) — expression evaluation and checksum accumulation are `checked` and translate overflow into `TuningProtocolException`. An unchecked wrap in a length expression produces a header whose declared total does not match the bytes sent, which fails on the device rather than at build time.
+- **No hard-coded version fallback** (`SerialPortTool.csproj`, v2.1.1) — the `ValidateVersion` target fails the build when `version.json` cannot be parsed. The fallback was `1.7.0` while the project was on 2.1.0, i.e. a silently mis-versioned build, and the version regex is anchored to the opening brace so a reordered top-level key cannot make it pick up a changelog entry.
+- **Installer refuses a version-less build** (`installer/SerialPortTool.iss`, v2.1.1) — `#ifndef AppVersion` is a `#error`. The old `0.0.0` fallback produced an install package that permanently breaks auto-update on every machine that installs it, because versions are compared numerically.
 - **Single-threaded per-port decode/validation** (`SerialPortService`, v1.8.13) — `SerialPort_DataReceived` awaits validation before reading the next chunk, and a garbage verdict arms a ~1 s drop cooldown, so the per-port `Decoder`/`StringBuilder` is only ever touched by one thread. Do not make validation fire-and-forget again.
 - **Shutdown timeout** (`App.xaml.cs:196-242`) — window-close cleanup runs on a thread-pool task with a hard 5-second wall clock; on timeout the app force-exits instead of hanging on a stuck COM handle.
 - **Installer verification before launch** (`UpdateInstallerService`, v2.0.0) — the downloaded `Setup*.exe` is rejected unless it is non-empty, matches the Release asset `size`, and starts with `MZ`. Launching an unverified download would execute a 403/HTML error page as an installer on a bad network.
@@ -469,7 +535,9 @@ Each of these exists because a specific bug caused a crash or an error storm; re
 Only the ones that change how you should reason about the code — `version.json` has the full changelog.
 
 - **Multi-port management** — open/close individual ports, "open all"/"close all", "scan ports".
-- **Per-port colours** (v1.7.0, extended v2.1.0) — each opened port gets a unique colour from a 10-colour slot palette, plus a configurable TX colour; both are persisted as slots and resolved per appearance. `LogEntry.ColorHex` holds the colour **resolved for the active appearance**, and the rendering path is always `HexColorToBrushConverter` (log rows in `LogListView.xaml`'s `DataTemplate`, the sidebar swatch, the channel legend). New `LogEntry` fields needing colour treatment must go through the same converter.
+- **Per-port colours** (v1.7.0, extended v2.1.0 / v2.1.1) — each opened port gets a unique colour from a 10-colour slot palette, plus a configurable TX colour; both are persisted as slots and resolved per appearance. `LogEntry.ColorHex` holds the colour **resolved for the active appearance**, and the rendering path is always `HexColorToBrushConverter` (log rows in `LogListView.xaml`'s `DataTemplate`, the sidebar swatch, the channel legend). New `LogEntry` fields needing colour treatment must go through the same converter. Changing a port's colour re-colours the rows already on screen (`ApplyPortColorChange`), the same way an appearance switch does — only `IsReceived` rows are touched, because sent/tuning rows carry the TX colour.
+- **Single instance** (v2.1.1) — a second launch shows a message box and exits. See Important Constraints and the "do not regress" entry.
+- **Send box Enter** (v2.1.1) — Enter in the send box sends to every open port, which is what the placeholder text always claimed. The text box is single-line, so Enter has no other meaning.
 - **Appearance switch** (v2.1.0) — 跟随系统 / 浅色 / 深色 from the 外观 menu, persisted as `AppTheme` and applied as `ElementTheme` on the window root. Required reading before touching anything visual: see "UI and Appearance".
 - **Channel trace + channel legend** (v2.1.0) — every log row carries a 3 px bar in its port's colour, and a legend strip above the log states the colour → port → byte-count mapping, so interleaved multi-port traffic stays attributable at a glance.
 - **Log pause toggle** — pauses UI appending without stopping reception; buffering continues while paused and batched updates resume on unpause. Anything touching the data-flow pipeline must respect this.
@@ -483,24 +551,31 @@ Only the ones that change how you should reason about the code — `version.json
 ## Data Flow: Receiving Serial Data
 
 ```
-Hardware serial port (background thread)
+Hardware serial port (the driver's DataReceived worker thread — one per port)
   ↓
-SerialPortService.DataReceivedHandler (validates / detects baud rate)
+PortInstance.SerialPort_DataReceived
+  · reads into a reused scratch buffer, copies out an exact-sized chunk
+  · awaits DataValidationService.ValidateDataAsync INLINE (no Task.Run) so the per-port
+    state and the decoder stay single-threaded; a garbage verdict arms a ~1 s drop cooldown
   ↓
-DataReceived event raised (still background thread)
+SerialPortService.DataReceived event (still the read thread)
   ↓
-MainViewModel event handler
+MainViewModel.OnDataReceived
+  · persistent per-port UTF-8 Decoder + PortLineAssembler → complete lines only
+  · garbage-line filter, 1000-char truncation, 500-line cap per chunk
+  · FileLoggerService.WriteLogs(portName, batch)   →  disk, batched, background
   ↓
-DispatcherQueue.EnqueueAsync (switch to UI thread)
+_pendingLogBatches queue + SchedulePendingLogFlush (one Low-priority dispatcher item)
   ↓
-LogFilterService.ShouldDisplay (cached regex)
+FlushPendingLogBatches (UI thread, ≤ 100 entries per 50 ms tick)
+  · AllLogs.AddRange / DisplayLogs.AddRange (RangeObservableCollection, one notification)
+  · TrimDisplayLogs / TrimLogCollection
+  · throttled per-port statistics + traffic totals (~4 Hz)
   ↓
-RangeObservableCollection.AddRange (batched UI update)
-  ↓
-Controls/LogListView.xaml (virtualized ListView, x:Bind)
-  ↓
-FileLoggerService.WriteLogs (async batched write to disk)
+Controls/LogListView.xaml (virtualized ListView, compiled x:Bind)
 ```
+
+Locally generated entries (TX, tuning summaries) enter the same queue through `AddSentLog`, so they are subject to the same filter, trim and batching.
 
 ---
 
@@ -524,3 +599,5 @@ FileLoggerService.WriteLogs (async batched write to disk)
 | `version.json` | Release tooling / changelog | Every shipping change |
 | `.github/workflows/release.yml` | CI | Release/publish process |
 | `installer/SerialPortTool.iss` + `scripts/build-installer.ps1` | Release tooling | Anything about installation, the `AppId`, install location, or the update hand-off |
+| `scripts/prune-publish-output.ps1` | Build / release tooling | The shipped language folders, `*.pdb`, or the publish-tree pruning step |
+| `mic-tota-tuning.json` | Users writing a tuning descriptor | The descriptor format — the sample and this section change together |

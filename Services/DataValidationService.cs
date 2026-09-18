@@ -29,7 +29,6 @@ public class DataValidationService : IDataValidationService
     private const double CleanableTextRatio = 0.7;
     
     // 正则表达式模式
-    private readonly Regex _printableCharRegex = new(@"^[\x20-\x7E\r\n\t]*$", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
     private readonly Regex _commonProtocolRegex = new(@"^(AT|OK|ERROR|READY|[\d\w\s.,!?@#$%^&*()_+=\-\[\]{};:'""<>\\/|`~\r\n\t])*$", RegexOptions.Compiled | RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
     private readonly Regex _hexPatternRegex = new(@"^[0-9A-Fa-f\s\r\n]*$", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
 
@@ -205,7 +204,19 @@ public class DataValidationService : IDataValidationService
             return 0.0;
 
         // 可打印字符比例。\r\n\t 是合法的文本控制字符，不算乱码。
-        var printableChars = text.Count(c => (c >= 32 && c <= 126) || c == '\r' || c == '\n' || c == '\t');
+        // Span loop instead of text.Count(lambda): the LINQ path boxes string's enumerator and pays a
+        // delegate call per character, on the per-port read thread, for every received chunk.
+        var printableChars = 0;
+        var span = text.AsSpan();
+        for (var i = 0; i < span.Length; i++)
+        {
+            var c = span[i];
+            if ((c >= 32 && c <= 126) || c == '\r' || c == '\n' || c == '\t')
+            {
+                printableChars++;
+            }
+        }
+
         return (double)printableChars / text.Length;
     }
 
@@ -245,7 +256,29 @@ public class DataValidationService : IDataValidationService
         if (string.IsNullOrEmpty(text))
             return 0.0;
 
-        var uniqueChars = text.Distinct().Count();
+        // The distinct-char count used to be text.Distinct().Count(), which allocates a HashSet, its
+        // buckets and an enumerator on every received chunk — i.e. on the per-port read thread under
+        // full throughput. A 256-bit stack bitmap answers the same question with no allocation; the
+        // count is capped at >= 50 because that is all the score below ever needs.
+        Span<ulong> seen = stackalloc ulong[4];
+        var uniqueChars = 0;
+        var chars = text.AsSpan();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            var c = chars[i];
+            var bitIndex = c > 255 ? 255 : c;
+            ref var word = ref seen[bitIndex >> 6];
+            var mask = 1UL << (bitIndex & 63);
+            if ((word & mask) == 0)
+            {
+                word |= mask;
+                if (++uniqueChars >= 50)
+                {
+                    break;
+                }
+            }
+        }
+
         var totalChars = text.Length;
         
         // 字符多样性分析
@@ -320,9 +353,18 @@ public class DataValidationService : IDataValidationService
         // 检查是否包含大量相同字节
         if (data.Length > 100)
         {
+            // data.Count(lambda) boxed byte[]'s enumerator and called a delegate per byte; this runs on
+            // the per-port read thread for every chunk. Early-exit as soon as the 80 % verdict is settled.
             var firstByte = data[0];
-            var sameByteCount = data.Count(b => b == firstByte);
-            if (sameByteCount > data.Length * 0.8) return true;
+            var sameByteCount = 0;
+            var threshold = data.Length * 0.8;
+            for (var i = 0; i < data.Length; i++)
+            {
+                if (data[i] == firstByte && ++sameByteCount > threshold)
+                {
+                    return true;
+                }
+            }
         }
 
         return false;

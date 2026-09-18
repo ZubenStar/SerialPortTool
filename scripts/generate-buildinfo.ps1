@@ -18,5 +18,9 @@ internal static class BuildInfo
 }
 "@
 
-[System.IO.File]::WriteAllText($OutputPath, $content, [System.Text.Encoding]::UTF8)
+# BOM-less UTF-8 on purpose. [System.Text.Encoding]::UTF8 emits a BOM, and the scripts here were split
+# between BOM / no-BOM writers — which turns every regenerated file into a whole-file diff and is the
+# kind of noise that hides a real change. The generated file is ASCII-only, so no BOM is needed.
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($OutputPath, $content, $utf8NoBom)
 Write-Host "Generated BuildInfo.g.cs with timestamp: $timestamp"

@@ -233,6 +233,23 @@ public sealed class TuningProtocolService : ITuningProtocolService
 
             ValidateField(field, "tota.packetFrame.layout");
         }
+
+        // tota.infoAreaFields accepts either a shorthand string ("index", "position", …) or a full field
+        // object. The object form must satisfy the same contract as any other field, and it was the one
+        // layout the validator did not walk — a missing `type` only surfaced mid-send, after the header
+        // had already been sized around the bad field. Shorthand strings are checked in BuildInfoArea,
+        // where the allowed names live.
+        foreach (var infoField in descriptor.Tota.InfoAreaFields)
+        {
+            if (infoField.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var field = infoField.Deserialize<TuningProtocolField>(JsonOptions)
+                ?? throw new TuningProtocolException("tota.infoAreaFields 中存在无效字段对象");
+            ValidateField(field, "tota.infoAreaFields");
+        }
     }
 
     private static void ValidateField(TuningProtocolField field, string location)
@@ -529,6 +546,14 @@ public sealed class TuningProtocolService : ITuningProtocolService
                 {
                     var field = infoField.Deserialize<TuningProtocolField>(JsonOptions)
                         ?? throw new TuningProtocolException("tota.infoAreaFields 中存在无效字段对象");
+
+                    // Object entries are real fields, so they get the same validation as every other
+                    // layout. ValidateDescriptor only walked dspMessage.layout / tota.headerLayout /
+                    // tota.packetFrame.layout, which left this one path unchecked: a missing `type`
+                    // surfaced much later as an unsupported-type exception from GetFixedOrDynamicFieldSize,
+                    // after the header had already been sized around it.
+                    ValidateField(field, "tota.infoAreaFields");
+
                     var fieldSizes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
                     {
                         [field.Name] = GetFixedOrDynamicFieldSize(field, 0, 0)
@@ -695,17 +720,26 @@ public sealed class TuningProtocolService : ITuningProtocolService
         }
 
         var sum = 0;
-        foreach (var inputName in field.Inputs)
+        try
         {
-            if (!fieldBytes.TryGetValue(inputName, out var inputBytes))
+            foreach (var inputName in field.Inputs)
             {
-                throw new TuningProtocolException($"checksum 输入字段不存在或尚未生成: {inputName}");
-            }
+                if (!fieldBytes.TryGetValue(inputName, out var inputBytes))
+                {
+                    throw new TuningProtocolException($"checksum 输入字段不存在或尚未生成: {inputName}");
+                }
 
-            foreach (var b in inputBytes)
-            {
-                sum += b;
+                foreach (var b in inputBytes)
+                {
+                    // checked: an unchecked wrap would silently produce a wrong checksum byte rather
+                    // than a diagnosable error.
+                    sum = checked(sum + b);
+                }
             }
+        }
+        catch (OverflowException ex)
+        {
+            throw new TuningProtocolException($"checksum 字段 {field.Name} 的输入累计溢出", ex);
         }
 
         return new[] { (byte)(~sum & 0xFF) };
@@ -805,7 +839,20 @@ public sealed class TuningProtocolService : ITuningProtocolService
             }
 
             var term = compact[termStart..index];
-            total += sign * EvaluateTerm(term, context, location);
+            var termValue = EvaluateTerm(term, context, location);
+
+            // checked: these expressions describe packet sizes, so a wrapped result is not a large
+            // value but a wrong one — it would build a header whose declared total no longer matches
+            // the bytes actually sent. Better to reject the descriptor.
+            try
+            {
+                total = checked(total + (sign * termValue));
+            }
+            catch (OverflowException ex)
+            {
+                throw new TuningProtocolException($"{location} 表达式 {expression} 计算溢出", ex);
+            }
+
             sign = 1;
         }
 

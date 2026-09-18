@@ -7,6 +7,9 @@ using SerialPortTool.Core.Enums;
 using SerialPortTool.Services;
 using SerialPortTool.ViewModels;
 using System;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace SerialPortTool;
@@ -22,6 +25,16 @@ public partial class App : Application
     private readonly ServiceProvider _services;
     private Window? _window;
     private bool _isClosing;
+
+    /// <summary>
+    /// Single-instance guard. Held (never released) for the whole process lifetime — the OS closes the
+    /// handle on exit, which is exactly the semantics we want: the name disappears only when the
+    /// process does. Deliberately a plain <see cref="Mutex"/> rather than
+    /// <c>AppInstance.FindOrRegisterForKey</c>, because the latter's behaviour in an unpackaged app is
+    /// an extra dependency we do not need here.
+    /// </summary>
+    private Mutex? _singleInstanceMutex;
+
 
     /// <summary>
     /// Gets the current App instance
@@ -71,6 +84,11 @@ public partial class App : Application
                 retainedFileCountLimit: 7,  // Keep last 7 days
                 fileSizeLimitBytes: 50_000_000,  // 50MB per file
                 rollOnFileSizeLimit: true,
+                // shared: true lets a second process open the same daily file. Without it the second
+                // instance silently loses ALL of its logging (Serilog's File sink swallows its own
+                // errors), which is what made "the app started twice and one of them logged nothing"
+                // so hard to diagnose. It also lets the single-instance rejection below be visible.
+                shared: true,
                 outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
 
@@ -96,6 +114,18 @@ public partial class App : Application
             Log.Error(e.Exception, "Unobserved task exception");
             e.SetObserved(); // Prevent process termination
         };
+
+        // Duplicate-instance guard, before App.xaml is even loaded. A second copy of this app is not
+        // merely redundant: it fights the first one for COM handles, it used to lose the whole
+        // settings file (each process has its own in-memory cache and its own file lock), and before
+        // the shared: true sink above it silently wrote no logs at all.
+        if (!TryAcquireSingleInstanceMutex())
+        {
+            Log.Warning("Another SerialPortTool instance is already running; this launch exits");
+            Log.CloseAndFlush();
+            ShowAlreadyRunningMessage();
+            Environment.Exit(0);
+        }
 
         InitializeComponent();
 
@@ -241,4 +271,87 @@ public partial class App : Application
         }
     }
 
+    /// <summary>
+    /// Takes the single-instance mutex, or returns <c>false</c> when another copy already holds it.
+    /// </summary>
+    /// <remarks>
+    /// The mutex is intentionally never released: the OS closes the handle when the process dies, and
+    /// that includes a crash or a forced kill. Releasing it early (e.g. on window close) would open a
+    /// window in which a second instance could start while the first is still tearing down — which is
+    /// exactly the interleaving that corrupts <c>settings.json</c>.
+    /// </remarks>
+    private bool TryAcquireSingleInstanceMutex()
+    {
+        try
+        {
+            // Session-scoped ("Local\") plus user-scoped: the SID keeps separate users (and separate
+            // RDP sessions) from blocking each other, which a bare global name would.
+            var mutexName = $"Local\\SerialPortTool-SingleInstance-{GetUserIdentityForMutexName()}";
+            _singleInstanceMutex = new Mutex(initiallyOwned: true, name: mutexName, out var createdNew);
+            return createdNew;
+        }
+        catch (Exception ex)
+        {
+            // A mutex that cannot be created (policy, ACL, name collision) must never stop the app
+            // from starting — the guard is a safety net, not a requirement.
+            Log.Warning(ex, "Could not create the single-instance mutex; continuing without the guard");
+            _singleInstanceMutex = null;
+            return true;
+        }
+    }
+
+    private static string GetUserIdentityForMutexName()
+    {
+        try
+        {
+            var sid = WindowsIdentity.GetCurrent().User?.Value;
+            if (!string.IsNullOrEmpty(sid))
+            {
+                return sid;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Could not read the current user SID for the single-instance mutex name");
+        }
+
+        // Fallback: the account name, with anything a mutex name would reject stripped out.
+        var sanitized = new string(Array.FindAll(
+            Environment.UserName.ToCharArray(),
+            c => char.IsLetterOrDigit(c) || c == '-' || c == '_'));
+        return string.IsNullOrEmpty(sanitized) ? "default" : sanitized;
+    }
+
+    /// <summary>
+    /// Tells the user why this launch produced no window.
+    /// </summary>
+    /// <remarks>
+    /// Failing to show the message is logged and ignored — the caller exits either way, and a silent
+    /// exit is still better than a second instance competing for the same COM ports.
+    /// </remarks>
+    private static void ShowAlreadyRunningMessage()
+    {
+        const uint MB_OK = 0x00000000;
+        const uint MB_ICONINFORMATION = 0x00000040;
+        const uint MB_SETFOREGROUND = 0x00010000;
+
+        try
+        {
+            // Deliberately a Win32 message box: this runs before App.xaml is loaded, so there is no
+            // XamlRoot to host a ContentDialog in, and the app is about to exit — a window that the
+            // user must dismiss is correct here, and it is what makes "nothing happened" impossible.
+            MessageBoxW(
+                IntPtr.Zero,
+                "串口工具已经在运行了。\n\n同一时间只能打开一个实例，这是为了避免两个实例争抢同一个串口、以及相互覆盖设置文件。\n请切换到已经打开的窗口。",
+                "SerialPortTool",
+                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Could not show the already-running message box");
+        }
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = false)]
+    private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
 }

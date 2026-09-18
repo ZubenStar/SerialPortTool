@@ -120,8 +120,10 @@ public class LogFilterService : ILogFilterService
 
     public bool ShouldDisplay(LogEntry entry)
     {
-        var activeFilters = GetActiveFilters().ToList();
-        
+        // GetActiveFilters() already materialises a List under the lock, so the extra ToList() here
+        // copied the whole filter list once per log entry for nothing.
+        var activeFilters = GetActiveFilters();
+
         if (!activeFilters.Any())
         {
             return true; // No filters, show everything
@@ -158,12 +160,30 @@ public class LogFilterService : ILogFilterService
     public IEnumerable<HighlightSpan> GetHighlights(string text)
     {
         var highlights = new List<HighlightSpan>();
+
+        // text != null guard: the body below calls text.IndexOf / regex.Matches directly, and a null
+        // line would otherwise surface as a NullReferenceException from inside a highlight pass.
+        if (string.IsNullOrEmpty(text))
+        {
+            return highlights;
+        }
+
         var activeFilters = GetActiveFilters()
             .Where(f => f.Type == FilterType.Text || f.Type == FilterType.Regex)
             .ToList();
 
         foreach (var filter in activeFilters)
         {
+            // An empty Text pattern is not "match nothing": IndexOf("") returns 0 for every index and
+            // the advance is filter.Pattern.Length == 0, so the loop below never terminates and appends
+            // to `highlights` forever (unbounded memory growth, UI thread never returns). Regex is fine
+            // either way — an empty pattern matches zero-length at each position, which Regex.Matches
+            // handles — but the Text branch needs this.
+            if (string.IsNullOrEmpty(filter.Pattern))
+            {
+                continue;
+            }
+
             try
             {
                 if (filter.Type == FilterType.Text)

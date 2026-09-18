@@ -700,8 +700,31 @@ public sealed partial class MainWindow : Window
 
     private async void SendButton_Click(object sender, RoutedEventArgs e)
     {
-        // Sync selected port from UI to ViewModel
-        ViewModel.SelectedPort = OpenPortListView.SelectedItem as ViewModels.PortViewModel;
+        await SendAsync();
+    }
+
+    /// <summary>
+    /// Enter in the send box sends, matching what the placeholder text promises.
+    /// </summary>
+    /// <remarks>
+    /// The text box is single-line, so Enter carries no other meaning here. The event is marked handled
+    /// so the press cannot also reach a default button.
+    /// </remarks>
+    private async void SendTextBox_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        if (e.Key != Windows.System.VirtualKey.Enter)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        await SendAsync();
+    }
+
+    private async Task SendAsync()
+    {
+        // Sends broadcast to every open port (see MainViewModel.SendAsync), so there is nothing to sync
+        // from the selected row here.
         await ViewModel.SendCommand.ExecuteAsync(null);
     }
 
@@ -763,11 +786,10 @@ public sealed partial class MainWindow : Window
             // Mark that this text is from selecting a history item
             _isFromHistorySelection = true;
 
-            // Update ViewModel
+            // Update ViewModel. Assigning SearchText already arms the 150 ms re-filter debounce —
+            // calling the (now private) synchronous rebuild here as well doubled the O(n) work per
+            // selection, which is precisely what the debounce exists to collapse.
             ViewModel.SearchText = selectedText;
-
-            // Trigger filter
-            ViewModel.FilterLogs();
         }
     }
 
@@ -778,14 +800,11 @@ public sealed partial class MainWindow : Window
         {
             System.Diagnostics.Debug.WriteLine($"DropDownClosed: Text='{comboBox.Text}'");
 
-            // Ensure ViewModel has the current text
+            // Ensure ViewModel has the current text (which arms the re-filter debounce)
             if (!string.IsNullOrWhiteSpace(comboBox.Text))
             {
                 ViewModel.SearchText = comboBox.Text;
             }
-
-            // Trigger filter
-            ViewModel.FilterLogs();
         }
     }
 
@@ -842,7 +861,7 @@ public sealed partial class MainWindow : Window
 
             if (!string.IsNullOrWhiteSpace(searchText))
             {
-                // Update ViewModel
+                // Update ViewModel (arms the re-filter debounce)
                 ViewModel.SearchText = searchText;
 
                 // Add to recent searches (using debounce logic)
@@ -854,9 +873,6 @@ public sealed partial class MainWindow : Window
                     _lastSaveTime = DateTime.Now;
                     System.Diagnostics.Debug.WriteLine($"Saved to history (Enter): '{searchText}'");
                 }
-
-                // Trigger filter
-                ViewModel.FilterLogs();
 
                 // Close dropdown and clear selection
                 comboBox.IsDropDownOpen = false;
@@ -931,7 +947,10 @@ public sealed partial class MainWindow : Window
     private void CopySelectedLogs_Click(object sender, RoutedEventArgs e)
     {
         // Ctrl+C keeps working through the control itself; this is the discoverable toolbar entry.
-        if (!LogListView.CopySelection())
+        // CopySelection() reports failure both for "nothing selected" and for "clipboard refused";
+        // CopyFailed has already explained the latter, so only the former gets a message here.
+        _clipboardCopyFailed = false;
+        if (!LogListView.CopySelection() && !_clipboardCopyFailed)
         {
             ViewModel.StatusMessage = "没有选中的日志";
         }
@@ -942,9 +961,22 @@ public sealed partial class MainWindow : Window
         ViewModel.IsPaused = !ViewModel.IsPaused;
     }
 
+    /// <summary>Set by <see cref="LogListView_CopyFailed"/> so the toolbar click does not overwrite it.</summary>
+    private bool _clipboardCopyFailed;
+
     private void LogListView_CopyCompleted(object? sender, int count)
     {
         ViewModel.StatusMessage = $"已复制 {count} 条日志到剪贴板";
+    }
+
+    /// <remarks>
+    /// A clipboard refusal is a normal, recoverable situation (another process has the clipboard
+    /// open), so it degrades to a status message rather than an exception dialog.
+    /// </remarks>
+    private void LogListView_CopyFailed(object? sender, string message)
+    {
+        _clipboardCopyFailed = true;
+        ViewModel.StatusMessage = $"复制失败：剪贴板被其他程序占用，请稍后重试（{message}）";
     }
 
     private void CustomBaudRateCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -1070,6 +1102,10 @@ public sealed partial class MainWindow : Window
         // derived from it for the appearance that is currently active.
         portVm.ColorHex = colorHex;
         portVm.RefreshDisplayColor(ViewModel.IsDarkTheme);
+        // Rows that are already on screen would otherwise keep the previous brush until recycling
+        // re-applies the OneWay binding, mixing two palettes in the log — the same failure mode the
+        // appearance sweep exists to prevent, triggered here by a per-port change.
+        ViewModel.ApplyPortColorChange(portVm.PortName, colorHex);
         ViewModel.SavePortColor(portVm.PortName, colorHex);
 
         _colorTargetPort = null;

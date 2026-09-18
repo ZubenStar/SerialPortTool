@@ -735,7 +735,8 @@
                                       x:Name="LogListView"
                                       ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
                                       IsPaused="{x:Bind ViewModel.IsPaused, Mode=OneWay}"
-                                      CopyCompleted="LogListView_CopyCompleted" />
+                                      CopyCompleted="LogListView_CopyCompleted"
+                                      CopyFailed="LogListView_CopyFailed" />
 
                 <!-- ========== Send ========== -->
                 <Border Grid.Row="4"
@@ -792,6 +793,7 @@
                                  Grid.Column="1"
                                  Text="{x:Bind ViewModel.SendText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                  PlaceholderText="输入要发送的数据，回车发送…"
+                                 KeyDown="SendTextBox_KeyDown"
                                  VerticalAlignment="Center"
                                  MinHeight="{StaticResource AppControlHeightPrimary}" />
 

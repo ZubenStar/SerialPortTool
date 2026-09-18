@@ -111,6 +111,42 @@ jobs:
       env:
         DOTNET_CLI_TELEMETRY_OPTOUT: 1
         DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+
+    - name: Verify the manifest and the built assembly carry the tag version
+      shell: pwsh
+      run: |
+        $version = "${{ steps.get_version.outputs.version }}"
+
+        # Package.appxmanifest: the UpdateManifestVersion MSBuild target rewrites the Identity version,
+        # and its script used to exit 0 when it could not find the element — a green build that shipped
+        # the previous release's version in the manifest.
+        $manifest = Get-Content Package.appxmanifest -Raw
+        $manifestMatch = [regex]::Match($manifest, '<Identity\s[^>]*\bVersion="([^"]+)"')
+        if (-not $manifestMatch.Success) {
+          Write-Error "Package.appxmanifest contains no Identity Version attribute"
+          exit 1
+        }
+        $manifestVersion = $manifestMatch.Groups[1].Value
+        if ($manifestVersion -ne "$version.0") {
+          Write-Error "Package.appxmanifest Identity Version is '$manifestVersion', expected '$version.0'"
+          exit 1
+        }
+        Write-Host "✓ Package.appxmanifest version: $manifestVersion"
+
+        # The assembly: the csproj reads version.json at evaluation time, and a stale hard-coded
+        # fallback there meant a mis-versioned build could still succeed. Assert the value actually
+        # landed in the binary rather than trusting the evaluation.
+        $dll = "publish/${{ matrix.platform }}/SerialPortTool.dll"
+        if (-not (Test-Path $dll)) {
+          Write-Error "Published assembly not found: $dll"
+          exit 1
+        }
+        $fileVersion = (Get-Item $dll).VersionInfo.FileVersion
+        if ($fileVersion -ne "$version.0") {
+          Write-Error "SerialPortTool.dll FileVersion is '$fileVersion', expected '$version.0'"
+          exit 1
+        }
+        Write-Host "✓ Published assembly FileVersion: $fileVersion"
     
     - name: Install Inno Setup
       shell: pwsh
@@ -134,7 +170,6 @@ jobs:
         $platform = "${{ matrix.platform }}"
         $packageName = "SerialPortTool-v$version-win-$platform"
         $packagePath = "packages/$packageName"
-        $keptLanguageDirs = @('zh-CN', 'en-us')
         
         # Create package directory
         New-Item -ItemType Directory -Force -Path $packagePath
@@ -142,19 +177,23 @@ jobs:
         # Copy published files
         Copy-Item -Path "publish/$platform/*" -Destination "$packagePath/" -Recurse
         
-        # Remove debug symbols from the release package
-        Get-ChildItem -Path $packagePath -Recurse -Filter "*.pdb" -File | Remove-Item -Force
-
-        # Keep only the framework language resources we actually ship
-        Get-ChildItem -Path $packagePath -Directory | Where-Object {
-          $_.Name -match '^[a-z]{2,3}(?:-[A-Za-z0-9]+)+$' -and
-          $_.Name -notin $keptLanguageDirs
-        } | Remove-Item -Recurse -Force
+        # Remove *.pdb and the framework language folders we do not ship. The kept-language list and the
+        # classification rule live in that script ONLY: this workflow used to keep its own copy of both,
+        # which is how the installer payload and the portable ZIP drift apart.
+        & .\scripts\prune-publish-output.ps1 -Path $packagePath
         
         # Create ZIP archive
         Compress-Archive -Path "$packagePath/*" -DestinationPath "$packagePath.zip"
+
+        # Compress-Archive happily produces a valid archive from an empty directory; that would ship as
+        # the portable release asset with no error anywhere.
+        $zipBytes = (Get-Item "$packagePath.zip").Length
+        if ($zipBytes -lt 1MB) {
+          Write-Error "Portable package looks empty ($zipBytes bytes): $packageName.zip"
+          exit 1
+        }
         
-        Write-Host "✓ Created package: $packageName.zip"
+        Write-Host "✓ Created package: $packageName.zip ($([math]::Round($zipBytes / 1MB, 1)) MB)"
     
     - name: Upload build artifact
       uses: actions/upload-artifact@v6
@@ -253,6 +292,19 @@ jobs:
         find artifacts -name "*.zip" -exec cp {} release-assets/ \;
         find artifacts -name "*.exe" -exec cp {} release-assets/ \;
         ls -lh release-assets/
+
+        # Assert both artifact kinds are actually present. The check below only rejected a completely
+        # empty set, so a run where the installer step silently produced nothing (or the upload path
+        # glob missed) still published a Release — with a portable ZIP and no Setup.exe, leaving the
+        # in-app auto-update with nothing to download.
+        if ! ls release-assets/*.exe >/dev/null 2>&1; then
+          echo "::error::No Setup.exe among the release assets; the in-app auto-update has nothing to download"
+          exit 1
+        fi
+        if ! ls release-assets/*.zip >/dev/null 2>&1; then
+          echo "::error::No portable ZIP among the release assets"
+          exit 1
+        fi
     
     - name: Create or update GitHub Release
       shell: bash

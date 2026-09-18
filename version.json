@@ -1,7 +1,36 @@
-﻿{
-    "version": "2.1.0",
+{
+    "version": "2.1.1",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-18",
+            "version": "2.1.1",
+            "changes": [
+                "Added a single-instance guard: a second launch explains itself and exits instead of competing for the same COM ports and overwriting the settings file, and the application log is now opened for sharing so a second process no longer loses its logging silently",
+                "Settings can no longer be destroyed by a bad read: a settings.json that fails to parse puts the service into a visible read-only state instead of being overwritten with an empty document, and writes are atomic (temp file + replace) so an interrupted write cannot create the truncated file that starts that cycle",
+                "Shutdown no longer leaks COM handles: ports are closed asynchronously while the window tears down, the synchronous fallback path no longer blocks on nested timeouts that abandoned their own work, and queued writes are cancelled before the port is disposed",
+                "Fixed the ObjectDisposedException that could surface when the window was closed with sends in flight",
+                "Baud-rate detection can be cancelled and no longer races its own receive callback; closing the window during a scan no longer keeps the process alive for up to a minute",
+                "Fixed the log list rebuilding itself about 20 times per second once it reached its size cap; trimming now removes extra so a rebuild happens a few times per minute instead",
+                "Fixed port colours not repainting log rows that were already on screen, which left the log showing two palettes at once",
+                "Fixed the port-colour lookup racing the UI thread during concurrent reception",
+                "Copying logs no longer takes the application down when another program holds the clipboard",
+                "Hexadecimal send no longer mangles payloads that contain a literal 0x",
+                "Enter in the send box now sends, matching what the placeholder text promises",
+                "Custom baud rates are validated against a sane upper bound instead of accepting any positive number",
+                "Search re-filtering is debounced for real: the history dropdown and the Enter key no longer each trigger an extra full rebuild on top of it",
+                "Sent and tuning log entries now go through the same queue as received data, so they are trimmed, filtered and batched like everything else",
+                "Fixed auto-scroll staying permanently dead after the log view was unloaded and re-loaded",
+                "Fixed a tuning bin file that was still being written being hashed and sent as if it were final, which then suppressed every later automatic send",
+                "Fixed an infinite loop when a text filter with an empty pattern was used for highlighting",
+                "Tuning descriptor validation now covers the info area fields and rejects integer overflow instead of building a packet with wrong lengths",
+                "The About dialog no longer shows the current time as the build time when the generated build timestamp is missing, which made \"which build am I running?\" unanswerable in exactly the situation where it matters",
+                "Added the missing mic-tota-tuning.json sample that the documentation referenced",
+                "The build now fails when version.json cannot be read instead of stamping a stale hard-coded version, and the release pipeline asserts the manifest version, the assembly version and the presence of both release assets",
+                "The installer refuses to build without an injected version (a 0.0.0 package would permanently break auto-update on every machine that installed it) and no longer installs on Windows versions below 1809",
+                "Removed the dead code, duplicate language-folder rules and stale documentation references found by a full repository audit"
+            ]
+        },
         {
             "date": "2026-09-18",
             "version": "2.1.0",

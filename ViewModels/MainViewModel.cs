@@ -43,6 +43,17 @@ namespace SerialPortTool.ViewModels;
 /// single-item Add notifications, which the ListView consumes incrementally and which preserve the
 /// scroll anchor; only large increments collapse into a Reset. Both shapes are accepted by the
 /// auto-scroll path in <c>LogListView</c>.
+///
+/// The same frequency argument applies to trimming, and it used to be missed there: once DisplayLogs
+/// reached its cap, <c>RemoveFromStart</c> published a Reset on *every* 50 ms flush — i.e. 20 full
+/// list rebuilds per second, forever, which is its own "the view never settles" bug. Trimming now
+/// overshoots on purpose (<see cref="MainViewModel.TrimDisplayLogs"/> trims well below the cap and
+/// only fires once the list is well above it), which drops the rebuild rate to a fraction of a hertz.
+/// A multi-item Remove notification would be the better fix because it keeps the scroll anchor, but
+/// WinUI 3's vector view is known to mishandle multi-item collection notifications (that is why
+/// multi-item Add was abandoned in the first place) and the failure mode is an unhandled exception
+/// inside the ListView's own handler, which cannot be caught defensively. Until a spike proves the
+/// multi-item Remove is safe on this framework version, the reset-plus-overshoot shape stays.
 /// </remarks>
 public class RangeObservableCollection<T> : ObservableCollection<T>
 {
@@ -121,6 +132,15 @@ public class RangeObservableCollection<T> : ObservableCollection<T>
         OnPropertyChanged(IndexerPropertyChanged);
     }
 
+    /// <summary>
+    /// Drops <paramref name="count"/> items from the head of the collection and publishes one Reset.
+    /// </summary>
+    /// <remarks>
+    /// The Reset is not free — it discards every realized container and rebuilds the visible window —
+    /// so callers must not run this at flush cadence. <see cref="MainViewModel.TrimDisplayLogs"/> is
+    /// the only caller and deliberately overshoots so this runs a few times per minute rather than
+    /// 20 times per second (see the type-level remarks).
+    /// </remarks>
     public void RemoveFromStart(int count)
     {
         if (count <= 0 || Items.Count == 0) return;
@@ -230,7 +250,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public event EventHandler<BaudRateSuggestionEventArgs>? BaudRateSuggested;
     private readonly ISerialPortService _serialPortService;
     private readonly ITuningProtocolService _tuningProtocolService;
-    private readonly ILogFilterService _logFilterService;
     private readonly IFileLoggerService _fileLoggerService;
     private readonly ISettingsService _settingsService;
     private readonly ILogger<MainViewModel> _logger;
@@ -266,7 +285,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // OpenPorts on the hot data-receive path. Used for color lookup (per received chunk) and
     // for the per-flush sent-log / stats-refresh dictionary that used to be rebuilt with
     // OpenPorts.ToDictionary(...) on every UI flush.
-    private readonly Dictionary<string, PortViewModel> _portsByName =
+    //
+    // ConcurrentDictionary, not Dictionary: the writes happen on the UI thread
+    // (OpenPorts.CollectionChanged) while GetPortColor / GetPortDisplayColor read it from each
+    // port's serial read thread on every received chunk. A plain Dictionary being enumerated or
+    // grown while another thread reads it can tear, throw, or hand back a corrupt bucket — the
+    // reads are hot and completely unsynchronized, so the container itself has to be.
+    private readonly ConcurrentDictionary<string, PortViewModel> _portsByName =
         new(StringComparer.OrdinalIgnoreCase);
 
     private void OnOpenPortsChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -287,7 +312,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 {
                     foreach (PortViewModel item in e.OldItems)
                     {
-                        _portsByName.Remove(item.PortName);
+                        _portsByName.TryRemove(item.PortName, out _);
                     }
                 }
                 break;
@@ -296,7 +321,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 {
                     foreach (PortViewModel item in e.OldItems)
                     {
-                        _portsByName.Remove(item.PortName);
+                        _portsByName.TryRemove(item.PortName, out _);
                     }
                 }
                 if (e.NewItems != null)
@@ -308,6 +333,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 }
                 break;
             case NotifyCollectionChangedAction.Reset:
+                // Clear() then re-add: a reader racing this window either misses the port (and
+                // falls back to RxColorHex, same as a not-yet-open port) or sees the fresh entry.
                 _portsByName.Clear();
                 foreach (var p in OpenPorts)
                 {
@@ -318,6 +345,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         // Cheap to maintain here and it keeps the status bar off a per-frame path.
         OpenPortCount = _portsByName.Count;
+
+        // "全部关闭" is only enabled while at least one port is open.
+        CloseAllPortsCommand.NotifyCanExecuteChanged();
     }
 
     // AllLogs is the unfiltered back-buffer used by FilterLogs() when SearchText changes. It is
@@ -329,9 +359,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private RangeObservableCollection<LogEntry> _displayLogs = new();
 
-    [ObservableProperty]
-    private ObservableCollection<FilterRule> _filters = new();
-    
+    // NOTE: there used to be a `Filters` collection here, plus an injected ILogFilterService that was
+    // forwarded to PortViewModel and immediately discarded (`_ = logFilterService;`). Nothing bound to
+    // it and nothing subscribed to ILogFilterService.FiltersChanged, so the whole chain was dead code
+    // that only obscured where filtering actually happens (it is the SearchText/GetOrCreateSearchRegex
+    // path in FlushPendingLogBatches and FilterLogs). The service itself is still registered in DI for
+    // a future rule-based filter UI; wiring it up is an explicit requirement, not an accident.
+
     [ObservableProperty]
     private ObservableCollection<string> _recentSearchTexts = new();
 
@@ -351,11 +385,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(HasSearchText));
 
                 // Debounce filter updates to reduce UI thrashing
-                _filterDebounceTimer?.Dispose();
-                _filterDebounceTimer = new System.Threading.Timer(_ =>
-                {
-                    _dispatcherQueue.TryEnqueue(() => FilterLogs());
-                }, null, 150, System.Threading.Timeout.Infinite);
+                RequestFilterLogs();
             }
         }
     }
@@ -547,13 +577,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private bool _sendAsHex = false;
 
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SendCommand))]
     private string _sendText = string.Empty;
 
     [ObservableProperty]
     private bool _showSentData = true;
-
-    [ObservableProperty]
-    private PortViewModel? _selectedPort;
 
     [ObservableProperty]
     private string _txColorHex = PortColorPalette.DefaultTxHex;
@@ -768,6 +796,29 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Re-colours the log rows already on screen for one port after its colour was changed.
+    /// </summary>
+    /// <remarks>
+    /// Without this the sidebar swatch and the channel legend follow the new colour while the log rows
+    /// keep the old brush until they are recycled or the list is rebuilt — the same "two palettes on
+    /// screen" failure the appearance sweep exists to prevent, only triggered by a per-port change.
+    /// Only received rows are touched: sent/tuning rows carry the TX colour, not the port colour.
+    /// </remarks>
+    public void ApplyPortColorChange(string portName, string colorHex)
+    {
+        var resolved = PortColorPalette.Resolve(colorHex, _isDarkTheme);
+
+        foreach (var entry in AllLogs)
+        {
+            if (entry.IsReceived &&
+                string.Equals(entry.PortName, portName, StringComparison.OrdinalIgnoreCase))
+            {
+                entry.ColorHex = resolved;
+            }
+        }
+    }
+
     /// <summary>Swatch options for the TX colour picker; brushes follow the active appearance.</summary>
     public ObservableCollection<PortColorOption> TxColorOptions { get; } = BuildTxColorOptions();
 
@@ -893,6 +944,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private const int MaxDisplayLogs = 2000; // Increased limit with optimizations
     private const int DisplayLogTrimThreshold = MaxDisplayLogs + 200;
+    // Trimming removes this much MORE than the overflow, so the next trim is ~600 entries away
+    // instead of one flush away. Each trim publishes a Reset (a full view rebuild), so the headroom
+    // is what turns "rebuild 20x/sec forever once the cap is hit" into "rebuild every few seconds"
+    // — the steady-state list oscillates between MaxDisplayLogs - DisplayLogTrimHeadroom and the
+    // threshold rather than sitting pinned at the cap. See RemoveFromStart for why a multi-item
+    // Remove notification is not used instead.
+    private const int DisplayLogTrimHeadroom = 400;
     private const int AllLogsTrimThreshold = MaxDisplayLogs * 2 + 400;
     private const int MaxQueuedLogEntries = MaxDisplayLogs * 4;
     // Smaller batches at a fixed cadence give shorter, more uniform UI blocks. Bigger batches feel
@@ -943,6 +1001,50 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private bool _useCustomBaudRate = false;
 
     /// <summary>
+    /// Upper bound accepted for a custom baud rate.
+    /// </summary>
+    /// <remarks>
+    /// Matches the highest rate <see cref="Services.IBaudRateDetectorService"/> probes. SerialPort
+    /// itself only requires a positive value, so a typo like 300000000 was previously accepted and
+    /// produced a port that opened and then delivered nothing — indistinguishable from a wiring fault.
+    /// </remarks>
+    private const int MaxSupportedBaudRate = 12_000_000;
+
+    /// <summary>
+    /// Resolves the baud rate to open with, validating the custom value once for both call sites.
+    /// </summary>
+    /// <remarks>
+    /// The single/collective open paths used to carry byte-for-byte copies of this check, and both
+    /// only tested <c>&gt; 0</c>.
+    /// </remarks>
+    private bool TryResolveBaudRate(out int baudRate, out string? errorMessage)
+    {
+        baudRate = BaudRate;
+        errorMessage = null;
+
+        if (!UseCustomBaudRate || string.IsNullOrWhiteSpace(CustomBaudRate))
+        {
+            return true;
+        }
+
+        if (!int.TryParse(
+                CustomBaudRate.Trim(),
+                System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var customRate) ||
+            customRate <= 0 ||
+            customRate > MaxSupportedBaudRate)
+        {
+            errorMessage = $"自定义波特率无效：请输入 1 ~ {MaxSupportedBaudRate} 之间的整数";
+            _logger.LogWarning("Rejected custom baud rate input: '{CustomBaudRate}'", CustomBaudRate);
+            return false;
+        }
+
+        baudRate = customRate;
+        return true;
+    }
+
+    /// <summary>
     /// Format bytes into human-readable units (B, KB, MB)
     /// </summary>
     public static string FormatDataSize(long bytes)
@@ -963,7 +1065,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public MainViewModel(
         ISerialPortService serialPortService,
         ITuningProtocolService tuningProtocolService,
-        ILogFilterService logFilterService,
         IFileLoggerService fileLoggerService,
         ISettingsService settingsService,
         ILogger<MainViewModel> logger,
@@ -972,7 +1073,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         _serialPortService = serialPortService;
         _tuningProtocolService = tuningProtocolService;
-        _logFilterService = logFilterService;
         _fileLoggerService = fileLoggerService;
         _settingsService = settingsService;
         _logger = logger;
@@ -988,6 +1088,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _serialPortService.DataReceived += OnDataReceived;
         _serialPortService.PortStateChanged += OnPortStateChanged;
         _serialPortService.ErrorOccurred += OnErrorOccurred;
+
+        // The settings service refuses to write when the existing settings.json could not be parsed
+        // (writing would replace the user's real configuration with an empty document). That state is
+        // invisible otherwise, so surface it.
+        _settingsService.SettingsLoadFailed += OnSettingsLoadFailed;
         
         // Subscribe to baud rate detection requests
         if (_serialPortService is SerialPortService serialPortServiceInstance)
@@ -1044,9 +1149,36 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             await StartTuningWatchAsync(createBaseline: true);
         }
+
+        // The failure event may have fired before this ViewModel existed (App.OnLaunched reads the
+        // saved appearance first), so check the state as well as subscribing to the event.
+        if (_settingsService.HasLoadFailure)
+        {
+            ReportSettingsLoadFailure();
+        }
     }
 
-    [RelayCommand]
+    private const string SettingsLoadFailureMessage =
+        "设置文件读取失败：为避免覆盖原有配置，本次运行不会写回 settings.json。请修复或删除该文件后重启。";
+
+    private void OnSettingsLoadFailed(object? sender, EventArgs e) => ReportSettingsLoadFailure();
+
+    /// <remarks>
+    /// Must not call back into <c>ISettingsService</c>: the event is raised while its file lock is
+    /// held, and the lock is not reentrant. Setting a property is all this may do.
+    /// </remarks>
+    private void ReportSettingsLoadFailure()
+    {
+        if (_dispatcherQueue.HasThreadAccess)
+        {
+            StatusMessage = SettingsLoadFailureMessage;
+            return;
+        }
+
+        _dispatcherQueue.TryEnqueue(() => StatusMessage = SettingsLoadFailureMessage);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanScanPorts))]
     private async Task ScanPortsAsync()
     {
         IsScanning = true;
@@ -1072,8 +1204,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
         finally
         {
             IsScanning = false;
+            // "Open all" is only meaningful once a scan has produced a list.
+            OpenAllPortsCommand.NotifyCanExecuteChanged();
         }
     }
+
+    /// <summary>Guards the scan against re-entry while one is in flight.</summary>
+    private bool CanScanPorts() => !ScanPortsCommand.IsRunning;
+
+    // Ports with an open request in flight. Note OpenPortCommand.ExecuteAsync is also called directly
+    // from MainWindow's port-list SelectionChanged, which bypasses CanExecute entirely — the
+    // `_portsByName` check alone cannot stop a double-open because the two calls interleave across the
+    // awaits below, and the second one used to add a second entry for the same port name.
+    private readonly ConcurrentDictionary<string, byte> _openingPorts = new(StringComparer.OrdinalIgnoreCase);
 
     [RelayCommand]
     private async Task OpenPortAsync(string portName)
@@ -1090,27 +1233,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        // Atomic claim: only the first caller for this port name proceeds past this point.
+        if (!_openingPorts.TryAdd(portName, 0))
+        {
+            StatusMessage = $"Port {portName} 正在打开中，请稍候";
+            _logger.LogInformation("Ignored a concurrent open request for port {PortName}", portName);
+            return;
+        }
+
         try
         {
             // Determine which baud rate to use
-            int baudRateToUse = BaudRate;
-            if (UseCustomBaudRate && !string.IsNullOrWhiteSpace(CustomBaudRate))
+            if (!TryResolveBaudRate(out var baudRateToUse, out var baudRateError))
             {
-                if (int.TryParse(CustomBaudRate, out int customRate) && customRate > 0)
-                {
-                    baudRateToUse = customRate;
-                    _logger.LogInformation("Using custom baud rate: {BaudRate}", baudRateToUse);
-                }
-                else
-                {
-                    StatusMessage = "Invalid custom baud rate";
-                    return;
-                }
+                StatusMessage = baudRateError!;
+                return;
             }
-            else
-            {
-                _logger.LogInformation("Using standard baud rate: {BaudRate}", baudRateToUse);
-            }
+
+            _logger.LogInformation("Opening {PortName} with baud rate {BaudRate}", portName, baudRateToUse);
 
             var config = new SerialPortConfig
             {
@@ -1129,7 +1269,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
                 // 分配端口颜色（优先使用保存的颜色）
                 var portColor = await GetOrAssignPortColorAsync(portName);
-                var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue)
+                var portViewModel = new PortViewModel(portName, _serialPortService, _dispatcherQueue)
                 {
                     ColorHex = portColor
                 };
@@ -1161,9 +1301,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
             StatusMessage = $"Error opening port {portName}: {ex.Message}";
             _logger.LogError(ex, "Error opening port {PortName}", portName);
         }
+        finally
+        {
+            // Always release the claim, including on the early `return`s above — otherwise a failed
+            // open would make that port permanently un-openable for the rest of the session.
+            _openingPorts.TryRemove(portName, out _);
+        }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanOpenAllPorts))]
     private async Task OpenAllPortsAsync()
     {
         if (AvailablePorts.Count == 0)
@@ -1175,24 +1321,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             // Determine which baud rate to use
-            int baudRateToUse = BaudRate;
-            if (UseCustomBaudRate && !string.IsNullOrWhiteSpace(CustomBaudRate))
+            if (!TryResolveBaudRate(out var baudRateToUse, out var baudRateError))
             {
-                if (int.TryParse(CustomBaudRate, out int customRate) && customRate > 0)
-                {
-                    baudRateToUse = customRate;
-                    _logger.LogInformation("OpenAllPorts: Using custom baud rate: {BaudRate}", baudRateToUse);
-                }
-                else
-                {
-                    StatusMessage = "Invalid custom baud rate";
-                    return;
-                }
+                StatusMessage = baudRateError!;
+                return;
             }
-            else
-            {
-                _logger.LogInformation("OpenAllPorts: Using standard baud rate: {BaudRate}", baudRateToUse);
-            }
+
+            _logger.LogInformation("OpenAllPorts: Using baud rate {BaudRate}", baudRateToUse);
 
             var defaultConfig = new SerialPortConfig
             {
@@ -1213,7 +1348,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
                     // 分配端口颜色（优先使用保存的颜色）
                     var portColor = await GetOrAssignPortColorAsync(portName);
-                    var portViewModel = new PortViewModel(portName, _serialPortService, _logFilterService, _dispatcherQueue)
+                    var portViewModel = new PortViewModel(portName, _serialPortService, _dispatcherQueue)
                     {
                         ColorHex = portColor
                     };
@@ -1241,7 +1376,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    [RelayCommand]
+    /// <summary>"全部打开" needs a scanned list and no batch open already in flight.</summary>
+    private bool CanOpenAllPorts() => !OpenAllPortsCommand.IsRunning && AvailablePorts.Count > 0;
+
+    [RelayCommand(CanExecute = nameof(CanCloseAllPorts))]
     private async Task CloseAllPortsAsync()
     {
         if (OpenPorts.Count == 0)
@@ -1278,7 +1416,55 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    public void FilterLogs()
+    /// <summary>"全部关闭" needs at least one open port and no batch close already in flight.</summary>
+    private bool CanCloseAllPorts() => !CloseAllPortsCommand.IsRunning && OpenPorts.Count > 0;
+
+    /// <summary>Debounce window for live search re-filtering.</summary>
+    private const int FilterDebounceMs = 150;
+
+    /// <summary>
+    /// Requests a re-filter on the shared 150 ms debounce.
+    /// </summary>
+    /// <remarks>
+    /// This is the ONLY entry point callers outside this class should use. FilterLogs is an O(n) full
+    /// rebuild of DisplayLogs (two HashSet passes plus the regex sweep over AllLogs, ~2000 entries), and
+    /// it used to be invoked synchronously from three separate UI handlers — the search dropdown
+    /// selection, the dropdown closing, and the Enter key — each of which had already assigned
+    /// <see cref="SearchText"/> and therefore already armed the debounce. The result was up to four
+    /// full rebuilds per keystroke or selection, which is exactly what the debounce exists to prevent.
+    /// </remarks>
+    public void RequestFilterLogs()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var timer = _filterDebounceTimer;
+        if (timer == null)
+        {
+            // Created once and re-armed with Change(). Creating (and disposing) a Timer per call meant a
+            // fresh timer — and its internal wait-handle bookkeeping — on every keystroke in the search
+            // box.
+            timer = new System.Threading.Timer(
+                _ => _dispatcherQueue.TryEnqueue(FilterLogs),
+                null,
+                System.Threading.Timeout.Infinite,
+                System.Threading.Timeout.Infinite);
+            _filterDebounceTimer = timer;
+        }
+
+        try
+        {
+            timer.Change(FilterDebounceMs, System.Threading.Timeout.Infinite);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Racing Dispose(): the window is going away, nothing to re-arm.
+        }
+    }
+
+    private void FilterLogs()
     {
         // CRITICAL: Never replace DisplayLogs collection, only modify in place
         // This prevents ListView from rebinding and causing flicker
@@ -1360,7 +1546,87 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    [RelayCommand]
+    /// <summary>Non-whitespace separators accepted inside a hex payload.</summary>
+    private static readonly char[] HexSeparators = { '-', '_', ',', ':', ';', '|' };
+
+    /// <summary>
+    /// Parses a hex payload into bytes, accepting whitespace- or separator-delimited groups and an
+    /// optional <c>0x</c> prefix per group.
+    /// </summary>
+    /// <remarks>
+    /// The previous implementation ran a global <c>Replace("0x", "").Replace("0X", "")</c> over the
+    /// whole input, which corrupts any payload that legitimately contains those two characters:
+    /// <c>A0x0B</c> became <c>A0B</c> and was either rejected as "odd length" or, when the surrounding
+    /// digits happened to line up, silently sent as the wrong bytes. <c>0x</c> is a per-group notation,
+    /// so it is only stripped at the start of a group here.
+    /// </remarks>
+    private static bool TryParseHexInput(string input, out byte[] bytes, out string? errorMessage)
+    {
+        bytes = Array.Empty<byte>();
+        errorMessage = null;
+
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            errorMessage = "十六进制内容为空";
+            return false;
+        }
+
+        // Split on all whitespace first (a null char[] means "any whitespace"), then on the explicit
+        // separators, so "A1-B2", "A1 B2" and "A1 - B2" all yield the same two groups.
+        var tokens = input
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .SelectMany(part => part.Split(HexSeparators, StringSplitOptions.RemoveEmptyEntries))
+            .ToList();
+
+        var digitsBuilder = new StringBuilder(input.Length);
+        foreach (var token in tokens)
+        {
+            var digits = token.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? token[2..] : token;
+
+            foreach (var c in digits)
+            {
+                if (!Uri.IsHexDigit(c))
+                {
+                    errorMessage = $"十六进制格式错误：无效字符 '{c}'";
+                    return false;
+                }
+            }
+
+            digitsBuilder.Append(digits);
+        }
+
+        if (digitsBuilder.Length == 0)
+        {
+            errorMessage = "十六进制内容为空";
+            return false;
+        }
+
+        if (digitsBuilder.Length % 2 != 0)
+        {
+            errorMessage = "十六进制格式错误：长度必须为偶数";
+            return false;
+        }
+
+        var parsed = new byte[digitsBuilder.Length / 2];
+        for (var i = 0; i < parsed.Length; i++)
+        {
+            var pair = digitsBuilder.ToString(i * 2, 2);
+            if (!byte.TryParse(
+                    pair,
+                    System.Globalization.NumberStyles.HexNumber,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out parsed[i]))
+            {
+                errorMessage = $"十六进制格式错误：无效字节 '{pair}'";
+                return false;
+            }
+        }
+
+        bytes = parsed;
+        return true;
+    }
+
+    [RelayCommand(CanExecute = nameof(CanSend))]
     private async Task SendAsync()
     {
         if (string.IsNullOrEmpty(SendText))
@@ -1382,21 +1648,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             if (SendAsHex)
             {
-                var hexString = SendText.Replace(" ", "").Replace("-", "").Replace("0x", "").Replace("0X", "");
-                if (hexString.Length % 2 != 0)
+                if (!TryParseHexInput(SendText, out var bytes, out var hexError))
                 {
-                    StatusMessage = "十六进制格式错误：长度必须为偶数";
+                    StatusMessage = hexError!;
                     return;
-                }
-
-                var bytes = new byte[hexString.Length / 2];
-                for (int i = 0; i < bytes.Length; i++)
-                {
-                    if (!byte.TryParse(hexString.Substring(i * 2, 2), System.Globalization.NumberStyles.HexNumber, null, out bytes[i]))
-                    {
-                        StatusMessage = $"十六进制格式错误：无效字符 '{hexString.Substring(i * 2, 2)}'";
-                        return;
-                    }
                 }
 
                 data = bytes;
@@ -1447,6 +1702,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>Nothing to send, or a send is already in flight.</summary>
+    private bool CanSend() => !SendCommand.IsRunning && !string.IsNullOrEmpty(SendText);
+
     public async Task SendDataAsync(string portName, byte[] data)
     {
         await _serialPortService.SendDataAsync(portName, data);
@@ -1457,10 +1715,36 @@ public partial class MainViewModel : ObservableObject, IDisposable
         await _serialPortService.SendTextAsync(portName, text, Encoding.UTF8);
     }
 
-    public void AddSentLog(LogEntry logEntry)
+    /// <summary>
+    /// Queues a locally generated (TX / tuning) entry for the next UI flush.
+    /// </summary>
+    /// <remarks>
+    /// It goes through the same <see cref="_pendingLogBatches"/> queue as received data rather than
+    /// writing into <see cref="AllLogs"/> / <see cref="DisplayLogs"/> directly. Doing it directly
+    /// bypassed every safety net the receive path has: the FIFO trim (so a paused or
+    /// high-frequency-send session grew the collections without bound), the search filter (so sent
+    /// lines appeared in a filtered view they did not match), the per-flush batch window and the
+    /// queued-count cap — and it fired an individual CollectionChanged per entry.
+    /// </remarks>
+    private void AddSentLog(string portName, LogEntry logEntry)
     {
-        AllLogs.Add(logEntry);
-        DisplayLogs.Add(logEntry);
+        var queuedLogCount = Interlocked.Add(ref _queuedLogCount, 1);
+        if (queuedLogCount > MaxQueuedLogEntries)
+        {
+            Interlocked.Add(ref _queuedLogCount, -1);
+            Interlocked.Increment(ref _totalDropped);
+            _logger.LogWarning("Dropping sent-log entry: queued logs exceeded limit. Port={Port}, Limit={Limit}",
+                portName, MaxQueuedLogEntries);
+            return;
+        }
+
+        _pendingLogBatches.Enqueue(new PendingLogBatch
+        {
+            PortName = portName,
+            Logs = new List<LogEntry>(1) { logEntry }
+        });
+
+        SchedulePendingLogFlush();
     }
 
     private Task<PortSendResult[]> SendDataToPortsAsync(
@@ -1506,7 +1790,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 IsReceived = false,
                 ColorHex = TxColorHexResolved
             };
-            AddSentLog(logEntry);
+            AddSentLog(portName, logEntry);
         }
     }
 
@@ -1616,7 +1900,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             if (createBaseline)
             {
-                await WaitForStableTuningFileAsync(TuningBinFilePath, CancellationToken.None);
+                if (!await WaitForStableTuningFileAsync(TuningBinFilePath, CancellationToken.None))
+                {
+                    throw new TuningProtocolException(
+                        "tuning bin 文件仍在变化，未能建立稳定的基线；请稍后重试");
+                }
+
                 _lastTuningBaselineHash = await _tuningProtocolService.ComputeFileHashAsync(TuningBinFilePath);
                 await _settingsService.SaveSettingAsync("TuningBaselineHash", _lastTuningBaselineHash);
             }
@@ -1771,7 +2060,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        await WaitForStableTuningFileAsync(TuningBinFilePath, cancellationToken);
+        if (!await WaitForStableTuningFileAsync(TuningBinFilePath, cancellationToken))
+        {
+            SetTuningUiState(() => TuningStatus = "tuning bin 仍在写入，已跳过本次发送");
+            return;
+        }
+
         if (!IsTuningWatching)
         {
             return;
@@ -2019,7 +2313,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 IsReceived = false,
                 ColorHex = TxColorHexResolved
             };
-            AddSentLog(logEntry);
+            AddSentLog(portName, logEntry);
         }
     }
 
@@ -2035,7 +2329,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task WaitForStableTuningFileAsync(string filePath, CancellationToken cancellationToken)
+    /// <summary>
+    /// Waits until the file's size and write time stop changing.
+    /// </summary>
+    /// <returns>
+    /// <c>true</c> once two consecutive probes agree; <c>false</c> when the file is still changing after
+    /// the full retry budget (~5 s).
+    /// </returns>
+    /// <remarks>
+    /// The result matters: this used to fall through and return silently after the last attempt, so a
+    /// file that was still being written (a build copying the .bin, a network share mid-sync) was hashed
+    /// and sent as if it were final — the caller then stored a baseline hash for content that no longer
+    /// existed on disk, which suppressed every subsequent auto-send as "content unchanged".
+    /// </remarks>
+    private async Task<bool> WaitForStableTuningFileAsync(string filePath, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
         {
@@ -2052,13 +2359,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 info.Length == previousLength &&
                 info.LastWriteTimeUtc == previousWriteTime)
             {
-                return;
+                return true;
             }
 
             previousLength = info.Length;
             previousWriteTime = info.LastWriteTimeUtc;
             await Task.Delay(250, cancellationToken);
         }
+
+        _logger.LogWarning("tuning bin 文件在等待 5 秒后仍在变化，视为未稳定: {FilePath}", filePath);
+        return false;
     }
 
     private void RefreshTuningAvailability()
@@ -2093,7 +2403,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         return "tuning 当前不可用";
     }
 
-    private void SetTuningUiState(Action update)
+    private void SetTuningUiState(Action update) => RunOnUiThread(update);
+
+    /// <summary>Runs <paramref name="update"/> on the UI thread, immediately when already there.</summary>
+    private void RunOnUiThread(Action update)
     {
         if (_dispatcherQueue.HasThreadAccess)
         {
@@ -2116,7 +2429,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 Interlocked.Add(ref _queuedLogCount, -pendingBatch.Logs.Count);
             }
-            
+
+            // Drop the per-port text-assembly buffers too. They hold a persistent UTF-8 Decoder and the
+            // unterminated tail line; leaving them behind means the next chunk on that port is glued to
+            // text the user has just cleared, and the buffers stay allocated for the whole session.
+            _lineAssemblers.Clear();
+
             // Clear both AllLogs and DisplayLogs collections
             AllLogs.Clear();
             DisplayLogs.Clear();
@@ -2722,7 +3040,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var removeCount = DisplayLogs.Count - MaxDisplayLogs;
+        // Trim below the cap, not down to it: the overshoot is what keeps the next Reset hundreds of
+        // entries away. Removing exactly the overflow meant a trim on every single flush once the cap
+        // was reached (each one a full ListView rebuild at ~20 Hz).
+        var target = MaxDisplayLogs - DisplayLogTrimHeadroom;
+        var removeCount = DisplayLogs.Count - target;
         if (removeCount <= 0)
         {
             return;
@@ -2731,7 +3053,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         DisplayLogs.RemoveFromStart(removeCount);
 
         _logger.LogTrace("Trimmed {CollectionName}: Removed={Removed}, NewCount={Count}, Threshold={Threshold}, Target={Target}",
-            nameof(DisplayLogs), removeCount, DisplayLogs.Count, DisplayLogTrimThreshold, MaxDisplayLogs);
+            nameof(DisplayLogs), removeCount, DisplayLogs.Count, DisplayLogTrimThreshold, target);
     }
 
     private void OnPortStateChanged(object? sender, PortStateChangedEventArgs e)
@@ -2800,91 +3122,108 @@ public partial class MainViewModel : ObservableObject, IDisposable
         var portName = e.PortName;
         var currentBaudRate = e.CurrentBaudRate;
         var reason = e.Reason;
-        
-        _dispatcherQueue.TryEnqueue(async () =>
+        var cancellationToken = _shutdownCts.Token;
+
+        // The dispatcher callback runs the state update and hands the actual work to a tracked Task.
+        // Passing an `async () => …` lambda to TryEnqueue (what this used to do) makes it a de-facto
+        // async void: its exceptions escape to the XAML unhandled-exception handler, and its
+        // continuations keep running — closing and reopening serial ports — after the window and the
+        // services have been torn down.
+        RunOnUiThread(() => StartBaudRateDetection(portName, currentBaudRate, reason, cancellationToken));
+    }
+
+    private void StartBaudRateDetection(
+        string portName,
+        int currentBaudRate,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        StatusMessage = $"检测到 {portName} 波特率可能不正确: {reason}";
+        _logger.LogWarning("Baud rate detection requested for {PortName}: {Reason}", portName, reason);
+
+        if (_baudRateDetectorService == null)
         {
-            try
+            StatusMessage = $"波特率检测服务不可用，请手动调整 {portName} 的波特率";
+            return;
+        }
+
+        StatusMessage = $"正在为 {portName} 检测最佳波特率...";
+        _ = RunBaudRateDetectionAsync(portName, currentBaudRate, cancellationToken);
+    }
+
+    private async Task RunBaudRateDetectionAsync(
+        string portName,
+        int currentBaudRate,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // The detector opens the port itself; as long as we still hold the port, every probe
+            // fails with UnauthorizedAccessException and the whole detection burns ~40s only to
+            // report "无法确定". Close it for the duration, then reopen with the detected (or
+            // original) baud rate.
+            await _serialPortService.ClosePortAsync(portName);
+            await Task.Delay(500, cancellationToken);
+
+            var detectionResults = await _baudRateDetectorService!
+                .DetectOptimalBaudRateAsync(portName, cancellationToken: cancellationToken);
+
+            if (detectionResults.Count > 0 && detectionResults[0].ConfidenceScore > 0.5)
             {
-                StatusMessage = $"检测到 {portName} 波特率可能不正确: {reason}";
-                _logger.LogWarning("Baud rate detection requested for {PortName}: {Reason}", portName, reason);
-                
-                if (_baudRateDetectorService != null)
+                var bestBaudRate = detectionResults[0].BaudRate;
+                RunOnUiThread(() => StatusMessage =
+                    $"建议将 {portName} 波特率设置为 {bestBaudRate} (置信度: {detectionResults[0].ConfidenceScore:F2})");
+
+                // 触发波特率建议事件，让UI显示警告
+                BaudRateSuggested?.Invoke(this, new BaudRateSuggestionEventArgs
                 {
-                    StatusMessage = $"正在为 {portName} 检测最佳波特率...";
+                    PortName = portName,
+                    CurrentBaudRate = currentBaudRate,
+                    SuggestedBaudRate = bestBaudRate,
+                    Reason = $"检测到数据质量不佳，建议波特率: {bestBaudRate}",
+                    Confidence = detectionResults[0].ConfidenceScore,
+                    ShouldAutoSwitch = detectionResults[0].ConfidenceScore > 0.8
+                });
 
-                    try
-                    {
-                        // The detector opens the port itself; as long as we still hold the port,
-                        // every probe fails with UnauthorizedAccessException and the whole
-                        // detection burns ~40s only to report "无法确定". Close it for the
-                        // duration, then reopen with the detected (or original) baud rate.
-                        await _serialPortService.ClosePortAsync(portName);
-                        await Task.Delay(500);
-
-                        var detectionResults = await _baudRateDetectorService.DetectOptimalBaudRateAsync(portName);
-
-                        if (detectionResults.Count > 0 && detectionResults[0].ConfidenceScore > 0.5)
-                        {
-                            var bestBaudRate = detectionResults[0].BaudRate;
-                            StatusMessage = $"建议将 {portName} 波特率设置为 {bestBaudRate} (置信度: {detectionResults[0].ConfidenceScore:F2})";
-
-                            // 触发波特率建议事件，让UI显示警告
-                            BaudRateSuggested?.Invoke(this, new BaudRateSuggestionEventArgs
-                            {
-                                PortName = portName,
-                                CurrentBaudRate = currentBaudRate,
-                                SuggestedBaudRate = bestBaudRate,
-                                Reason = $"检测到数据质量不佳，建议波特率: {bestBaudRate}",
-                                Confidence = detectionResults[0].ConfidenceScore,
-                                ShouldAutoSwitch = detectionResults[0].ConfidenceScore > 0.8
-                            });
-
-                            // 如果置信度很高，可以自动切换
-                            if (detectionResults[0].ConfidenceScore > 0.8)
-                            {
-                                StatusMessage = $"自动将 {portName} 波特率从 {currentBaudRate} 切换到 {bestBaudRate}";
-                                await SwitchPortBaudRateAsync(portName, bestBaudRate);
-                            }
-                            else
-                            {
-                                // 保持端口可用：用原波特率重开，等用户决定是否手动切换。
-                                await ReopenPortWithBaudRateAsync(portName, currentBaudRate);
-                            }
-                        }
-                        else
-                        {
-                            StatusMessage = $"无法为 {portName} 确定最佳波特率，请手动检查";
-                            await ReopenPortWithBaudRateAsync(portName, currentBaudRate);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Error during baud rate detection for {PortName}", portName);
-                        StatusMessage = $"波特率检测失败: {ex.Message}";
-
-                        // 尽力恢复端口，避免检测失败后端口一直处于关闭状态。
-                        try
-                        {
-                            await ReopenPortWithBaudRateAsync(portName, currentBaudRate);
-                        }
-                        catch (Exception reopenEx)
-                        {
-                            _logger.LogError(reopenEx, "Failed to reopen {PortName} after detection failure", portName);
-                        }
-                    }
+                // 如果置信度很高，可以自动切换
+                if (detectionResults[0].ConfidenceScore > 0.8)
+                {
+                    RunOnUiThread(() => StatusMessage =
+                        $"自动将 {portName} 波特率从 {currentBaudRate} 切换到 {bestBaudRate}");
+                    await SwitchPortBaudRateAsync(portName, bestBaudRate);
                 }
                 else
                 {
-                    StatusMessage = $"波特率检测服务不可用，请手动调整 {portName} 的波特率";
+                    // 保持端口可用：用原波特率重开，等用户决定是否手动切换。
+                    await ReopenPortWithBaudRateAsync(portName, currentBaudRate);
                 }
             }
-            catch (Exception ex)
+            else
             {
-                // Fallback logging if UI update fails
-                _logger.LogError(ex, "Failed to handle baud rate detection request");
-                StatusMessage = $"处理波特率检测请求时出错";
+                RunOnUiThread(() => StatusMessage = $"无法为 {portName} 确定最佳波特率，请手动检查");
+                await ReopenPortWithBaudRateAsync(portName, currentBaudRate);
             }
-        });
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutting down: leave the port closed. Reopening here would race the service teardown.
+            _logger.LogInformation("Baud rate detection for {PortName} cancelled during shutdown", portName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error during baud rate detection for {PortName}", portName);
+            RunOnUiThread(() => StatusMessage = $"波特率检测失败: {ex.Message}");
+
+            // 尽力恢复端口，避免检测失败后端口一直处于关闭状态。
+            try
+            {
+                await ReopenPortWithBaudRateAsync(portName, currentBaudRate);
+            }
+            catch (Exception reopenEx)
+            {
+                _logger.LogError(reopenEx, "Failed to reopen {PortName} after detection failure", portName);
+            }
+        }
     }
 
     public async Task SwitchPortBaudRateAsync(string portName, int newBaudRate)
@@ -2940,10 +3279,21 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private bool _disposed;
 
+    /// <summary>
+    /// Cancelled when this ViewModel is disposed, and observed by the long-running background flows
+    /// it starts (currently the baud-rate scan, which opens the port once per candidate rate and can
+    /// otherwise keep running — and keep touching serial ports — after the window is gone).
+    /// </summary>
+    private readonly CancellationTokenSource _shutdownCts = new();
+
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
+
+        // Cancel before tearing anything else down: a running scan closes and reopens the port, and
+        // must not do that while the services behind it are being disposed.
+        try { _shutdownCts.Cancel(); } catch (ObjectDisposedException) { }
 
         _filterDebounceTimer?.Dispose();
         _filterDebounceTimer = null;
@@ -2958,6 +3308,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _serialPortService.DataReceived -= OnDataReceived;
         _serialPortService.PortStateChanged -= OnPortStateChanged;
         _serialPortService.ErrorOccurred -= OnErrorOccurred;
+        _settingsService.SettingsLoadFailed -= OnSettingsLoadFailed;
 
         OpenPorts.CollectionChanged -= OnOpenPortsChanged;
 
@@ -2965,6 +3316,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             serialPortServiceInstance.BaudRateDetectionRequested -= OnBaudRateDetectionRequested;
         }
+
+        // Disposed last, after every producer of a new request has been unsubscribed: reading
+        // _shutdownCts.Token on a disposed source throws ObjectDisposedException, which would surface as
+        // an unhandled exception from an event that arrives in the gap.
+        _shutdownCts.Dispose();
     }
     
     /// <summary>
@@ -3034,19 +3390,18 @@ public partial class PortViewModel : ObservableObject
     [ObservableProperty]
     private string _statisticsDisplay = "0 bytes";
 
-    // The serialPortService / logFilterService / dispatcherQueue parameters are kept on the
-    // constructor signature so existing call sites in MainViewModel don't need to change and so
-    // these dependencies remain available if per-port behavior is reintroduced. They are
-    // intentionally not stored — see commit removing PortViewModel.Logs / FilteredLogs.
+    // The serialPortService / dispatcherQueue parameters are kept on the constructor signature so
+    // existing call sites don't need to change and so these dependencies remain available if per-port
+    // behavior is reintroduced. They are intentionally not stored — see commit removing
+    // PortViewModel.Logs / FilteredLogs. The ILogFilterService parameter was dropped outright: it was
+    // already being discarded here, and nothing else in the app used that dependency chain.
     public PortViewModel(
         string portName,
         ISerialPortService serialPortService,
-        ILogFilterService logFilterService,
         DispatcherQueue? dispatcherQueue = null)
     {
         _portName = portName;
         _ = serialPortService;
-        _ = logFilterService;
         _ = dispatcherQueue;
     }
 

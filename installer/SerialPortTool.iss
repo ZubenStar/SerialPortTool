@@ -11,8 +11,12 @@
 ; 注意：版本号一律由命令行注入（与 version.json 同源），禁止在此硬编码第二份副本。
 ; ============================================================================
 
+; AppVersion 必须由命令行注入（见 build-installer.ps1，来源是 version.json）。
+; 这里刻意不放 "0.0.0" 兜底：直接编译 .iss 会安静地产出一个版本号为 0.0.0 的安装包，而
+; UpdateService 用数值比较版本，装了它的机器再也不会收到任何更新提示 —— 一次误编译就永久
+; 破坏该机器的更新路径。宁可编译失败。
 #ifndef AppVersion
-  #define AppVersion "0.0.0"
+  #error AppVersion is not defined. Build through scripts/build-installer.ps1, or pass /DAppVersion=<x.y.z> to ISCC.exe.
 #endif
 
 #ifndef SourceDir
@@ -23,9 +27,10 @@
   #define OutputDir "..\packages\installer"
 #endif
 
-; [Files] 的排除列表由 scripts/build-installer.ps1 注入：
-; 调试符号 + 除 zh-CN / en-us 之外的框架语言资源目录（与便携 ZIP 的保留清单一致）。
-; 这里保留一个仅供单独编译 .iss 时使用的兜底值。
+; [Files] 的排除列表由 scripts/build-installer.ps1 注入（目前只有 *.pdb 这一条兜底）。
+; 框架语言资源目录不在这里排除：保留清单与目录名模式统一由
+; scripts/prune-publish-output.ps1 维护（便携 ZIP 侧调用同一个脚本），
+; build-installer.ps1 在调用 ISCC 之前就已就地裁剪 publish 目录。
 #ifndef Excludes
   #define Excludes "*.pdb"
 #endif
@@ -71,8 +76,10 @@ CloseApplications=yes
 ; 保留 no 还能避免与 [Code]/[Run] 的显式重启叠加而拉起两个实例。
 RestartApplications=no
 SetupMutex=SerialPortTool-Setup-Mutex
-; 应用本身要求 Windows 10 1809+（Windows App SDK 限制），这里放宽以兼容更多 Inno 版本。
-MinVersion=10.0
+; 应用本身要求 Windows 10 1809（build 17763）+（Windows App SDK 限制，见 csproj 的
+; TargetPlatformMinVersion）。原先写的 10.0 会让安装器在 1607/1709 上照常安装，用户装完一启动就崩，
+; 且因为文件已经落盘，报错看起来像应用 bug 而不是"系统版本不够"。必须与 csproj 保持一致。
+MinVersion=10.0.17763
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -89,7 +96,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Type: filesandordirs; Name: "{app}\*"
 
 [Files]
-; Excludes 由 build-installer.ps1 注入：调试符号 + 除 zh-CN / en-us 外的框架语言资源目录。
+; 语言资源目录在调用 ISCC 之前就已被 scripts/prune-publish-output.ps1 从 publish 目录里删掉，
+; Excludes 现在只剩调试符号这一条兜底（见脚本头部的说明）。
 ; 注意：这里**不能**加 createallsubdirs —— Inno Setup 默认跳过空目录，
 ; 但该 flag 会连「被 Excludes 排空」的目录也建出来，导致安装目录里仍躺着 84 个空的 xx-YY 语言文件夹。
 ; 实测：加上它 → 93 个目录（84 个为空）；去掉它 → 9 个目录（全部有文件）。

@@ -51,6 +51,9 @@ public sealed partial class LogListView : UserControl
     /// <summary>Raised after Ctrl+C or context-menu copy completes. Argument is the count copied.</summary>
     public event EventHandler<int>? CopyCompleted;
 
+    /// <summary>Raised when the clipboard refused the content. Argument is the failure message.</summary>
+    public event EventHandler<string>? CopyFailed;
+
     private readonly DispatcherQueueTimer? _autoScrollTimer;
     private bool _isAutoScrollPending;
     private INotifyCollectionChanged? _observedSource;
@@ -71,7 +74,24 @@ public sealed partial class LogListView : UserControl
             _autoScrollTimer.Tick += (_, _) => PerformPendingAutoScroll();
         }
 
+        // Both directions are needed. A control can be unloaded and re-loaded (template re-application,
+        // reparenting, a theme change), and the dependency property is not re-assigned in that case —
+        // so ItemsSourceProperty's change callback does not run again. Without the Loaded half the
+        // CollectionChanged subscription was simply gone after the first unload, and auto-scroll
+        // silently stopped for the rest of the session.
+        Loaded += OnLoaded;
         Unloaded += OnUnloaded;
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        if (_observedSource != null || ItemsSource is not INotifyCollectionChanged source)
+        {
+            return;
+        }
+
+        _observedSource = source;
+        source.CollectionChanged += OnSourceCollectionChanged;
     }
 
     /// <summary>Public entry point for the toolbar "全选" button.</summary>
@@ -83,8 +103,9 @@ public sealed partial class LogListView : UserControl
     /// <summary>
     /// Public entry point for the toolbar "复制" button.
     /// </summary>
-    /// <returns><c>false</c> when nothing is selected, so the caller can say so instead of silently
-    /// doing nothing. On success <see cref="CopyCompleted"/> carries the count as usual.</returns>
+    /// <returns><c>false</c> when nothing is selected (or the clipboard refused the content), so the
+    /// caller can say so instead of silently doing nothing. On success <see cref="CopyCompleted"/>
+    /// carries the count as usual.</returns>
     public bool CopySelection()
     {
         if (InnerListView.SelectedItems.Count == 0)
@@ -92,8 +113,7 @@ public sealed partial class LogListView : UserControl
             return false;
         }
 
-        CopySelectedToClipboard();
-        return true;
+        return CopySelectedToClipboard();
     }
 
     private static void OnItemsSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -194,18 +214,38 @@ public sealed partial class LogListView : UserControl
 
     private void SelectAllInList_Click(object sender, RoutedEventArgs e) => InnerListView.SelectAll();
 
-    private void CopySelectedToClipboard()
+    /// <summary>
+    /// Copies the selected rows, returning <c>false</c> when there was nothing to copy or the
+    /// clipboard refused the content.
+    /// </summary>
+    /// <remarks>
+    /// <c>Clipboard.SetContent</c> is a cross-process COM call and throws (typically
+    /// <c>COMException</c> 0x800401D0, CLIPBRD_E_CANT_OPEN) whenever another process holds the
+    /// clipboard open — a browser tab or clipboard manager doing this is routine, not exceptional.
+    /// Unhandled, that exception reached <c>Application.UnhandledException</c> and took the whole app
+    /// down; with a "copy log" toolbar button and a Ctrl+C shortcut this was reachable by accident.
+    /// </remarks>
+    private bool CopySelectedToClipboard()
     {
         var selectedItems = InnerListView.SelectedItems;
-        if (selectedItems.Count == 0) return;
+        if (selectedItems.Count == 0) return false;
 
-        var text = string.Join("\n", selectedItems.Cast<LogEntry>().Select(l => l.FormattedText));
+        try
+        {
+            var text = string.Join("\n", selectedItems.Cast<LogEntry>().Select(l => l.FormattedText));
 
-        var dataPackage = new Windows.ApplicationModel.DataTransfer.DataPackage();
-        dataPackage.SetText(text);
-        Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dataPackage);
+            var dataPackage = new Windows.ApplicationModel.DataTransfer.DataPackage();
+            dataPackage.SetText(text);
+            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dataPackage);
+        }
+        catch (Exception ex)
+        {
+            CopyFailed?.Invoke(this, ex.Message);
+            return false;
+        }
 
         CopyCompleted?.Invoke(this, selectedItems.Count);
+        return true;
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)

@@ -14,22 +14,31 @@
     <ApplicationIcon>Assets\Images\logo.ico</ApplicationIcon>
   </PropertyGroup>
 
-  <!-- Read version from version.json at evaluation time (must be before version assignment) -->
+  <!-- Read version from version.json at evaluation time (must be before version assignment).
+
+       \A anchors to the START OF THE DOCUMENT, which is the only anchor that identifies the top-level
+       "version" key. Two weaker options were tried and both are wrong:
+         * '"version"\s*:\s*"([^"]+)"' matches the first occurrence anywhere — a changelog entry.
+         * '(?m)^\s*\{\s*"version"\s*:\s*"([^"]+)"' looks anchored, but ^ matches any line start and
+           \s* spans newlines, so it also matches a nested '{' followed by a "version" key. The last
+           changelog entry in this repo is written exactly that way, so a missing top-level key
+           silently resolved to 1.0.0 and the build succeeded.
+       The optional \uFEFF tolerates a BOM, which a PowerShell 5.1 "Set-Content -Encoding UTF8" would
+       otherwise reintroduce. -->
   <PropertyGroup>
     <VersionJsonContent>$([System.IO.File]::ReadAllText('$(ProjectDir)version.json'))</VersionJsonContent>
-    <VersionFromJson>$([System.Text.RegularExpressions.Regex]::Match($(VersionJsonContent), '"version"\s*:\s*"([^"]+)"').Groups[1].Value)</VersionFromJson>
+    <VersionFromJson>$([System.Text.RegularExpressions.Regex]::Match($(VersionJsonContent), '\A\uFEFF?\s*\{\s*"version"\s*:\s*"([^"]+)"').Groups[1].Value)</VersionFromJson>
+    <VersionIsWellFormed>$([System.Text.RegularExpressions.Regex]::IsMatch('$(VersionFromJson)', '^[0-9]+\.[0-9]+\.[0-9]+$'))</VersionIsWellFormed>
   </PropertyGroup>
 
   <PropertyGroup>
-    <!-- Version Information - Automatically read from version.json -->
-    <!-- Default fallback version if version.json read fails -->
-    <Version Condition="'$(VersionFromJson)' == ''">1.7.0</Version>
+    <!-- Version Information - read from version.json. There is deliberately NO hard-coded fallback:
+         a stale fallback (it was 1.7.0 while the project was on 2.1.0) produces a silently
+         mis-versioned build instead of a failed one. The ValidateVersion target below turns an
+         unreadable version.json into a build error. -->
     <Version Condition="'$(VersionFromJson)' != ''">$(VersionFromJson)</Version>
-    <AssemblyVersion Condition="'$(VersionFromJson)' == ''">1.7.0.0</AssemblyVersion>
     <AssemblyVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson).0</AssemblyVersion>
-    <FileVersion Condition="'$(VersionFromJson)' == ''">1.7.0.0</FileVersion>
     <FileVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson).0</FileVersion>
-    <InformationalVersion Condition="'$(VersionFromJson)' == ''">1.7.0</InformationalVersion>
     <InformationalVersion Condition="'$(VersionFromJson)' != ''">$(VersionFromJson)</InformationalVersion>
     
     <!-- Publishing Configuration -->
@@ -63,6 +72,16 @@
     <Exec Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\scripts\generate-buildinfo.ps1&quot; -OutputPath &quot;$(BuildInfoPath)&quot;" />
   </Target>
   
+  <!-- Fail the build when version.json cannot be parsed, instead of shipping a mis-versioned build.
+       Runs before BeforeBuild so nothing downstream (manifest sync, compile, installer) sees the
+       empty version. -->
+  <Target Name="ValidateVersion" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(VersionFromJson)' == ''"
+           Text="Could not read the top-level 'version' value from '$(ProjectDir)version.json'. The file must start with { &quot;version&quot;: &quot;x.y.z&quot;, ... }." />
+    <Error Condition="'$(VersionIsWellFormed)' != 'True'"
+           Text="The 'version' value in version.json must be three numeric parts (e.g. 2.1.0); got '$(VersionFromJson)'." />
+  </Target>
+
   <!-- Target to update Package.appxmanifest version before build -->
   <Target Name="UpdateManifestVersion" BeforeTargets="BeforeBuild">
     <PropertyGroup>

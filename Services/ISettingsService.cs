@@ -1,3 +1,4 @@
+using System;
 using System.Threading.Tasks;
 
 namespace SerialPortTool.Services;
@@ -7,6 +8,23 @@ namespace SerialPortTool.Services;
 /// </summary>
 public interface ISettingsService
 {
+    /// <summary>
+    /// 已存在的 <c>settings.json</c> 无法解析时触发（每个进程最多一次）。
+    /// </summary>
+    /// <remarks>
+    /// 触发即意味着该服务已进入<b>只读保护</b>状态：内存里没有真实内容，继续写盘会用空字典覆盖用户
+    /// 的端口配置 / 外观 / 颜色 / 搜索历史。订阅方应给用户一个明确、可操作的提示，而不是静默降级。
+    /// </remarks>
+    event EventHandler? SettingsLoadFailed;
+
+    /// <summary>
+    /// 是否处于「设置文件读取失败，已暂停写盘」的保护状态。
+    /// </summary>
+    /// <remarks>
+    /// 事件可能在订阅者（ViewModel / Window）存在之前就已经触发过，订阅方必须在初始化时也读一次本属性。
+    /// </remarks>
+    bool HasLoadFailure { get; }
+
     /// <summary>
     /// 保存整数设置
     /// </summary>
