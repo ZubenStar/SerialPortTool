@@ -80,6 +80,22 @@ public sealed partial class LogListView : UserControl
         InnerListView.SelectAll();
     }
 
+    /// <summary>
+    /// Public entry point for the toolbar "复制" button.
+    /// </summary>
+    /// <returns><c>false</c> when nothing is selected, so the caller can say so instead of silently
+    /// doing nothing. On success <see cref="CopyCompleted"/> carries the count as usual.</returns>
+    public bool CopySelection()
+    {
+        if (InnerListView.SelectedItems.Count == 0)
+        {
+            return false;
+        }
+
+        CopySelectedToClipboard();
+        return true;
+    }
+
     private static void OnItemsSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var ctrl = (LogListView)d;

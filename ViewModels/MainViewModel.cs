@@ -2,6 +2,8 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml.Media;
+using SerialPortTool.Core.Enums;
 using SerialPortTool.Helpers;
 using SerialPortTool.Models;
 using SerialPortTool.Services;
@@ -313,6 +315,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 }
                 break;
         }
+
+        // Cheap to maintain here and it keeps the status bar off a per-frame path.
+        OpenPortCount = _portsByName.Count;
     }
 
     // AllLogs is the unfiltered back-buffer used by FilterLogs() when SearchText changes. It is
@@ -488,7 +493,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private string _regexErrorMessage = string.Empty;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(MatchCountDisplay))]
     private int _matchCount = 0;
+
+    /// <summary>Match count for the status bar; empty when nothing is being filtered.</summary>
+    public string MatchCountDisplay => MatchCount > 0 ? $"匹配 {MatchCount} 条" : string.Empty;
 
     private void ValidateSearchPattern()
     {
@@ -547,10 +556,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private PortViewModel? _selectedPort;
 
     [ObservableProperty]
-    private string _txColorHex = "#0078D4"; // Blue for TX (sent)
+    private string _txColorHex = PortColorPalette.DefaultTxHex;
 
     [ObservableProperty]
-    private string _rxColorHex = "#107C10"; // Green for RX (received)
+    private string _rxColorHex = PortColorPalette.DefaultRxHex;
+
+    /// <summary>
+    /// TX colour resolved for the active appearance. <see cref="TxColorHex"/> itself always stays a
+    /// palette slot because it is persisted and rebound to <c>TxColorOptions</c>.
+    /// </summary>
+    private string TxColorHexResolved => PortColorPalette.Resolve(TxColorHex, _isDarkTheme);
 
     [ObservableProperty]
     private string _tuningBinFilePath = string.Empty;
@@ -580,6 +595,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     public bool HasTuningDescriptorPath => !string.IsNullOrWhiteSpace(TuningDescriptorFilePath);
 
+    /// <summary>File name of the tuning payload, for the toolbar chip (full path is the tooltip).</summary>
+    public string TuningBinDisplay => HasTuningBinFilePath ? Path.GetFileName(TuningBinFilePath) : string.Empty;
+
+    /// <summary>File name of the protocol descriptor, for the toolbar chip.</summary>
+    public string TuningDescriptorDisplay =>
+        HasTuningDescriptorPath ? Path.GetFileName(TuningDescriptorFilePath) : string.Empty;
+
     public string TuningWatchButtonText => IsTuningWatching ? "停止监听" : "开始监听";
 
     private TuningProtocolDescriptor? _tuningDescriptor;
@@ -590,35 +612,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private bool _suppressTuningWatchPersistence = false;
 
     /// <summary>
-    /// 端口颜色调色板 - 用于自动分配不同颜色给不同串口
+    /// Gets the next unused port identity slot.
     /// </summary>
-    public static readonly string[] PortColorPalette = new[]
-    {
-        "#107C10", // 绿色
-        "#0078D4", // 蓝色
-        "#E74856", // 红色
-        "#FF8C00", // 橙色
-        "#881798", // 紫色
-        "#00B7C3", // 青色
-        "#C239B3", // 粉色
-        "#498205", // 橄榄绿
-        "#8764B8", // 淡紫
-        "#CA5010", // 棕橙
-    };
-
-    /// <summary>
-    /// 获取下一个可用的端口颜色
-    /// </summary>
+    /// <remarks>
+    /// Returns the slot hex (the light value), which is both what gets persisted and what keeps the
+    /// colour stable across an appearance change. Never return a resolved (dark) hex here — it would
+    /// be written to settings.json and would no longer map back to a slot.
+    /// </remarks>
     private string GetNextPortColor()
     {
         var usedColors = OpenPorts.Select(p => p.ColorHex).ToHashSet();
-        foreach (var color in PortColorPalette)
+        foreach (var slot in PortColorPalette.Slots)
         {
-            if (!usedColors.Contains(color))
-                return color;
+            if (!usedColors.Contains(slot.SlotHex))
+                return slot.SlotHex;
         }
         // 如果所有颜色都用完了，从头开始循环
-        return PortColorPalette[OpenPorts.Count % PortColorPalette.Length];
+        return PortColorPalette.Slots[OpenPorts.Count % PortColorPalette.Slots.Count].SlotHex;
     }
 
     /// <summary>
@@ -643,12 +653,187 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// 获取指定端口的颜色
+    /// 获取指定端口的颜色槽位（持久化的值，不是渲染值）
     /// </summary>
     public string GetPortColor(string portName)
     {
         return _portsByName.TryGetValue(portName, out var port) ? port.ColorHex : RxColorHex;
     }
+
+    /// <summary>
+    /// Hex to actually render for a port under the active appearance.
+    /// </summary>
+    /// <remarks>
+    /// Called once per received chunk (not per line) from the read path, so the cost is a single
+    /// dictionary lookup on top of the existing lookup — no allocation, no LINQ.
+    /// </remarks>
+    public string GetPortDisplayColor(string portName)
+    {
+        return PortColorPalette.Resolve(GetPortColor(portName), _isDarkTheme);
+    }
+
+    #region Appearance
+
+    private bool _isDarkTheme;
+    private bool _skipThemePersistence;
+
+    /// <summary>Settings key for <see cref="IsSidebarCollapsed"/>.</summary>
+    private const string SidebarCollapsedSettingKey = "SidebarCollapsed";
+
+    /// <summary>True when the currently applied appearance resolves to the dark palette.</summary>
+    public bool IsDarkTheme => _isDarkTheme;
+
+    /// <summary>
+    /// User's appearance choice. Persisted by <see cref="OnThemePreferenceChanged"/>; the actual
+    /// application to the visual tree is done by <c>MainWindow</c>, which owns the root element.
+    /// </summary>
+    [ObservableProperty]
+    private AppThemePreference _themePreference = AppThemePreference.System;
+
+    /// <summary>Human-readable appearance for the status bar.</summary>
+    [ObservableProperty]
+    private string _appearanceDisplay = "跟随系统";
+
+    /// <summary>
+    /// Adopts the preference read from disk at startup <em>without</em> writing it back.
+    /// </summary>
+    public void InitializeThemePreference(AppThemePreference preference)
+    {
+        _skipThemePersistence = true;
+        try
+        {
+            ThemePreference = preference;
+        }
+        finally
+        {
+            _skipThemePersistence = false;
+        }
+    }
+
+    partial void OnThemePreferenceChanged(AppThemePreference value)
+    {
+        AppearanceDisplay = value switch
+        {
+            AppThemePreference.Light => "浅色",
+            AppThemePreference.Dark => "深色",
+            _ => "跟随系统"
+        };
+
+        if (!_skipThemePersistence)
+        {
+            _ = _settingsService.SaveSettingAsync(App.ThemeSettingKey, value.ToString());
+        }
+    }
+
+    /// <summary>
+    /// Re-derives every colour that is stored as a palette slot into the variant for the active
+    /// appearance, including rows that are already on screen.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called by <c>MainWindow</c> after the root element's theme (and therefore
+    /// <c>ActualTheme</c>) has settled. The sweep over <see cref="AllLogs"/> is O(n) with n bounded by
+    /// <c>AllLogsTrimThreshold</c>, runs only on a user action, and never replaces the
+    /// <see cref="DisplayLogs"/> instance — the "never swap the bound collection" rule still holds.
+    /// </para>
+    /// <para>
+    /// This is why <c>Controls/LogListView.xaml</c> binds <c>ColorHex</c> with <c>Mode=OneWay</c>:
+    /// a compiled <c>x:Bind</c> defaults to OneTime, so without it the rows would keep the previous
+    /// theme's brush until the list was rebuilt.
+    /// </para>
+    /// </remarks>
+    public void ApplyEffectiveTheme(bool isDark)
+    {
+        if (_isDarkTheme == isDark)
+        {
+            return;
+        }
+
+        _isDarkTheme = isDark;
+        OnPropertyChanged(nameof(IsDarkTheme));
+
+        foreach (var port in OpenPorts)
+        {
+            port.RefreshDisplayColor(isDark);
+        }
+
+        foreach (var entry in AllLogs)
+        {
+            entry.ColorHex = PortColorPalette.Resolve(entry.ColorHex, isDark);
+        }
+
+        foreach (var option in TxColorOptions)
+        {
+            option.RefreshBrush(isDark);
+        }
+    }
+
+    /// <summary>Swatch options for the TX colour picker; brushes follow the active appearance.</summary>
+    public ObservableCollection<PortColorOption> TxColorOptions { get; } = BuildTxColorOptions();
+
+    private static ObservableCollection<PortColorOption> BuildTxColorOptions()
+    {
+        var options = new ObservableCollection<PortColorOption>();
+        foreach (var slot in PortColorPalette.TxOptions)
+        {
+            options.Add(new PortColorOption(slot));
+        }
+        return options;
+    }
+
+    #region Sidebar & status bar
+
+    /// <summary>Whether the user folded the port configuration rail away.</summary>
+    [ObservableProperty]
+    private bool _isSidebarCollapsed;
+
+    partial void OnIsSidebarCollapsedChanged(bool value)
+    {
+        _ = _settingsService.SaveSettingAsync(SidebarCollapsedSettingKey, value ? 1 : 0);
+    }
+
+    /// <summary>Number of currently open ports, maintained on the UI thread by the collection hook.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(OpenPortCountDisplay))]
+    [NotifyPropertyChangedFor(nameof(HasOpenPorts))]
+    private int _openPortCount;
+
+    /// <summary>Open-port count for the status bar.</summary>
+    public string OpenPortCountDisplay => OpenPortCount == 0 ? "未打开串口" : $"已打开 {OpenPortCount} 个串口";
+
+    /// <summary>Drives the collapse of the channel legend strip when there is nothing to legend.</summary>
+    public bool HasOpenPorts => OpenPortCount > 0;
+
+    /// <summary>Combined RX/TX totals across every open port, refreshed on the throttled stats tick.</summary>
+    [ObservableProperty]
+    private string _totalTrafficDisplay = "↓ 0 B  ↑ 0 B";
+
+    /// <summary>
+    /// Sums the cumulative counters of all open ports.
+    /// </summary>
+    /// <remarks>
+    /// Only ever called from inside the existing ~4 Hz stats-refresh window in
+    /// <c>FlushPendingLogBatches</c> — deliberately not per batch and never per byte, because that
+    /// is exactly the kind of per-packet work the throttling exists to prevent.
+    /// </remarks>
+    private void RefreshTrafficTotals()
+    {
+        long received = 0;
+        long sent = 0;
+
+        foreach (var port in _portsByName.Values)
+        {
+            var stats = _serialPortService.GetStatistics(port.PortName);
+            received += stats.ReceivedBytes;
+            sent += stats.SentBytes;
+        }
+
+        TotalTrafficDisplay = $"↓ {FormatDataSize(received)}  ↑ {FormatDataSize(sent)}";
+    }
+
+    #endregion
+
+    #endregion
 
     partial void OnSendAsHexChanged(bool value)
     {
@@ -679,6 +864,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         _ = _settingsService.SaveSettingAsync("TuningBinFilePath", value);
         OnPropertyChanged(nameof(HasTuningBinFilePath));
+        OnPropertyChanged(nameof(TuningBinDisplay));
         RefreshTuningAvailability();
     }
 
@@ -686,6 +872,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         _ = _settingsService.SaveSettingAsync("TuningDescriptorFilePath", value);
         OnPropertyChanged(nameof(HasTuningDescriptorPath));
+        OnPropertyChanged(nameof(TuningDescriptorDisplay));
         RefreshTuningAvailability();
     }
 
@@ -829,8 +1016,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         SendAsHex = await _settingsService.LoadSettingAsync("SendAsHex", 0) == 1;
         SendText = await _settingsService.LoadSettingAsync("SendText", string.Empty);
         ShowSentData = await _settingsService.LoadSettingAsync("ShowSentData", 1) == 1;
-        TxColorHex = await _settingsService.LoadSettingAsync("TxColorHex", "#0078D4");
-        RxColorHex = await _settingsService.LoadSettingAsync("RxColorHex", "#107C10");
+        TxColorHex = await _settingsService.LoadSettingAsync("TxColorHex", PortColorPalette.DefaultTxHex);
+        RxColorHex = await _settingsService.LoadSettingAsync("RxColorHex", PortColorPalette.DefaultRxHex);
+        IsSidebarCollapsed = await _settingsService.LoadSettingAsync(SidebarCollapsedSettingKey, 0) == 1;
 
         // Load tuning settings. The protocol itself is never defaulted; it must come from the user's JSON file.
         TuningBinFilePath = await _settingsService.LoadSettingAsync("TuningBinFilePath", string.Empty);
@@ -1316,7 +1504,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 PortName = portName,
                 Content = displayContent,
                 IsReceived = false,
-                ColorHex = TxColorHex
+                ColorHex = TxColorHexResolved
             };
             AddSentLog(logEntry);
         }
@@ -1829,7 +2017,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 PortName = portName,
                 Content = summary,
                 IsReceived = false,
-                ColorHex = TxColorHex
+                ColorHex = TxColorHexResolved
             };
             AddSentLog(logEntry);
         }
@@ -2129,7 +2317,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 e.Data, 0, e.Data.Length, assembler.DecodeBuffer, 0, flush: false);
             assembler.Pending.Append(assembler.DecodeBuffer, 0, charsDecoded);
 
-            var portColor = GetPortColor(portName);
+            var portColor = GetPortDisplayColor(portName);
 
             if (traceEnabled)
             {
@@ -2419,6 +2607,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     }
                 }
                 _pendingStatsPorts.Clear();
+
+                // Piggy-backs on the same ~4 Hz window as the per-port counters above.
+                RefreshTrafficTotals();
             }
 
             var updateDuration = (DateTime.Now - updateStartTime).TotalMilliseconds;
@@ -2791,6 +2982,32 @@ public partial class MainViewModel : ObservableObject, IDisposable
 }
 
 /// <summary>
+/// Swatch entry for the TX colour picker. Holds a palette slot plus the brush for the active
+/// appearance, so the picker previews the colour that will actually be rendered.
+/// </summary>
+public partial class PortColorOption : ObservableObject
+{
+    public PortColorOption(PortColorSlot slot)
+    {
+        Slot = slot;
+        _brush = new SolidColorBrush(PortColorPalette.ParseHex(slot.SlotHex));
+    }
+
+    public PortColorSlot Slot { get; }
+
+    /// <summary>Slot hex — this is the value bound to <c>SelectedValue</c>.</summary>
+    public string Hex => Slot.SlotHex;
+
+    public string Name => Slot.Name;
+
+    [ObservableProperty]
+    private SolidColorBrush _brush;
+
+    public void RefreshBrush(bool isDark)
+        => Brush = new SolidColorBrush(PortColorPalette.ParseHex(Slot.Resolve(isDark)));
+}
+
+/// <summary>
 /// 单个串口的视图模型
 /// </summary>
 public partial class PortViewModel : ObservableObject
@@ -2798,8 +3015,21 @@ public partial class PortViewModel : ObservableObject
     [ObservableProperty]
     private string _portName = string.Empty;
 
+    /// <summary>
+    /// Palette slot for this port — persisted verbatim, never a resolved hex.
+    /// </summary>
     [ObservableProperty]
-    private string _colorHex = "#107C10";
+    private string _colorHex = PortColorPalette.DefaultRxHex;
+
+    /// <summary>
+    /// Hex to paint with under the active appearance. Kept separate from <see cref="ColorHex"/> so the
+    /// stored value stays a slot while the sidebar swatch and the log channel bar follow the theme.
+    /// </summary>
+    [ObservableProperty]
+    private string _displayColorHex = PortColorPalette.DefaultRxHex;
+
+    public void RefreshDisplayColor(bool isDark)
+        => DisplayColorHex = PortColorPalette.Resolve(ColorHex, isDark);
 
     [ObservableProperty]
     private string _statisticsDisplay = "0 bytes";

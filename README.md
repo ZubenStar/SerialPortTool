@@ -10,16 +10,19 @@ SerialPortTool 面向需要同时盯多个串口的调试与产线场景：多�
 
 - **多串口并发管理**：扫描、逐个打开/关闭、一键「打开全部 / 关闭全部」，每个串口独立收发与统计。
 - **灵活串口配置**：波特率（含自定义）、数据位、停止位、校验位；配置持久化到 `settings.json`。
+- **外观切换**：菜单「外观」可选 **跟随系统 / 浅色 / 深色**，切换即时生效并会被记住；两套配色各自校准（含端口标识色），标题栏使用云母材质（系统不支持时自动降级为实色）。
+- **可折叠配置栏**：左侧串口配置与端口列表可一键折叠，窗口变窄时会自动收起，把宽度让给日志。
 - **波特率不匹配检测**：实时分析数据质量，识别错的波特率并给出高置信度修正建议（一键修正）。
 - **实时日志系统**：
   - 关键字 / 正则表达式筛选，带搜索历史（可单条删除、可清空）。
   - 暂停日志追加（不中断串口接收）、清空日志。
   - 每个串口独立 RX 颜色 + 可配置 TX 颜色，便于多口对读；日志区支持 `Ctrl+C` 复制、`Ctrl+A` 全选与右键菜单。
+  - 每行日志左侧带一条所属串口的「通道色条」，日志上方另有「通道图例」列出 颜色 → 端口 → 收发字节数，多口交织时一眼分清每行的归属。
 - **Tuning / TOTA 推送**：选择 `.bin` 载荷与 JSON 协议描述文件，广播到所有已打开串口，支持监听文件变化自动重发。
 - **数据发送**：文本 / 十六进制模式，可广播到全部已打开串口。
 - **日志落盘**：串口日志异步批量写盘；应用运行日志（Serilog）可在「工具 → 打开日志文件夹」直接定位。
 - **检查更新 / 自动更新**：启动后静默检查 GitHub Releases，有新版本时提示并可下载安装；「帮助 → 检查更新」可随时手动检查。
-- **现代化界面**：Fluent Design + 云母材质背景，日志列表虚拟化，可跑高吞吐数据流。
+- **现代化界面**：Fluent Design + 云母材质标题栏，深浅两套配色，统一的字形图标与控件样式，日志列表虚拟化，可跑高吞吐数据流。
 
 ---
 
@@ -50,14 +53,16 @@ SerialPortTool/
 ├── SerialPortTool.csproj / .sln
 ├── version.json                     # 版本号与更新日志的唯一来源
 ├── mic-tota-tuning.json             # Tuning 协议描述文件的示例（非应用配置）
+├── Themes/Tokens.xaml               # 设计令牌：浅色 / 深色 / 高对比三套配色 + 字体间距圆角
+├── Themes/Controls.xaml             # 按钮族样式与模板（唯一被重新模板化的控件）
 ├── Assets/Images/                   # logo.ico（16–256 多尺寸图标）、logo.png（1024 主图）
 ├── Controls/                        # LogListView：唯一的自定义控件（虚拟化日志列表）
 ├── Converters/                      # BoolToVisibility / InverseBoolToVisibility / HexColorToBrush
-├── Core/Enums/                      # ConnectionState、DataFormat、FilterType
+├── Core/Enums/                      # ConnectionState、DataFormat、FilterType、AppThemePreference
 ├── Helpers/                         # VersionInfo、BuildInfo.g.cs（构建时生成）
-├── Models/                          # SerialPortConfig、LogEntry、FilterRule、CommandPreset、PortStatistics
+├── Models/                          # SerialPortConfig、LogEntry、FilterRule、CommandPreset、PortStatistics、PortColorSlot
 ├── Services/                        # 串口、波特率检测、数据校验、日志过滤、文件日志、设置、Tuning 协议
-├── ViewModels/                      # MainViewModel（含 RangeObservableCollection）
+├── ViewModels/                      # MainViewModel（含 RangeObservableCollection、PortViewModel）
 ├── installer/SerialPortTool.iss     # Inno Setup 安装程序脚本（每用户安装，支持静默替换升级）
 ├── scripts/                         # 版本 / 构建信息 / 发布说明 / 清单版本 / 安装包 相关脚本
 └── .github/workflows/release.yml    # 打 tag 触发的发布流水线
@@ -119,10 +124,12 @@ dotnet publish --configuration Release --runtime win-x64 --self-contained true `
 
 ### 基本使用
 
-1. 「工具 → 扫描串口」，在左侧「可用串口」中选择并打开（可多选并发）。
-2. 右上角选择 tuning `.bin` 与协议 JSON，点击发送即在所有已打开串口上广播。
-3. 日志区使用搜索框（支持正则）过滤，`Ctrl+C` 复制选中行，`Ctrl+A` 全选。
+1. 「工具 → 扫描串口」，在左侧「可用串口」中选择并打开（可多选并发），或直接点「全部打开」。
+2. 顶部工具条第二行选择 tuning `.bin` 与协议 JSON，点「发送 Tuning」即在所有已打开串口上广播。
+3. 日志区用搜索框（支持正则）过滤；工具条右侧为 全选 / 复制 / 清空 / 暂停，`Ctrl+C` 复制选中行、`Ctrl+A` 全选。
 4. 出现「检测到波特率可能不匹配」提示时，可直接一键修正。
+5. 需要更大的日志区时，点标题栏右侧的折叠按钮（或「工具 → 折叠 / 展开串口配置栏」）收起左侧配置栏。
+6. 换配色走菜单「外观 → 跟随系统 / 浅色 / 深色」，切换即时生效，重启后保持上次选择。
 
 ---
 

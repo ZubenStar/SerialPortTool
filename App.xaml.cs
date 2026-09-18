@@ -1,7 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Serilog;
+using SerialPortTool.Core.Enums;
 using SerialPortTool.Services;
 using SerialPortTool.ViewModels;
 using System;
@@ -14,6 +16,9 @@ namespace SerialPortTool;
 /// </summary>
 public partial class App : Application
 {
+    /// <summary>Settings key holding the persisted <see cref="AppThemePreference"/>.</summary>
+    public const string ThemeSettingKey = "AppTheme";
+
     private readonly ServiceProvider _services;
     private Window? _window;
     private bool _isClosing;
@@ -29,13 +34,31 @@ public partial class App : Application
     public IServiceProvider Services => _services;
 
     /// <summary>
+    /// Appearance read from settings before the main window is constructed.
+    /// </summary>
+    /// <remarks>
+    /// The read has to happen here rather than in <c>MainWindow</c>: the window needs to know the
+    /// theme before <c>InitializeComponent()</c> so the first frame is already painted in the right
+    /// palette. Setting <c>ElementTheme</c> after the window is shown produces a visible light-to-dark
+    /// flash on every launch for dark-theme users.
+    /// </remarks>
+    public AppThemePreference InitialThemePreference { get; private set; } = AppThemePreference.System;
+
+    /// <summary>
     /// Initializes the singleton application object.
     /// </summary>
     public App()
     {
-        InitializeComponent();
-
-        // Configure Serilog
+        // Serilog and the exception handlers are registered BEFORE InitializeComponent() on purpose,
+        // for two reasons:
+        //
+        // 1. Application.LoadComponent() is where App.xaml and its merged dictionaries are realised,
+        //    so a broken resource dictionary currently dies with nothing in the log.
+        // 2. InitializeComponent() also registers the XAML compiler's generated debug handler
+        //    (App.g.i.cs: "UnhandledException += (s, e) => Debugger.Break()" under
+        //    DEBUG && !DISABLE_XAML_GENERATED_BREAK_ON_UNHANDLED_EXCEPTION). Handlers run in
+        //    registration order, so registering ours first is what puts the exception in the log
+        //    before the debugger stops the process.
         var logsPath = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
             "SerialPortTool", "DebugLogs", "app-.log");
@@ -51,9 +74,16 @@ public partial class App : Application
                 outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
 
-        Log.Information("Application started. Logs will be saved to: {LogPath}", logsPath);
+        // XAML's own channel. AppDomain.UnhandledException below does NOT cover an exception raised by
+        // the framework on the UI thread (binding evaluation, template instantiation, window
+        // construction): those are routed through Application.UnhandledException, and with no
+        // subscriber the process is torn down with an empty log.
+        UnhandledException += (sender, e) =>
+        {
+            Log.Fatal(e.Exception, "Unhandled XAML exception: {Message}", e.Message);
+            Log.CloseAndFlush();
+        };
 
-        // Register global unhandled exception handlers to prevent silent crashes
         AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
         {
             var ex = e.ExceptionObject as Exception;
@@ -66,6 +96,10 @@ public partial class App : Application
             Log.Error(e.Exception, "Unobserved task exception");
             e.SetObserved(); // Prevent process termination
         };
+
+        InitializeComponent();
+
+        Log.Information("Application started. Logs will be saved to: {LogPath}", logsPath);
 
         // Build a lightweight DI container for the desktop app.
         var services = new ServiceCollection();
@@ -105,12 +139,58 @@ public partial class App : Application
     /// <summary>
     /// Invoked when the application is launched.
     /// </summary>
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    /// <remarks>
+    /// <c>async void</c> is required — the base signature returns <c>void</c> — and the appearance
+    /// read below is the only thing that runs before the window exists. It is wrapped so a settings
+    /// failure can never prevent the app from starting.
+    /// </remarks>
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
-        // Create main window
+        // Captured while we are definitely on the UI thread. Creating a WinUI 3 Window from any other
+        // thread throws, so the guard below is what keeps this async method safe.
+        var dispatcher = DispatcherQueue.GetForCurrentThread();
+
+        await LoadInitialThemePreferenceAsync();
+
+        if (dispatcher is not null && !dispatcher.HasThreadAccess)
+        {
+            // Should be unreachable: the await above captures the dispatcher context. Kept as a
+            // fail-safe so a future ConfigureAwait(false) in the settings path cannot turn
+            // "app fails to start" into a hard-to-diagnose crash.
+            Log.Warning("Launch continuation left the UI thread; marshalling window creation back");
+            dispatcher.TryEnqueue(CreateAndActivateMainWindow);
+            return;
+        }
+
+        CreateAndActivateMainWindow();
+    }
+
+    private void CreateAndActivateMainWindow()
+    {
         _window = _services.GetRequiredService<MainWindow>();
         _window.Closed += OnWindowClosed;
         _window.Activate();
+    }
+
+    private async Task LoadInitialThemePreferenceAsync()
+    {
+        try
+        {
+            var settings = _services.GetRequiredService<ISettingsService>();
+            var raw = await settings.LoadSettingAsync(ThemeSettingKey, nameof(AppThemePreference.System));
+
+            InitialThemePreference =
+                Enum.TryParse<AppThemePreference>(raw, ignoreCase: true, out var parsed) &&
+                Enum.IsDefined(parsed)
+                    ? parsed
+                    : AppThemePreference.System;
+        }
+        catch (Exception ex)
+        {
+            // Falling back to the system appearance keeps the app usable; the user can re-pick.
+            InitialThemePreference = AppThemePreference.System;
+            Log.Warning(ex, "Could not read the saved appearance preference; using the system appearance");
+        }
     }
 
     private async void OnWindowClosed(object sender, WindowEventArgs args)

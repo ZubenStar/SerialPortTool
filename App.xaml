@@ -6,8 +6,12 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
+                <!-- MUST stay first: our dictionaries below override framework lightweight keys
+                     (ControlCornerRadius, TextFillColor*, TextControl*, ComboBox*, MenuFlyout*, …),
+                     and a merged dictionary only wins if it is consulted after XamlControlsResources. -->
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
-                <!-- Other merged dictionaries here -->
+                <ResourceDictionary Source="Themes/Tokens.xaml" />
+                <ResourceDictionary Source="Themes/Controls.xaml" />
             </ResourceDictionary.MergedDictionaries>
 
             <!-- Converters -->

@@ -15,7 +15,7 @@
     <ListView x:Name="InnerListView"
               ItemsSource="{x:Bind ItemsSource, Mode=OneWay}"
               SelectionMode="Extended"
-              Background="{ThemeResource LayerFillColorDefaultBrush}"
+              Background="{ThemeResource AppSurfaceSunkenBrush}"
               Padding="8,4"
               IsTabStop="True"
               ScrollViewer.HorizontalScrollMode="Disabled"
@@ -72,17 +72,39 @@
             </Style>
         </ListView.ItemContainerStyle>
         <ListView.ItemTemplate>
-            <!-- x:Bind compiles bindings at build time — no per-item reflection or PropertyChanged
-                 wiring. FormattedText and ColorHex are set once at LogEntry construction, so OneTime
-                 is the right mode and the cheapest option. -->
+            <!-- x:Bind compiles bindings at build time — no per-item reflection.
+                 Two elements per row, on purpose: the channel bar and the text. Column alignment
+                 (timestamp / port / direction) is carried by LogEntry.FormattedText itself, which is
+                 far cheaper than adding columns to every realized row. Adding containers here directly
+                 costs virtualization time — see the do-not-regress notes in AGENTS.md.
+
+                 ColorHex is Mode=OneWay (a compiled x:Bind is OneTime by default) because switching
+                 appearance re-assigns the colour of rows that are already on screen; FormattedText
+                 stays OneTime since it never changes after construction. -->
             <DataTemplate x:DataType="models:LogEntry">
-                <TextBlock Text="{x:Bind FormattedText}"
-                           Foreground="{x:Bind ColorHex, Converter={StaticResource HexColorToBrushConverter}}"
-                           FontFamily="Consolas"
-                           FontSize="14"
-                           TextWrapping="NoWrap"
-                           IsTextSelectionEnabled="False"
-                           Padding="0,1,0,1"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Channel trace: the port's identity colour, readable at a glance when several
+                         ports interleave in the same stream. -->
+                    <Border Grid.Column="0"
+                            Width="3"
+                            Margin="0,1,6,1"
+                            CornerRadius="1.5"
+                            Background="{x:Bind ColorHex, Converter={StaticResource HexColorToBrushConverter}, Mode=OneWay}" />
+
+                    <TextBlock Grid.Column="1"
+                               Text="{x:Bind FormattedText}"
+                               Foreground="{x:Bind ColorHex, Converter={StaticResource HexColorToBrushConverter}, Mode=OneWay}"
+                               FontFamily="{StaticResource AppMonoFontFamily}"
+                               FontSize="13"
+                               TextWrapping="NoWrap"
+                               IsTextSelectionEnabled="False"
+                               Padding="0,1,0,1" />
+                </Grid>
             </DataTemplate>
         </ListView.ItemTemplate>
     </ListView>

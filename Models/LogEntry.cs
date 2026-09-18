@@ -46,10 +46,15 @@ public partial class LogEntry : ObservableObject
     private bool _isReceived = true;
 
     /// <summary>
-    /// 显示颜色的十六进制值
+    /// Hex the row is painted with (already resolved for the active appearance by the ViewModel).
     /// </summary>
+    /// <remarks>
+    /// Empty by default on purpose: every construction site assigns a colour, so anything that ends up
+    /// blank is a missed assignment that <c>HexColorToBrushConverter</c> surfaces as the themed default
+    /// text brush instead of the old hard-coded black — which was invisible on the dark palette.
+    /// </remarks>
     [ObservableProperty]
-    private string _colorHex = "#000000";
+    private string _colorHex = string.Empty;
 
     // 缓存格式化文本以避免重复字符串分配
     private string? _cachedFormattedText;

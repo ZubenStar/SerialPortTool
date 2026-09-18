@@ -53,9 +53,12 @@ public class SerialPortConfig
     public int WriteTimeout { get; set; } = 500;
 
     /// <summary>
-    /// 端口显示颜色 (十六进制)
+    /// 端口显示颜色槽位（十六进制，浅色变体）。
     /// </summary>
-    public string ColorHex { get; set; } = "#107C10";
+    /// <remarks>
+    /// A palette slot, not a rendered colour — see <see cref="PortColorPalette"/>.
+    /// </remarks>
+    public string ColorHex { get; set; } = PortColorPalette.DefaultRxHex;
 
     /// <summary>
     /// 克隆配置

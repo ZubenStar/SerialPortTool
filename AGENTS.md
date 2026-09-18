@@ -78,7 +78,7 @@ Three consumers read that file, and they do **not** refresh the same way:
 
 | Consumer | Source of the icon | How it picks up a new icon |
 | --- | --- | --- |
-| Window title bar / taskbar | `AppWindow.SetIcon({app}\Assets\Images\logo.ico)` at startup (`MainWindow.xaml.cs:58-62`) | every launch — always current |
+| Window title bar / taskbar | `AppWindow.SetIcon({app}\Assets\Images\logo.ico)` at startup (`MainWindow.xaml.cs:77-81`) | every launch — always current |
 | `SerialPortTool.exe` inside Explorer | the Win32 icon resource embedded by `<ApplicationIcon>` | shell icon cache |
 | Desktop / Start-menu shortcut | `[Icons] IconFilename` → `{app}\Assets\Images\logo.ico` | shell icon cache + an Explorer repaint |
 
@@ -91,6 +91,8 @@ There is **no automated test suite**. Verification is manual:
 - send/receive at various baud rates, including hex mode,
 - exercise log filtering (plain text + regex) under a high-throughput stream,
 - run a tuning broadcast across ≥2 ports,
+- appearance: switch 跟随系统 / 浅色 / 深色 from the 外观 menu and check legibility of the log rows, the channel legend, the baud-rate banner, the regex error, the title-bar caption buttons and the dialogs; then restart and confirm the choice survived. Do this with ≥2 ports open so the per-port colours are actually exercised,
+- shell: fold/unfold the rail, resize across the 900 px breakpoint, and maximise/restore to confirm content is not hidden under the caption buttons,
 - update path: "Help → Check for updates" against a Release that has a higher version, then a full download → silent replace → auto-restart against an installed older build (see the Update System section),
 - update failure paths: offline, request timeout, and a Release without a `Setup` asset.
 
@@ -107,15 +109,20 @@ SerialPortTool/
 ├── version.json                     # Single source of truth: version + changelog
 ├── mic-tota-tuning.json             # SAMPLE TuningProtocolDescriptor (not application config)
 ├── Assets/Images/                   # logo.ico (multi-size 16–256), logo.png (1024 master)
+├── Themes/Tokens.xaml               # Design tokens + WinUI lightweight-styling overrides (Light/Dark/HC)
+├── Themes/Controls.xaml             # Button family styles/templates (the only re-templated controls)
 ├── Controls/LogListView.xaml(.cs)   # The only custom UserControl (virtualized log list)
 ├── Converters/                      # BoolToVisibility + InverseBoolToVisibility (one file),
 │                                    # HexColorToBrush — all registered in App.xaml
-├── Core/Enums/                      # ConnectionState, DataFormat, FilterType, UpdateCheckStatus
+├── Core/Enums/                      # ConnectionState, DataFormat, FilterType, UpdateCheckStatus,
+│                                    # AppThemePreference
 ├── Helpers/                         # VersionInfo, BuildInfo.g.cs (GENERATED)
 ├── Models/                          # SerialPortConfig, LogEntry, FilterRule, CommandPreset, PortStatistics,
+│                                    # PortColorSlot / PortColorPalette (port identity palette),
 │                                    # UpdateReleaseInfo / UpdateCheckResult
 ├── Services/                        # 9 interfaces + 9 implementations (see Service Layer)
-├── ViewModels/MainViewModel.cs      # Single ViewModel (+ in-file RangeObservableCollection)
+├── ViewModels/MainViewModel.cs      # Single ViewModel (+ in-file RangeObservableCollection,
+│                                    # PortViewModel, PortColorOption)
 ├── installer/SerialPortTool.iss     # Inno Setup script — per-user install, silent replace/restart on update
 ├── scripts/                         # bump-version, generate-buildinfo, generate-release-notes,
 │                                    # update-manifest-version, build-installer
@@ -134,7 +141,7 @@ SerialPortTool/
 Views (XAML) ←→ ViewModels ←→ Services ←→ Hardware / Infrastructure
 ```
 
-1. **Dependency injection** — everything is registered in `App.xaml.cs:ConfigureServices()` on a plain `ServiceCollection` (`App.xaml.cs:85-103`):
+1. **Dependency injection** — everything is registered in `App.xaml.cs:ConfigureServices()` on a plain `ServiceCollection` (`App.xaml.cs:119-137`):
    - Services are `AddSingleton` (they own shared state, e.g. open ports, regex cache, settings).
    - `MainViewModel` and `MainWindow` are `AddTransient`.
    - Logging is wired through `services.AddLogging(... AddSerilog(dispose: true))`.
@@ -167,7 +174,7 @@ Views (XAML) ←→ ViewModels ←→ Services ←→ Hardware / Infrastructure
 
 ### Performance-Critical Components
 
-1. **`Models/LogEntry.cs`** — caches formatted text in `_cachedFormattedText`; only `Content`, `PortName`, `Timestamp`, `IsReceived` invalidate it (`LogEntry.cs:85-88`). `ColorHex`, `Format`, `RawData` do **not** participate in `FormattedText`.
+1. **`Models/LogEntry.cs`** — caches formatted text in `_cachedFormattedText`; only `Content`, `PortName`, `Timestamp`, `IsReceived` invalidate it (`LogEntry.cs:90-93`). `ColorHex`, `Format`, `RawData` do **not** participate in `FormattedText`.
    **Gotcha**: if you add a field that belongs in `FormattedText`, add its own `partial void OnXxxChanged(...) => _cachedFormattedText = null;` — otherwise the UI silently keeps showing stale text.
 2. **`RangeObservableCollection`** — batch add/remove with one notification; `AddRange` / `RemoveFromStart` are the fast paths.
 3. **Regex caching** — see `LogFilterService` above (5–10× faster than recompiling).
@@ -175,10 +182,11 @@ Views (XAML) ←→ ViewModels ←→ Services ←→ Hardware / Infrastructure
 5. **`Controls/LogListView.xaml`** — a `ListView` wrapped in a `UserControl`. The wrapper exists because a WinUI 3 `Window` is not a `FrameworkElement`; hosting the list in a `UserControl` lets the `DataTemplate` use compiled `x:Bind` (~5–10× faster per item than reflection `{Binding}`) — see the comment at `LogListView.xaml:10-13`.
    - `ItemsStackPanel CacheLength="0.5"` halves off-screen realization.
    - Empty `ItemContainerTransitions` + a minimal `Normal`/`Selected`-only visual-state template (kills per-item layout invalidation).
-   - `FormattedText`/`ColorHex` are set once at construction and bound `OneTime`, so no per-item `PropertyChanged` wiring.
-   - Selection: `Ctrl+C` copies, `Ctrl+A` selects all, right-click opens a `MenuFlyout` (`LogListView.xaml:24-29`).
+   - Exactly **two elements per row** — the channel-colour `Border` and the text `TextBlock`. Column alignment is carried by `LogEntry.FormattedText` rather than by extra columns, because each additional container is paid for on every realize. Adding hover states, transitions or wrappers here is a measured decision, not a cosmetic one.
+   - `FormattedText` stays `OneTime` (it never changes after construction). `ColorHex` is deliberately `OneWay`, because an appearance switch re-colours rows that are already on screen; the extra `PropertyChanged` wiring is attached only to realized containers, which is bounded by the viewport, not by list length.
+   - Selection: `Ctrl+C` copies, `Ctrl+A` selects all, right-click opens a `MenuFlyout` (`LogListView.xaml:24-29`). `SelectAll()` / `CopySelection()` are the public entry points the toolbar uses; `CopySelection()` returns `false` when nothing is selected so the caller can say so.
 
-### Log Buffer Trim Thresholds (`ViewModels/MainViewModel.cs:696-708`)
+### Log Buffer Trim Thresholds (`ViewModels/MainViewModel.cs:894-906`)
 
 Collections intentionally overshoot before trimming — trimming on every overflow caused flicker up to v1.8.6:
 
@@ -206,6 +214,61 @@ Raising `MaxDisplayLogs` without raising the thresholds reintroduces the overflo
 ```
 
 > **Script gotcha (fixed, do not reintroduce):** `scripts/update-manifest-version.ps1` must use `${1}`/`${2}` group references, **never** `$1`/`$2`. A version starting with a digit made .NET parse `$11.7.0.0` as the non-existent group `$11`, which silently replaced the whole `<Identity …/>` element with the literal `$11.7.0.0" />` (broken from v1.7.0 until it was repaired). The script now warns and no-ops when no `Identity` match is found.
+
+---
+
+## UI and Appearance
+
+The interface is a bench-instrument faceplate: graphite / paper neutrals, hairline dividers, monospace data, a single accent that means "live signal". The log is the only element that grows.
+
+### Where the design lives
+
+| File | Owns |
+| --- | --- |
+| `Themes/Tokens.xaml` | Colour, typography and geometry tokens, **plus overrides of WinUI's own lightweight-styling keys** (`ApplicationPageBackgroundThemeBrush`, `LayerFillColor*`, `Card*`, `DividerStrokeColorDefaultBrush`, `TextFillColor*`, `Control*`, `TextControl*`, `ComboBox*`, `CheckBox*`, `MenuFlyout*`, `ToolTip*`, `ScrollBar*`, `ListViewItem*`, `ContentDialog*`, `ControlCornerRadius`, `OverlayCornerRadius`) |
+| `Themes/Controls.xaml` | The button family only — `AppButtonStyle` (the base), `AppToolbarButtonStyle`, `AppIconButtonStyle` (base), `AppToolbarIconButtonStyle`, `AccentButtonStyle` (overrides the framework key, so `ContentDialog` primary buttons match the toolbar) — plus `AppVerticalDividerStyle`. Nothing else is re-templated. |
+| `MainWindow.xaml` | Layout. **No colour literals** — only `{ThemeResource App*}` / `{StaticResource App*}` |
+
+Both dictionaries are merged in `App.xaml` **after** `XamlControlsResources`. A merged dictionary only wins if it is consulted after the framework's, so reordering them silently reverts the whole app to the stock palette with no error.
+
+**The override strategy is deliberate.** Re-templating a control whose template carries behaviour would mean re-implementing that behaviour: `ComboBox` backs the search box and is `IsEditable`, and `ScrollBar` / `ListViewItem` carry the virtualization contract. Those are themed through lightweight keys instead, which is why `Themes/Controls.xaml` is small. Anything *not* in the two tables above has no business defining a colour.
+
+**High contrast is not an afterthought.** The `HighContrast` theme dictionary maps every token onto `SystemColor*`, and the port palette collapses to the system text colour there (contrast beats hue). A token added to Light and Dark must be added to HighContrast in the same edit.
+
+### Applying the appearance
+
+1. `App.OnLaunched` (`async void`) reads the `AppTheme` setting through `ISettingsService` into `App.InitialThemePreference` **before** the window is resolved from DI. Do not move this read into `MainWindow` — see the "do not regress" entry about the first frame.
+2. The `MainWindow` constructor assigns `RootLayout.RequestedTheme` (`ElementTheme.Default` / `Light` / `Dark`) and then samples `RootLayout.ActualTheme` — never the preference — because "follow the system" only resolves to light or dark once the element has actually been themed. `RootLayout.ActualThemeChanged` re-runs the same path, which is also how a live Windows theme switch is picked up while on 跟随系统.
+3. `MainViewModel.ApplyEffectiveTheme(bool isDark)` re-derives everything stored as a palette **slot** and refreshes `TxColorOptions`; log rows already on screen are re-coloured by walking `AllLogs` in place (bounded by `AllLogsTrimThreshold`).
+4. `MainWindow.ApplyTitleBarColors` assigns the caption-button colours by hand: those buttons are composited outside the XAML tree, so nothing in `Tokens.xaml` reaches them.
+
+`Application.RequestedTheme` is intentionally **not** used — it is immutable after startup.
+
+### The port colour model: slots, not rendered values
+
+`Models/PortColorSlot.cs` defines ten slots, each with a light hex and a dark variant. **Only the light hex (`SlotHex`) is ever persisted** — `PortColor_<port>`, `TxColorHex`, `RxColorHex`, and the `Tag` of the port-colour menu items. It is the slot's identity. Rendering always goes through `PortColorPalette.Resolve(hex, isDark)`, which also accepts an already-resolved hex so it is idempotent; an unknown hex (hand-edited settings) passes through unchanged. Old settings files therefore need no migration.
+
+Two consequences worth remembering:
+
+- `PortViewModel.ColorHex` is the slot, `PortViewModel.DisplayColorHex` is what the swatch binds to. The same split exists on `MainViewModel` between `TxColorHex` (persisted) and the private `TxColorHexResolved` (rendered, and what is written into `LogEntry.ColorHex`).
+- The ten swatches of the port-colour `MenuFlyout` are static XAML, so the palette exists a second time as `AppPortColor1Brush`…`AppPortColor10Brush` in `Tokens.xaml`. **Change both together** — a mismatch is invisible in review and obvious on screen.
+
+### Window shell
+
+- `MainWindow.SetupTitleBar()` enables `ExtendsContentIntoTitleBar` + `SetTitleBar(AppTitleBar)` only when `AppWindowTitleBar.IsCustomizationSupported()` is true (Windows 11). On Windows 10 the caption buttons cannot be re-coloured and interactive content inside the drag region is not supported, so the system title bar is kept and `TitleBarInsetSpacer` stays at zero width — `AppTitleBar` then simply reads as the app's own header band. Do not force extension on for Windows 10.
+- `TitleBarInsetSpacer.Width` and the title bar's left padding are recomputed from `TitleBar.RightInset` / `LeftInset` on every `AppWindow.Changed` carrying `DidSizeChange`, because those metrics follow DPI and window state rather than being fixed.
+- `SetupBackdrop()` applies `MicaBackdrop` only when `MicaController.IsSupported()` and clears the root background only then; otherwise the XAML opaque brush stays. See the "do not regress" entry.
+- The rail folds either because the user asked (`SidebarCollapsed`, persisted) or because the window is narrower than 900 px (not persisted, so widening the window restores the user's choice). `SidebarHost.Width` animates over 150 ms through a `DoubleAnimation` with `EnableDependentAnimation` (width drives layout, so the compositor cannot run it), and animation is skipped entirely when `UISettings.AnimationsEnabled` is false.
+- Every `ContentDialog` goes through `MainWindow.CreateDialog()`. A dialog lives in its own popup root and does **not** inherit the window root's `ElementTheme`; without the explicit `RequestedTheme` assignment they stay light in dark mode.
+
+### XAML rules that are not stylistic
+
+- **A compiled `{x:Bind}` with a `Converter` cannot be used in the window's own element tree.** The generated code calls `SetConverterLookupRoot(this)`, and a WinUI 3 `Window` is not a `FrameworkElement`, so the build fails with `CS1503` inside `MainWindow.g.cs` — pointing at generated code, not at your XAML. `RootLayout` therefore carries `DataContext="{x:Bind ViewModel}"` and anything needing a converter uses `{Binding}`; plain value bindings still use `{x:Bind}`. Inside a `DataTemplate` the bindings object is element-scoped, which is why `LogListView.xaml` can use converters freely.
+- **An XML comment may not contain `--`.** The XAML compiler reports malformed XAML by exiting with code 1 and printing *nothing at all* — the build shows a bare `MSB3073` with no file, no line and no message (this cost real time in v2.1.0). Use `====` for section dividers, never `----`. The same silence applies to any XAML parse error, so when `MSB3073` appears with no diagnostic, check XML well-formedness first.
+- **Keep `VisualState.Setters` targets to plain style properties.** `Setter.Target` is a *property path* resolved at runtime, and composition-backed properties cannot be resolved at all:
+  `<Setter Target="Presenter.Translation" Value="0,1,0" />` compiles, loads, and then throws `The property path 'Translation' could not be resolved for a Setter` **the first time the state is entered** — so it surfaces as "the app starts fine and dies the moment you hover or click a button", which is very hard to attribute. `Translation`, `Scale`, `Rotation`, `CenterPoint` and `TransformMatrix` are all in that class. Use `Background`, `BorderBrush`, `Opacity`, `Visibility` and similar classic DPs. This is why the button press feedback is a background swap with no 1px sink, and why a `Setter.Value` should be a simple primitive: the value is `object` and converted on state entry, so a wrong type also fails at interaction time rather than at build time.
+- Icons are `FontIcon` glyphs with `FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"`. `Segoe Fluent Icons` ships only with Windows 11 while the minimum platform is Windows 10 1809, so the fallback is mandatory and only code points present in **both** fonts may be used. Text labels accompany icons; a glyph never carries meaning on its own.
+- The channel legend and the toolbar chips are `ItemsControl`s over `ViewModel.OpenPorts` / `ViewModel.TxColorOptions`; their `DataTemplate`s set their own `DataContext`, so reflection `{Binding}` there is correct and not a regression.
 
 ---
 
@@ -363,9 +426,16 @@ Release job: generate release notes from the `version.json` changelog → create
 
 ## Debugging
 
-- **Application logs**: `%USERPROFILE%\Documents\SerialPortTool\DebugLogs\app-<date>.log` (daily rolling, 7-day retention, 50 MB cap per file — configured in `App.xaml.cs:38-52`). "工具 → 打开日志文件夹" opens the folder.
-- **Log level**: `Information` (`App.xaml.cs:44`).
-- **Global exception handlers** (`App.xaml.cs:57-68`): `AppDomain.UnhandledException` and `TaskScheduler.UnobservedTaskException` are logged via Serilog. Do not remove them — the app used to terminate silently on background-thread exceptions.
+- **Application logs**: `%USERPROFILE%\Documents\SerialPortTool\DebugLogs\app-<date>.log` (daily rolling, 7-day retention, 50 MB cap per file — configured in `App.xaml.cs:62-76`). "工具 → 打开日志文件夹" opens the folder.
+- **Log level**: `Information` (`App.xaml.cs:67`).
+- **Global exception handlers** (`App.xaml.cs:81-98`) — three channels, all three are needed:
+  - `Application.UnhandledException` → logged at `Fatal`. This is the only channel that sees an exception the XAML framework raises on the UI thread (binding evaluation, template instantiation, window construction). It was added in v2.1.0 after a startup failure produced a completely empty log.
+  - `AppDomain.UnhandledException` → background-thread exceptions. Do not remove it; the app used to terminate silently on those.
+  - `TaskScheduler.UnobservedTaskException` → logged and marked observed.
+- **Serilog is configured, and the handlers are registered, *before* `InitializeComponent()`.** Two reasons, both load-bearing:
+  1. `Application.LoadComponent` is where `App.xaml` and its merged theme dictionaries are realised, so a broken dictionary would otherwise die with an empty log.
+  2. The XAML compiler generates its own `UnhandledException` subscriber inside `App.InitializeComponent()` (`App.g.i.cs`, guarded by `DEBUG && !DISABLE_XAML_GENERATED_BREAK_ON_UNHANDLED_EXCEPTION`) whose body is `if (Debugger.IsAttached) Debugger.Break();`. Event handlers run in registration order, so registering ours **after** it means the debugger stops the process before a single line reaches the log. If you ever see a stack whose only managed frame is `App.InitializeComponent.AnonymousMethod__…` at `App.g.i.cs:69`, that is this generated hook — it tells you an exception went unhandled but not what it was; check the log for the `Fatal` entry.
+- **Failed shell setup is not a crash.** `MainWindow.GuardShellStep` (and the try/catch around `ExtendsContentIntoTitleBar`/`SetTitleBar`, which rolls the extension back on failure) logs a `Warning` and keeps going. `AppWindow.TitleBar`, `SystemBackdrop` and `ExtendsContentIntoTitleBar` are the most capability-sensitive APIs in the app — unavailable on Windows 10, disableable by policy or by the transparency-effects setting, and known to throw on some virtualised GPUs — and none of them is load-bearing. A window with plain chrome is always preferable to a window that never appears.
 
 ---
 
@@ -379,7 +449,7 @@ Each of these exists because a specific bug caused a crash or an error storm; re
 - **Validation queue lock** (`DataValidationService`, v1.8.10) — the per-port `PortValidationState` queue stays locked. Validation now runs inline on the read thread, but `ResetValidationState` can still be called from the UI thread.
 - **Tuning send pre-check** (`TuningProtocolService`, v1.8.10) — `IsPortOpen` is checked before every send, required because auto-send can fire mid-reconnect and caused `CancellationTokenSource` disposal crashes.
 - **Single-threaded per-port decode/validation** (`SerialPortService`, v1.8.13) — `SerialPort_DataReceived` awaits validation before reading the next chunk, and a garbage verdict arms a ~1 s drop cooldown, so the per-port `Decoder`/`StringBuilder` is only ever touched by one thread. Do not make validation fire-and-forget again.
-- **Shutdown timeout** (`App.xaml.cs:116-162`) — window-close cleanup runs on a thread-pool task with a hard 5-second wall clock; on timeout the app force-exits instead of hanging on a stuck COM handle.
+- **Shutdown timeout** (`App.xaml.cs:196-242`) — window-close cleanup runs on a thread-pool task with a hard 5-second wall clock; on timeout the app force-exits instead of hanging on a stuck COM handle.
 - **Installer verification before launch** (`UpdateInstallerService`, v2.0.0) — the downloaded `Setup*.exe` is rejected unless it is non-empty, matches the Release asset `size`, and starts with `MZ`. Launching an unverified download would execute a 403/HTML error page as an installer on a bad network.
 - **Installed-build gate** (`UpdateInstallerService.InstalledBuildInfo`, v2.0.0) — auto-replacement requires both the `%LOCALAPPDATA%\Programs\SerialPortTool` location **and** the Inno Setup uninstall key. Removing the gate would let the app silently overwrite a user's portable folder.
 - **Silent-check log level** (`UpdateService`, v2.0.0) — failures of the automatic check log at `Debug` only, and silent checks are cached for 24 h. Raising this produces an error storm whenever the machine is offline, and dropping the cache burns through GitHub's 60/hour anonymous limit.
@@ -387,6 +457,10 @@ Each of these exists because a specific bug caused a crash or an error storm; re
 - **Shell icon refresh after install** (`installer/SerialPortTool.iss`, v2.0.3) — `[Code] CurStepChanged(ssPostInstall)` calls `SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0)` before the restart. Windows caches shortcut/file icons in `iconcache_*.db` *and* in Explorer's in-memory system image list; a silent update replaces files at the same paths while the app exits immediately, so Explorer never re-reads them and the desktop/Start-menu shortcut keeps rendering the previous release's icon (reproduced v2.0.1 → v2.0.2, with the new multi-resolution ico already correctly embedded in the exe). Inno's own per-shortcut notification only tells Explorer that *the .lnk* changed, which is not enough to force a re-extract. Note the fix is a notification, not a differently-named icon file: the cache is keyed by source path, so renaming the ico does nothing except make the shortcut point at a file nothing else uses.
 - **Flush-before-handoff** (`MainWindow.DownloadAndInstallAsync`, v2.0.0) — `ISettingsService.FlushAsync()` completes before the installer is launched. Skipping it loses the last ~500 ms of debounced settings (including `Update.SkippedVersion`) on every auto-update.
 - **Installer / ZIP language-list parity** (`scripts/build-installer.ps1` + `.github/workflows/release.yml`, v2.0.0) — both artifacts keep only the `zh-CN` and `en-us` framework language folders, and the `[Files]` entry must stay free of `createallsubdirs` so the excluded folders do not reappear as empty directories. This degrades silently rather than crashing: drop either half and ISCC still compiles without a warning — the installer just packs 168 extra `.mui` files and/or recreates 84 empty `xx-YY` folders. The kept-language list is duplicated (Inno Setup cannot read the workflow file), so change both sides together. A `Compressing:` line count from the ISCC log catches the first half; only a real install catches the second.
+- **Appearance applied before the first frame** (`App.OnLaunched` → `App.InitialThemePreference` → `MainWindow` constructor, v2.1.0) — reading the `AppTheme` setting inside `MainWindow`, or applying it after `Activate()`, repaints the window light for one frame on every launch of a dark-theme install. The read must stay ahead of window resolution, and the *resolved* darkness must be sampled from `RootLayout.ActualTheme` rather than from the preference, otherwise 跟随系统 never resolves to dark.
+- **Opaque background under the backdrop** (`MainWindow.SetupBackdrop`, v2.1.0) — `RootLayout.Background` is cleared **only** when `MicaController.IsSupported()`; the XAML default is the opaque token brush. Clearing it unconditionally renders uninitialised memory on Windows 10, when transparency effects are switched off, and on some virtualised GPUs.
+- **Log rows are re-coloured in place** (`MainViewModel.ApplyEffectiveTheme`, v2.1.0) — the appearance sweep mutates `LogEntry.ColorHex` across `AllLogs`; it must never replace the `DisplayLogs` instance, the same rule the filtering path follows.
+- **`ColorHex` is `OneWay`, `FormattedText` stays `OneTime`** (`Controls/LogListView.xaml`, v2.1.0) — collapsing `ColorHex` back to `OneTime` strands already-rendered rows on the previous appearance's brush, and it fails *unevenly*: containers recycled during scrolling pick up the new colour while the rest keep the old one, so the log ends up mixing two palettes. The opposite mistake — promoting `FormattedText` to `OneWay` — pays `PropertyChanged` wiring for a string that never changes.
 
 ---
 
@@ -395,7 +469,9 @@ Each of these exists because a specific bug caused a crash or an error storm; re
 Only the ones that change how you should reason about the code — `version.json` has the full changelog.
 
 - **Multi-port management** — open/close individual ports, "open all"/"close all", "scan ports".
-- **Per-port colours** (v1.7.0) — each opened port gets a unique colour from a 10-colour palette stored on `LogEntry.ColorHex`, plus a configurable TX colour. Surfaced through `HexColorToBrushConverter` in `LogListView.xaml`'s `DataTemplate`. New `LogEntry` fields needing colour treatment must go through the same converter.
+- **Per-port colours** (v1.7.0, extended v2.1.0) — each opened port gets a unique colour from a 10-colour slot palette, plus a configurable TX colour; both are persisted as slots and resolved per appearance. `LogEntry.ColorHex` holds the colour **resolved for the active appearance**, and the rendering path is always `HexColorToBrushConverter` (log rows in `LogListView.xaml`'s `DataTemplate`, the sidebar swatch, the channel legend). New `LogEntry` fields needing colour treatment must go through the same converter.
+- **Appearance switch** (v2.1.0) — 跟随系统 / 浅色 / 深色 from the 外观 menu, persisted as `AppTheme` and applied as `ElementTheme` on the window root. Required reading before touching anything visual: see "UI and Appearance".
+- **Channel trace + channel legend** (v2.1.0) — every log row carries a 3 px bar in its port's colour, and a legend strip above the log states the colour → port → byte-count mapping, so interleaved multi-port traffic stays attributable at a glance.
 - **Log pause toggle** — pauses UI appending without stopping reception; buffering continues while paused and batched updates resume on unpause. Anything touching the data-flow pipeline must respect this.
 - **Search history** (v1.5.0 / v1.6.2) — debounced persistence, per-item delete, clear-all with confirmation.
 - **Baud-rate mismatch banner** — surfaced when detection confidence is high, with one-click correction.

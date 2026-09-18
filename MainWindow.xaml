@@ -9,522 +9,723 @@
     mc:Ignorable="d"
     Title="{x:Bind ViewModel.Title, Mode=OneWay}">
 
-    <Grid>
+    <!--
+        Layout: bench-instrument faceplate.
+
+        Row 0 is the custom title bar (drag region on Windows 11; on Windows 10 the system title bar
+        stays and this band is simply the app's own header). Row 1 is the instrument body: a narrow
+        configuration rail plus the working surface, whose vertical order is
+        toolbar → channel legend → log → send → status. Only the log row is `*`, so the log always
+        absorbs whatever height the window gains.
+
+        Every colour comes from Themes/Tokens.xaml. There are no literal colours in this file on
+        purpose: that is what makes the appearance switch (and high contrast) work.
+    -->
+
+    <!-- RootLayout carries the ViewModel as its DataContext so that converters can be used at all:
+         a compiled {x:Bind} with a Converter needs a FrameworkElement as its converter-lookup root,
+         and a WinUI 3 Window is not one. Anything in this file that needs a converter therefore uses
+         {Binding} (which resolves through the inherited DataContext), while plain value bindings keep
+         using {x:Bind} for compilation. DataTemplates are unaffected - they set their own DataContext
+         per item. -->
+    <Grid x:Name="RootLayout"
+          Background="{ThemeResource AppWindowBackgroundBrush}"
+          DataContext="{x:Bind ViewModel}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Menu Bar -->
-        <MenuBar Grid.Row="0">
-            <MenuBarItem Title="文件">
-                <MenuFlyoutItem Text="退出" Click="Exit_Click"/>
-            </MenuBarItem>
-            <MenuBarItem Title="工具">
-                <MenuFlyoutItem Text="扫描串口" Command="{x:Bind ViewModel.ScanPortsCommand}"/>
-                <MenuFlyoutSeparator/>
-                <MenuFlyoutItem Text="打开日志文件夹" Click="OpenLogFolder_Click"/>
-            </MenuBarItem>
-            <MenuBarItem Title="帮助">
-                <MenuFlyoutItem Text="检查更新" Click="CheckUpdate_Click"/>
-                <MenuFlyoutSeparator/>
-                <MenuFlyoutItem Text="关于" Click="About_Click"/>
-            </MenuBarItem>
-        </MenuBar>
-
-        <!-- Main Content -->
-        <Grid Grid.Row="1" Padding="8">
+        <!-- ============================= Title bar ============================= -->
+        <Grid x:Name="AppTitleBar"
+              Grid.Row="0"
+              Height="{StaticResource AppTitleBarHeight}"
+              Padding="12,0,0,0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="250"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <!-- Sidebar -->
-            <Grid Grid.Column="0" Padding="0,0,8,0">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <StackPanel Spacing="16">
-                    <!-- Port Configuration -->
-                    <StackPanel Spacing="8">
-                        <TextBlock Text="串口配置"
-                                   Style="{StaticResource SubtitleTextBlockStyle}"
-                                   FontWeight="SemiBold"/>
-                        
+            <!-- Wordmark. A drawn mark, not a fabricated glyph: the silkscreen on a real faceplate
+                 is type, and it keeps the header free of an icon that might not exist on Win10. -->
+            <StackPanel Grid.Column="0"
+                        Orientation="Horizontal"
+                        Spacing="8"
+                        VerticalAlignment="Center">
+                <Border Width="3"
+                        Height="18"
+                        CornerRadius="1.5"
+                        Background="{ThemeResource AppAccentBrush}" />
+                <TextBlock Text="串口工具"
+                           FontSize="14"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource AppTextPrimaryBrush}"
+                           VerticalAlignment="Center" />
+            </StackPanel>
+
+            <!-- Menus live in the title bar so the header is a single band, not two stacked bars. -->
+            <MenuBar Grid.Column="1"
+                     Margin="14,0,0,0"
+                     VerticalAlignment="Center"
+                     Background="Transparent">
+                <MenuBarItem Title="文件">
+                    <MenuFlyoutItem Text="退出" Click="Exit_Click">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE8BB;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                </MenuBarItem>
+                <MenuBarItem Title="工具">
+                    <MenuFlyoutItem Text="扫描串口" Command="{x:Bind ViewModel.ScanPortsCommand}">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE72C;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem Text="折叠 / 展开串口配置栏" Click="ToggleSidebar_Click">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE700;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem Text="打开日志文件夹" Click="OpenLogFolder_Click">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE8B7;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                </MenuBarItem>
+                <MenuBarItem Title="外观">
+                    <RadioMenuFlyoutItem x:Name="ThemeSystemMenuItem"
+                                         Text="跟随系统"
+                                         Tag="System"
+                                         GroupName="AppTheme"
+                                         Click="ThemeMenuItem_Click" />
+                    <RadioMenuFlyoutItem x:Name="ThemeLightMenuItem"
+                                         Text="浅色"
+                                         Tag="Light"
+                                         GroupName="AppTheme"
+                                         Click="ThemeMenuItem_Click" />
+                    <RadioMenuFlyoutItem x:Name="ThemeDarkMenuItem"
+                                         Text="深色"
+                                         Tag="Dark"
+                                         GroupName="AppTheme"
+                                         Click="ThemeMenuItem_Click" />
+                </MenuBarItem>
+                <MenuBarItem Title="帮助">
+                    <MenuFlyoutItem Text="检查更新" Click="CheckUpdate_Click">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE72C;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem Text="关于" Click="About_Click">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE946;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                </MenuBarItem>
+            </MenuBar>
+
+            <!-- Port overview: identity colours only. Per-port counters live in the channel legend
+                 directly above the log, where they are being read anyway. -->
+            <StackPanel Grid.Column="2"
+                        Orientation="Horizontal"
+                        Spacing="6"
+                        Margin="14,0,0,0"
+                        VerticalAlignment="Center">
+                <Ellipse Width="7"
+                         Height="7"
+                         Fill="{ThemeResource AppOkBrush}"
+                         Visibility="{Binding HasOpenPorts, Converter={StaticResource BoolToVisibilityConverter}}" />
+                <TextBlock Text="{x:Bind ViewModel.OpenPortCountDisplay, Mode=OneWay}"
+                           Style="{StaticResource AppCaptionTextStyle}"
+                           VerticalAlignment="Center" />
+            </StackPanel>
+
+            <!-- Sidebar toggle + the space the system caption buttons occupy. The spacer's width is
+                 assigned from AppWindow.TitleBar.RightInset in code (it is 0 when the title bar is
+                 not customised, e.g. on Windows 10). -->
+            <StackPanel Grid.Column="3"
+                        Orientation="Horizontal"
+                        Spacing="2"
+                        VerticalAlignment="Center">
+                <Button x:Name="SidebarToggleButton"
+                        Style="{StaticResource AppToolbarIconButtonStyle}"
+                        Click="ToggleSidebar_Click"
+                        ToolTipService.ToolTip="折叠 / 展开串口配置栏">
+                    <Grid>
+                        <FontIcon Glyph="&#xE76B;"
+                                  FontSize="14"
+                                  Visibility="{Binding IsSidebarCollapsed, Converter={StaticResource InverseBoolToVisibilityConverter}}" />
+                        <FontIcon Glyph="&#xE76C;"
+                                  FontSize="14"
+                                  Visibility="{Binding IsSidebarCollapsed, Converter={StaticResource BoolToVisibilityConverter}}" />
+                    </Grid>
+                </Button>
+                <Border x:Name="TitleBarInsetSpacer" Width="0" />
+            </StackPanel>
+        </Grid>
+
+        <!-- ============================= Body ============================= -->
+        <Grid Grid.Row="1" Background="{ThemeResource AppWindowBackgroundBrush}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- ========== Configuration rail ========== -->
+            <Border x:Name="SidebarHost"
+                    Grid.Column="0"
+                    Width="{StaticResource AppSidebarWidth}"
+                    Background="{ThemeResource AppSurfaceBrush}"
+                    BorderBrush="{ThemeResource AppHairlineBrush}"
+                    BorderThickness="0,0,1,0">
+                <Grid Padding="14,14,14,12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Port parameters -->
+                    <StackPanel Grid.Row="0" Spacing="10">
+                        <TextBlock Text="串口参数" Style="{StaticResource AppSectionLabelStyle}" />
+
                         <StackPanel Spacing="4">
-                            <TextBlock Text="波特率:" FontSize="12"/>
+                            <TextBlock Text="波特率" Style="{StaticResource AppCaptionTextStyle}" />
                             <ComboBox x:Name="BaudRateComboBox"
                                       ItemsSource="{x:Bind ViewModel.AvailableBaudRates}"
                                       SelectedItem="{x:Bind ViewModel.BaudRate, Mode=TwoWay}"
-                                      HorizontalAlignment="Stretch"/>
-                        </StackPanel>
-                        
-                        <StackPanel Spacing="4">
-                            <CheckBox Content="自定义波特率"
-                                      IsChecked="{x:Bind ViewModel.UseCustomBaudRate, Mode=TwoWay}"
-                                      FontSize="12"
-                                      Checked="CustomBaudRateCheckBox_Changed"
-                                      Unchecked="CustomBaudRateCheckBox_Changed"/>
+                                      HorizontalAlignment="Stretch" />
                             <TextBox x:Name="CustomBaudRateTextBox"
-                                     PlaceholderText="输入自定义波特率..."
+                                     PlaceholderText="自定义波特率"
                                      Text="{x:Bind ViewModel.CustomBaudRate, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                      HorizontalAlignment="Stretch"
                                      InputScope="Number"
-                                     Visibility="Collapsed"/>
+                                     Visibility="Collapsed" />
+                            <CheckBox Content="自定义波特率"
+                                      IsChecked="{x:Bind ViewModel.UseCustomBaudRate, Mode=TwoWay}"
+                                      Checked="CustomBaudRateCheckBox_Changed"
+                                      Unchecked="CustomBaudRateCheckBox_Changed" />
                         </StackPanel>
-                        
+
                         <StackPanel Spacing="4">
-                            <TextBlock Text="数据位:" FontSize="12"/>
+                            <TextBlock Text="数据位" Style="{StaticResource AppCaptionTextStyle}" />
                             <ComboBox ItemsSource="{x:Bind ViewModel.AvailableDataBits}"
                                       SelectedItem="{x:Bind ViewModel.DataBits, Mode=TwoWay}"
-                                      HorizontalAlignment="Stretch"/>
+                                      HorizontalAlignment="Stretch" />
                         </StackPanel>
                     </StackPanel>
 
-                    <!-- Available Ports -->
-                    <StackPanel Spacing="8">
-                        <TextBlock Text="可用串口"
-                                   Style="{StaticResource SubtitleTextBlockStyle}"
-                                   FontWeight="SemiBold"/>
-                        
-                        <Button Content="🔄 扫描串口"
-                                Command="{x:Bind ViewModel.ScanPortsCommand}"
-                                HorizontalAlignment="Stretch"/>
-                        
-                        <Button Content="📂 打开所有串口"
-                                Command="{x:Bind ViewModel.OpenAllPortsCommand}"
-                                HorizontalAlignment="Stretch"
-                                Background="{ThemeResource AccentFillColorDefaultBrush}"/>
-                        
+                    <!-- Available ports -->
+                    <StackPanel Grid.Row="1" Spacing="8" Margin="0,18,0,0">
+                        <TextBlock Text="可用串口" Style="{StaticResource AppSectionLabelStyle}" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0"
+                                    Style="{StaticResource AppToolbarButtonStyle}"
+                                    Command="{x:Bind ViewModel.ScanPortsCommand}"
+                                    ToolTipService.ToolTip="重新扫描可用串口">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE72C;" FontSize="13" />
+                                    <TextBlock Text="扫描" />
+                                </StackPanel>
+                            </Button>
+                            <Button Grid.Column="1"
+                                    Style="{StaticResource AccentButtonStyle}"
+                                    MinHeight="{StaticResource AppControlHeightCompact}"
+                                    MinWidth="0"
+                                    Padding="10,0"
+                                    Margin="6,0,0,0"
+                                    Command="{x:Bind ViewModel.OpenAllPortsCommand}"
+                                    ToolTipService.ToolTip="以当前参数打开全部可用串口">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE8E5;" FontSize="13" />
+                                    <TextBlock Text="全部打开" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+
                         <ListView x:Name="PortListView"
                                   ItemsSource="{x:Bind ViewModel.AvailablePorts, Mode=OneWay}"
                                   SelectionMode="Single"
-                                  MaxHeight="300"
+                                  MaxHeight="168"
                                   SelectionChanged="PortListView_SelectionChanged">
                             <ListView.ItemTemplate>
                                 <DataTemplate x:DataType="x:String">
-                                    <Grid>
-                                        <TextBlock Text="{x:Bind}" VerticalAlignment="Center"/>
-                                    </Grid>
+                                    <TextBlock Text="{x:Bind}"
+                                               FontFamily="{StaticResource AppMonoFontFamily}"
+                                               VerticalAlignment="Center" />
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
                     </StackPanel>
 
-                    <!-- Open Ports -->
-                    <StackPanel Spacing="8">
-                        <Grid>
+                    <!-- Open ports -->
+                    <Grid Grid.Row="2" Margin="0,18,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0" Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            
                             <TextBlock Grid.Column="0"
                                        Text="已打开串口"
-                                       Style="{StaticResource SubtitleTextBlockStyle}"
-                                       FontWeight="SemiBold"
-                                       VerticalAlignment="Center"/>
-                            
+                                       Style="{StaticResource AppSectionLabelStyle}"
+                                       VerticalAlignment="Center" />
                             <Button Grid.Column="1"
-                                    Content="❌"
-                                    ToolTipService.ToolTip="关闭所有串口"
+                                    Style="{StaticResource AppToolbarIconButtonStyle}"
+                                    Content="&#xE8BB;"
+                                    FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                    FontSize="12"
                                     Command="{x:Bind ViewModel.CloseAllPortsCommand}"
-                                    FontSize="14"
-                                    Padding="8,4"/>
+                                    ToolTipService.ToolTip="关闭所有串口" />
                         </Grid>
-                        
+
                         <ListView x:Name="OpenPortListView"
+                                  Grid.Row="1"
                                   ItemsSource="{x:Bind ViewModel.OpenPorts, Mode=OneWay}"
-                                  SelectionMode="Single"
-                                  Height="200">
+                                  SelectionMode="Single">
                             <ListView.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid>
+                                    <Grid Margin="0,2">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
 
-                                        <!-- 颜色指示器和选择器 -->
+                                        <!-- Colour picker for this port. A DropDownButton keeps the
+                                             chevron affordance and its stock template already follows
+                                             the new palette through the lightweight styling keys. -->
                                         <DropDownButton Grid.Column="0"
                                                         Margin="0,0,8,0"
-                                                        Padding="4"
+                                                        Padding="3"
                                                         VerticalAlignment="Center"
                                                         ToolTipService.ToolTip="选择端口颜色">
-                                            <Border Width="20" Height="20"
-                                                    CornerRadius="2"
-                                                    Background="{Binding ColorHex, Converter={StaticResource HexColorToBrushConverter}}"/>
+                                            <Border Width="14"
+                                                    Height="14"
+                                                    CornerRadius="3"
+                                                    Background="{Binding DisplayColorHex, Converter={StaticResource HexColorToBrushConverter}}" />
                                             <DropDownButton.Flyout>
-                                                <MenuFlyout Placement="Bottom">
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#107C10"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#107C10"/></MenuFlyoutItem.Icon>绿色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#0078D4"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#0078D4"/></MenuFlyoutItem.Icon>蓝色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#E74856"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#E74856"/></MenuFlyoutItem.Icon>红色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#FF8C00"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#FF8C00"/></MenuFlyoutItem.Icon>橙色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#881798"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#881798"/></MenuFlyoutItem.Icon>紫色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#00B7C3"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#00B7C3"/></MenuFlyoutItem.Icon>青色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#C239B3"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#C239B3"/></MenuFlyoutItem.Icon>粉色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#498205"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#498205"/></MenuFlyoutItem.Icon>橄榄绿</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#8764B8"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#8764B8"/></MenuFlyoutItem.Icon>淡紫</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#CA5010"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="#CA5010"/></MenuFlyoutItem.Icon>棕橙</MenuFlyoutItem>
+                                                <MenuFlyout Placement="Bottom" Opening="PortColorFlyout_Opening">
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#107C10"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor1Brush}" /></MenuFlyoutItem.Icon>绿色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#0078D4"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor2Brush}" /></MenuFlyoutItem.Icon>蓝色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#E74856"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor3Brush}" /></MenuFlyoutItem.Icon>红色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#FF8C00"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor4Brush}" /></MenuFlyoutItem.Icon>橙色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#881798"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor5Brush}" /></MenuFlyoutItem.Icon>紫色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#00B7C3"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor6Brush}" /></MenuFlyoutItem.Icon>青色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#C239B3"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor7Brush}" /></MenuFlyoutItem.Icon>粉色</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#498205"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor8Brush}" /></MenuFlyoutItem.Icon>橄榄绿</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#8764B8"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor9Brush}" /></MenuFlyoutItem.Icon>淡紫</MenuFlyoutItem>
+                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#CA5010"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor10Brush}" /></MenuFlyoutItem.Icon>棕橙</MenuFlyoutItem>
                                                 </MenuFlyout>
                                             </DropDownButton.Flyout>
                                         </DropDownButton>
 
-                                        <StackPanel Grid.Column="1" Spacing="4">
+                                        <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
                                             <TextBlock Text="{Binding PortName}"
-                                                       FontWeight="SemiBold"/>
+                                                       FontFamily="{StaticResource AppMonoFontFamily}"
+                                                       FontSize="13"
+                                                       FontWeight="SemiBold" />
                                             <TextBlock Text="{Binding StatisticsDisplay, Mode=OneWay}"
-                                                       FontSize="12"
-                                                       Opacity="0.7"/>
+                                                       Style="{StaticResource AppCaptionTextStyle}"
+                                                       FontFamily="{StaticResource AppMonoFontFamily}" />
                                         </StackPanel>
 
                                         <Button Grid.Column="2"
-                                                Content="❌"
+                                                Style="{StaticResource AppToolbarIconButtonStyle}"
+                                                Content="&#xE8BB;"
+                                                FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                                 FontSize="12"
-                                                Padding="4"
                                                 VerticalAlignment="Center"
                                                 Click="ClosePort_Click"
-                                                Tag="{Binding PortName}"/>
+                                                Tag="{Binding PortName}"
+                                                ToolTipService.ToolTip="关闭此串口" />
                                     </Grid>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
-                    </StackPanel>
-                </StackPanel>
-                </ScrollViewer>
-            </Grid>
+                    </Grid>
+                </Grid>
+            </Border>
 
-            <!-- Main Content Area -->
+            <!-- ========== Working surface ========== -->
             <Grid Grid.Column="1">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <!-- Baud Rate Detection Alert -->
+                <!-- Baud-rate mismatch alert: present only when it has something to say -->
                 <Border x:Name="BaudRateAlertBorder"
                         Grid.Row="0"
-                        Background="#FFF3CD"
-                        BorderBrush="#FFEEA4"
+                        Background="{ThemeResource AppWarnSurfaceBrush}"
+                        BorderBrush="{ThemeResource AppWarnBorderBrush}"
                         BorderThickness="1"
-                        CornerRadius="4"
+                        CornerRadius="{StaticResource AppCornerRadiusControl}"
                         Padding="12,8"
-                        Margin="8,8,8,4"
+                        Margin="12,10,12,0"
                         Visibility="Collapsed">
                     <Grid>
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        
-                        <TextBlock Grid.Column="0"
-                                   Text="⚠️"
-                                   FontSize="16"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,8,0"/>
-                        
-                        <StackPanel Grid.Column="1" Spacing="4">
+
+                        <FontIcon Grid.Column="0"
+                                  Glyph="&#xE7BA;"
+                                  FontSize="15"
+                                  Foreground="{ThemeResource AppWarnIconBrush}"
+                                  VerticalAlignment="Center"
+                                  Margin="0,0,10,0" />
+
+                        <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
                             <TextBlock x:Name="BaudRateAlertTitle"
                                        Text="检测到波特率可能不匹配"
+                                       FontSize="13"
                                        FontWeight="SemiBold"
-                                       FontSize="14"/>
+                                       Foreground="{ThemeResource AppWarnTextBrush}"
+                                       TextWrapping="Wrap" />
                             <TextBlock x:Name="BaudRateAlertMessage"
                                        Text="建议切换到正确的波特率以获得更好的数据质量"
                                        FontSize="12"
-                                       Opacity="0.8"
-                                       TextWrapping="Wrap"/>
+                                       Foreground="{ThemeResource AppWarnTextBrush}"
+                                       Opacity="0.85"
+                                       TextWrapping="Wrap" />
                         </StackPanel>
-                        
+
                         <StackPanel Grid.Column="2"
                                     Orientation="Horizontal"
                                     Spacing="8"
-                                    VerticalAlignment="Center">
+                                    VerticalAlignment="Center"
+                                    Margin="12,0,0,0">
                             <Button x:Name="AutoFixBaudRateButton"
                                     Content="自动修复"
                                     Style="{StaticResource AccentButtonStyle}"
-                                    Click="AutoFixBaudRate_Click"
-                                    FontSize="12"/>
+                                    MinHeight="{StaticResource AppControlHeightCompact}"
+                                    MinWidth="0"
+                                    Padding="12,0"
+                                    Click="AutoFixBaudRate_Click" />
                             <Button x:Name="DismissAlertButton"
                                     Content="忽略"
-                                    Click="DismissAlert_Click"
-                                    FontSize="12"/>
+                                    Style="{StaticResource AppToolbarButtonStyle}"
+                                    Click="DismissAlert_Click" />
                         </StackPanel>
                     </Grid>
                 </Border>
 
-                <!-- Search and Controls -->
-                <StackPanel Grid.Row="1" Padding="8" Spacing="8" Margin="8,4,8,6">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <StackPanel Spacing="4">
-                            <Grid Width="350">
+                <!-- ========== Unified toolbar ========== -->
+                <Border Grid.Row="1"
+                        Background="{ThemeResource AppSurfaceBrush}"
+                        BorderBrush="{ThemeResource AppHairlineBrush}"
+                        BorderThickness="0,0,0,1"
+                        Padding="12,8">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Row 1: search + log actions -->
+                        <Grid Grid.Row="0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" MinWidth="220" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <Grid Grid.Column="0">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
 
                                 <ComboBox x:Name="SearchBox"
-                                         Grid.Column="0"
-                                         PlaceholderText="正则表达式搜索..."
-                                         IsEditable="True"
-                                         Text="{x:Bind ViewModel.SearchText, Mode=TwoWay}"
-                                         ItemsSource="{x:Bind ViewModel.RecentSearchTexts, Mode=OneWay}"
-                                         SelectionChanged="SearchBox_SelectionChanged"
-                                         DropDownClosed="SearchBox_DropDownClosed"
-                                         LostFocus="SearchBox_LostFocus"
-                                         KeyDown="SearchBox_KeyDown"
-                                         HorizontalAlignment="Stretch"
-                                         MaxDropDownHeight="200">
+                                          Grid.Column="0"
+                                          PlaceholderText="正则表达式搜索…"
+                                          IsEditable="True"
+                                          Text="{x:Bind ViewModel.SearchText, Mode=TwoWay}"
+                                          ItemsSource="{x:Bind ViewModel.RecentSearchTexts, Mode=OneWay}"
+                                          SelectionChanged="SearchBox_SelectionChanged"
+                                          DropDownClosed="SearchBox_DropDownClosed"
+                                          LostFocus="SearchBox_LostFocus"
+                                          KeyDown="SearchBox_KeyDown"
+                                          HorizontalAlignment="Stretch"
+                                          MaxDropDownHeight="220">
                                     <ComboBox.ItemContainerStyle>
                                         <Style TargetType="ComboBoxItem">
-                                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                                            <Setter Property="MinWidth" Value="320"/>
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                            <Setter Property="MinWidth" Value="300" />
                                         </Style>
                                     </ComboBox.ItemContainerStyle>
                                     <ComboBox.ItemTemplate>
                                         <DataTemplate x:DataType="x:String">
-                                            <Grid Margin="0,4" HorizontalAlignment="Stretch">
+                                            <Grid Margin="0,3" HorizontalAlignment="Stretch">
                                                 <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
-
                                                 <TextBlock Grid.Column="0"
                                                           Text="{x:Bind}"
                                                           VerticalAlignment="Center"
                                                           Margin="0,0,8,0"
                                                           TextWrapping="NoWrap"
                                                           TextTrimming="CharacterEllipsis"
-                                                          ToolTipService.ToolTip="{x:Bind}"/>
-
+                                                          ToolTipService.ToolTip="{x:Bind}" />
                                                 <Button Grid.Column="1"
-                                                       Content="🗑️"
+                                                       Style="{StaticResource AppToolbarIconButtonStyle}"
+                                                       Content="&#xE74D;"
+                                                       FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                                        FontSize="12"
-                                                       Padding="6,4"
-                                                       MinWidth="28"
-                                                       VerticalAlignment="Center"
                                                        Click="DeleteSearchHistory_Click"
                                                        Tag="{x:Bind}"
-                                                       ToolTipService.ToolTip="删除此历史记录"/>
+                                                       ToolTipService.ToolTip="删除此历史记录" />
                                             </Grid>
                                         </DataTemplate>
                                     </ComboBox.ItemTemplate>
                                 </ComboBox>
 
                                 <Button Grid.Column="1"
-                                       x:Name="ClearSearchTextButton"
-                                       Content="✕"
-                                       ToolTipService.ToolTip="清空当前搜索"
-                                       Click="ClearSearchText_Click"
-                                       Padding="8,4"
-                                       Margin="4,0,0,0"
-                                       VerticalAlignment="Center">
-                                    <Button.Visibility>
-                                        <Binding Path="ViewModel.HasSearchText" Mode="OneWay">
-                                            <Binding.Converter>
-                                                <StaticResource ResourceKey="BoolToVisibilityConverter"/>
-                                            </Binding.Converter>
-                                        </Binding>
-                                    </Button.Visibility>
-                                </Button>
+                                        x:Name="ClearSearchTextButton"
+                                        Style="{StaticResource AppToolbarIconButtonStyle}"
+                                        Content="&#xE711;"
+                                        FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                        FontSize="11"
+                                        Margin="4,0,0,0"
+                                        Click="ClearSearchText_Click"
+                                        ToolTipService.ToolTip="清空当前搜索"
+                                        Visibility="{Binding HasSearchText, Converter={StaticResource BoolToVisibilityConverter}}" />
 
                                 <Button Grid.Column="2"
-                                       Content="🗑️"
-                                       ToolTipService.ToolTip="清空搜索历史"
-                                       Click="ClearSearchHistory_Click"
-                                       Padding="8,4"
-                                       Margin="4,0,0,0"
-                                       VerticalAlignment="Center"/>
+                                        Style="{StaticResource AppToolbarIconButtonStyle}"
+                                        Content="&#xE74D;"
+                                        FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                        FontSize="12"
+                                        Margin="4,0,0,0"
+                                        Click="ClearSearchHistory_Click"
+                                        ToolTipService.ToolTip="清空搜索历史" />
                             </Grid>
-                            
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <TextBlock x:Name="RegexErrorTextBlock"
-                                           Foreground="#C42B1C"
-                                           FontSize="11"
-                                           Visibility="Collapsed"/>
-                                
-                                <TextBlock x:Name="MatchCountTextBlock"
-                                           FontSize="11"
-                                           Opacity="0.7"
-                                           Visibility="Collapsed"/>
-                            </StackPanel>
-                        </StackPanel>
-                        
-                        <Button Content="全选"
-                                Click="SelectAllLogs_Click"/>
-                        
-                        <Button Content="🗑️ 清空日志"
-                                Command="{x:Bind ViewModel.ClearLogsCommand}"
-                                ToolTipService.ToolTip="清空所有日志记录"/>
 
-                        <Button Content="{x:Bind ViewModel.PauseButtonText, Mode=OneWay}"
-                                Click="TogglePause_Click"
-                                MinWidth="64"
-                                ToolTipService.ToolTip="暂停时停止刷新 UI，文件日志继续记录"/>
-                    </StackPanel>
-                </StackPanel>
-
-                <!-- Tuning Workbar -->
-                <Border Grid.Row="2"
-                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                        BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
-                        BorderThickness="1"
-                        CornerRadius="6"
-                        Padding="10,8"
-                        Margin="8,0,8,8"
-                        DataContext="{x:Bind ViewModel}">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="150"/>
-                            <ColumnDefinition Width="*" MinWidth="180"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-
-                        <StackPanel Grid.Column="0"
-                                    Spacing="2"
-                                    Margin="0,0,12,0"
-                                    VerticalAlignment="Center">
-                            <StackPanel Orientation="Horizontal"
+                            <!-- Regex diagnostics sit next to the box they describe -->
+                            <StackPanel Grid.Column="1"
+                                        Orientation="Horizontal"
                                         Spacing="6"
+                                        Margin="10,0,0,0"
                                         VerticalAlignment="Center">
-                                <FontIcon Glyph="&#xE950;"
-                                          FontSize="14"
-                                          Foreground="{ThemeResource AccentFillColorDefaultBrush}"/>
-                                <TextBlock Text="Tuning"
-                                           FontWeight="SemiBold"
-                                           VerticalAlignment="Center"/>
+                                <FontIcon x:Name="RegexErrorIcon"
+                                          Glyph="&#xE7BA;"
+                                          FontSize="12"
+                                          Foreground="{ThemeResource AppErrorTextBrush}"
+                                          Visibility="Collapsed" />
+                                <TextBlock x:Name="RegexErrorTextBlock"
+                                           Foreground="{ThemeResource AppErrorTextBrush}"
+                                           FontSize="12"
+                                           MaxWidth="320"
+                                           TextTrimming="CharacterEllipsis"
+                                           VerticalAlignment="Center"
+                                           Visibility="Collapsed" />
+                                <TextBlock x:Name="MatchCountTextBlock"
+                                           Style="{StaticResource AppCaptionTextStyle}"
+                                           FontFamily="{StaticResource AppMonoFontFamily}"
+                                           VerticalAlignment="Center"
+                                           Visibility="Collapsed" />
                             </StackPanel>
-                            <TextBlock Text="{x:Bind ViewModel.TuningStatus, Mode=OneWay}"
-                                       FontSize="12"
-                                       Opacity="0.78"
-                                       MaxLines="2"
-                                       TextWrapping="WrapWholeWords"
-                                       TextTrimming="CharacterEllipsis"/>
-                        </StackPanel>
 
-                        <Grid Grid.Column="1"
-                              Margin="0,0,12,0"
-                              VerticalAlignment="Center">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
-
-                            <Grid Grid.Row="0" Margin="0,0,0,6">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="70"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-
-                                <TextBlock Grid.Column="0"
-                                           Text="bin 文件"
-                                           FontSize="12"
-                                           Opacity="0.72"
-                                           VerticalAlignment="Center"/>
-                                <Border Grid.Column="1"
-                                        Height="30"
-                                        Padding="8,0"
-                                        BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="4"
-                                        Background="{ThemeResource LayerFillColorDefaultBrush}"
-                                        ToolTipService.ToolTip="{Binding TuningBinFilePath, Mode=OneWay}">
-                                    <Grid>
-                                        <TextBlock Text="未选择 tuning bin"
-                                                   FontSize="12"
-                                                   Opacity="0.55"
-                                                   VerticalAlignment="Center"
-                                                   Visibility="{Binding HasTuningBinFilePath, Converter={StaticResource InverseBoolToVisibilityConverter}, Mode=OneWay}"/>
-                                        <TextBlock Text="{x:Bind ViewModel.TuningBinFilePath, Mode=OneWay}"
-                                                   FontSize="12"
-                                                   VerticalAlignment="Center"
-                                                   TextWrapping="NoWrap"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   Visibility="{Binding HasTuningBinFilePath, Converter={StaticResource BoolToVisibilityConverter}, Mode=OneWay}"/>
-                                    </Grid>
-                                </Border>
-                                <Button Grid.Column="2"
-                                        Content="选择"
-                                        MinWidth="56"
-                                        Padding="10,4"
-                                        Margin="6,0,0,0"
-                                        Click="SelectTuningBin_Click"
-                                        ToolTipService.ToolTip="选择 tuning bin 文件"/>
-                            </Grid>
-
-                            <Grid Grid.Row="1">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="70"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-
-                                <TextBlock Grid.Column="0"
-                                           Text="JSON"
-                                           FontSize="12"
-                                           Opacity="0.72"
-                                           VerticalAlignment="Center"/>
-                                <Border Grid.Column="1"
-                                        Height="30"
-                                        Padding="8,0"
-                                        BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="4"
-                                        Background="{ThemeResource LayerFillColorDefaultBrush}"
-                                        ToolTipService.ToolTip="{Binding TuningDescriptorFilePath, Mode=OneWay}">
-                                    <Grid>
-                                        <TextBlock Text="未选择协议 JSON"
-                                                   FontSize="12"
-                                                   Opacity="0.55"
-                                                   VerticalAlignment="Center"
-                                                   Visibility="{Binding HasTuningDescriptorPath, Converter={StaticResource InverseBoolToVisibilityConverter}, Mode=OneWay}"/>
-                                        <TextBlock Text="{x:Bind ViewModel.TuningDescriptorFilePath, Mode=OneWay}"
-                                                   FontSize="12"
-                                                   VerticalAlignment="Center"
-                                                   TextWrapping="NoWrap"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   Visibility="{Binding HasTuningDescriptorPath, Converter={StaticResource BoolToVisibilityConverter}, Mode=OneWay}"/>
-                                    </Grid>
-                                </Border>
-                                <Button Grid.Column="2"
-                                        Content="选择"
-                                        MinWidth="56"
-                                        Padding="10,4"
-                                        Margin="6,0,0,0"
-                                        Click="SelectTuningDescriptor_Click"
-                                        ToolTipService.ToolTip="选择 tuning JSON 描述文件"/>
-                            </Grid>
+                            <!-- Log actions: quiet icon buttons, one accent-free cluster -->
+                            <StackPanel Grid.Column="2"
+                                        Orientation="Horizontal"
+                                        Spacing="4"
+                                        Margin="12,0,0,0"
+                                        VerticalAlignment="Center">
+                                <Button Style="{StaticResource AppToolbarIconButtonStyle}"
+                                        Click="SelectAllLogs_Click"
+                                        ToolTipService.ToolTip="全选日志 (Ctrl+A)">
+                                    <FontIcon Glyph="&#xE8B3;" FontSize="13" />
+                                </Button>
+                                <Button Style="{StaticResource AppToolbarIconButtonStyle}"
+                                        Click="CopySelectedLogs_Click"
+                                        ToolTipService.ToolTip="复制选中日志 (Ctrl+C)">
+                                    <FontIcon Glyph="&#xE8C8;" FontSize="13" />
+                                </Button>
+                                <Button Style="{StaticResource AppToolbarIconButtonStyle}"
+                                        Command="{x:Bind ViewModel.ClearLogsCommand}"
+                                        ToolTipService.ToolTip="清空所有日志记录">
+                                    <FontIcon Glyph="&#xE74D;" FontSize="13" />
+                                </Button>
+                                <Border Style="{StaticResource AppVerticalDividerStyle}" />
+                                <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                        Click="TogglePause_Click"
+                                        ToolTipService.ToolTip="暂停时停止刷新 UI，文件日志继续记录">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <Grid>
+                                            <FontIcon Glyph="&#xE769;"
+                                                      FontSize="13"
+                                                      Visibility="{Binding IsPaused, Converter={StaticResource InverseBoolToVisibilityConverter}}" />
+                                            <FontIcon Glyph="&#xE768;"
+                                                      FontSize="13"
+                                                      Visibility="{Binding IsPaused, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                        </Grid>
+                                        <TextBlock Text="{x:Bind ViewModel.PauseButtonText, Mode=OneWay}" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
                         </Grid>
 
-                        <StackPanel Grid.Column="2"
-                                    Orientation="Horizontal"
-                                    Spacing="6"
-                                    VerticalAlignment="Center">
-                            <Button Content="重载 JSON"
-                                    MinWidth="74"
-                                    Padding="10,5"
-                                    Command="{x:Bind ViewModel.ReloadTuningDescriptorCommand}"
-                                    IsEnabled="{x:Bind ViewModel.HasTuningDescriptorPath, Mode=OneWay}"
-                                    ToolTipService.ToolTip="{Binding TuningDescriptorStatus, Mode=OneWay}"/>
-                            <Button Content="{x:Bind ViewModel.TuningWatchButtonText, Mode=OneWay}"
-                                    MinWidth="72"
-                                    Padding="10,5"
-                                    Command="{x:Bind ViewModel.ToggleTuningWatchCommand}"
-                                    IsEnabled="{x:Bind ViewModel.CanUseTuning, Mode=OneWay}"/>
-                            <Button Content="发送 Tuning"
-                                    MinWidth="88"
-                                    Padding="10,5"
-                                    Style="{StaticResource AccentButtonStyle}"
-                                    ToolTipService.ToolTip="手动打包并发送当前 tuning bin"
-                                    Command="{x:Bind ViewModel.SendCurrentTuningCommand}"
-                                    IsEnabled="{x:Bind ViewModel.CanUseTuning, Mode=OneWay}"/>
-                        </StackPanel>
+                        <!-- Row 2: tuning payload + protocol -->
+                        <Grid Grid.Row="1" Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0"
+                                        Orientation="Horizontal"
+                                        Spacing="6"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,10,0">
+                                <FontIcon Glyph="&#xE950;"
+                                          FontSize="13"
+                                          Foreground="{ThemeResource AppAccentBrush}" />
+                                <TextBlock Text="TUNING"
+                                           Style="{StaticResource AppSectionLabelStyle}"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+
+                            <!-- File slots: a chip shows the file name, the full path is the tooltip.
+                                 Placeholder and value are two TextBlocks rather than a converter. -->
+                            <Button Grid.Column="1"
+                                    Style="{StaticResource AppToolbarButtonStyle}"
+                                    Padding="9,0"
+                                    MinWidth="0"
+                                    HorizontalAlignment="Left"
+                                    Click="SelectTuningBin_Click"
+                                    ToolTipService.ToolTip="{x:Bind ViewModel.TuningBinFilePath, Mode=OneWay}">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE7C3;" FontSize="13" />
+                                    <TextBlock Text="未选择 bin 文件"
+                                               Foreground="{ThemeResource AppTextTertiaryBrush}"
+                                               Visibility="{Binding HasTuningBinFilePath, Converter={StaticResource InverseBoolToVisibilityConverter}}" />
+                                    <TextBlock Text="{x:Bind ViewModel.TuningBinDisplay, Mode=OneWay}"
+                                               Visibility="{Binding HasTuningBinFilePath, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                </StackPanel>
+                            </Button>
+
+                            <Button Grid.Column="2"
+                                    Style="{StaticResource AppToolbarButtonStyle}"
+                                    Padding="9,0"
+                                    MinWidth="0"
+                                    Margin="6,0,0,0"
+                                    HorizontalAlignment="Left"
+                                    Click="SelectTuningDescriptor_Click"
+                                    ToolTipService.ToolTip="{x:Bind ViewModel.TuningDescriptorFilePath, Mode=OneWay}">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE8A5;" FontSize="13" />
+                                    <TextBlock Text="未选择协议 JSON"
+                                               Foreground="{ThemeResource AppTextTertiaryBrush}"
+                                               Visibility="{Binding HasTuningDescriptorPath, Converter={StaticResource InverseBoolToVisibilityConverter}}" />
+                                    <TextBlock Text="{x:Bind ViewModel.TuningDescriptorDisplay, Mode=OneWay}"
+                                               Visibility="{Binding HasTuningDescriptorPath, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                </StackPanel>
+                            </Button>
+
+                            <TextBlock Grid.Column="3"
+                                       Text="{x:Bind ViewModel.TuningStatus, Mode=OneWay}"
+                                       Style="{StaticResource AppCaptionTextStyle}"
+                                       Margin="12,0"
+                                       VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTipService.ToolTip="{x:Bind ViewModel.TuningStatus, Mode=OneWay}" />
+
+                            <StackPanel Grid.Column="4"
+                                        Orientation="Horizontal"
+                                        Spacing="6"
+                                        VerticalAlignment="Center">
+                                <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                        Content="重载 JSON"
+                                        Command="{x:Bind ViewModel.ReloadTuningDescriptorCommand}"
+                                        IsEnabled="{x:Bind ViewModel.HasTuningDescriptorPath, Mode=OneWay}"
+                                        ToolTipService.ToolTip="{x:Bind ViewModel.TuningDescriptorStatus, Mode=OneWay}" />
+                                <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                        Content="{x:Bind ViewModel.TuningWatchButtonText, Mode=OneWay}"
+                                        Command="{x:Bind ViewModel.ToggleTuningWatchCommand}"
+                                        IsEnabled="{x:Bind ViewModel.CanUseTuning, Mode=OneWay}" />
+                                <Button Style="{StaticResource AccentButtonStyle}"
+                                        MinHeight="{StaticResource AppControlHeightCompact}"
+                                        MinWidth="0"
+                                        Padding="12,0"
+                                        Command="{x:Bind ViewModel.SendCurrentTuningCommand}"
+                                        IsEnabled="{x:Bind ViewModel.CanUseTuning, Mode=OneWay}"
+                                        ToolTipService.ToolTip="手动打包并发送当前 tuning bin">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE724;" FontSize="13" />
+                                        <TextBlock Text="发送 Tuning" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
                     </Grid>
+                </Border>
+
+                <!-- ========== Channel legend (signature) ==========
+                     The colour-to-port mapping, stated explicitly: every colour visible in the log
+                     body can be translated back to a physical port without opening the sidebar. -->
+                <Border Grid.Row="2"
+                        Background="{ThemeResource AppSurfaceSunkenBrush}"
+                        BorderBrush="{ThemeResource AppHairlineBrush}"
+                        BorderThickness="0,0,0,1"
+                        Padding="12,6"
+                        Visibility="{Binding HasOpenPorts, Converter={StaticResource BoolToVisibilityConverter}}">
+                    <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                  VerticalScrollBarVisibility="Disabled"
+                                  HorizontalScrollMode="Auto">
+                        <ItemsControl ItemsSource="{x:Bind ViewModel.OpenPorts, Mode=OneWay}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" Spacing="14" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                        <Rectangle Width="3"
+                                                   Height="14"
+                                                   RadiusX="1.5"
+                                                   RadiusY="1.5"
+                                                   Fill="{Binding DisplayColorHex, Converter={StaticResource HexColorToBrushConverter}}" />
+                                        <TextBlock Text="{Binding PortName}"
+                                                   FontFamily="{StaticResource AppMonoFontFamily}"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding StatisticsDisplay, Mode=OneWay}"
+                                                   FontFamily="{StaticResource AppMonoFontFamily}"
+                                                   FontSize="11"
+                                                   Foreground="{ThemeResource AppTextSecondaryBrush}"
+                                                   VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
                 </Border>
 
                 <!-- Logs Display - extracted into a UserControl so the DataTemplate can use compiled
@@ -534,77 +735,159 @@
                                       x:Name="LogListView"
                                       ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
                                       IsPaused="{x:Bind ViewModel.IsPaused, Mode=OneWay}"
-                                      CopyCompleted="LogListView_CopyCompleted"/>
+                                      CopyCompleted="LogListView_CopyCompleted" />
 
-                <!-- Send Area -->
-                <StackPanel Grid.Row="4"
-                            Spacing="8"
-                            Padding="8"
-                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
-                    <StackPanel Orientation="Horizontal" Spacing="16">
-                        <CheckBox Content="十六进制发送"
-                                  IsChecked="{x:Bind ViewModel.SendAsHex, Mode=TwoWay}"/>
-                        <CheckBox Content="显示发送数据"
-                                  IsChecked="{x:Bind ViewModel.ShowSentData, Mode=TwoWay}"/>
-                        <StackPanel Orientation="Horizontal" Spacing="4">
-                            <TextBlock Text="TX颜色:" VerticalAlignment="Center"/>
-                            <ComboBox x:Name="TxColorComboBox"
-                                      SelectedValue="{x:Bind ViewModel.TxColorHex, Mode=TwoWay}"
-                                      SelectedValuePath="Tag"
-                                      Width="100">
-                                <ComboBoxItem Tag="#0078D4"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#0078D4" Margin="0,0,8,0"/><TextBlock Text="蓝色"/></StackPanel></ComboBoxItem>
-                                <ComboBoxItem Tag="#E74856"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#E74856" Margin="0,0,8,0"/><TextBlock Text="红色"/></StackPanel></ComboBoxItem>
-                                <ComboBoxItem Tag="#FF8C00"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#FF8C00" Margin="0,0,8,0"/><TextBlock Text="橙色"/></StackPanel></ComboBoxItem>
-                                <ComboBoxItem Tag="#881798"><StackPanel Orientation="Horizontal"><Rectangle Width="16" Height="16" Fill="#881798" Margin="0,0,8,0"/><TextBlock Text="紫色"/></StackPanel></ComboBoxItem>
-                            </ComboBox>
-                        </StackPanel>
-                        <TextBlock Text="(RX颜色在已打开串口列表中设置)"
-                                   VerticalAlignment="Center"
-                                   FontSize="11"
-                                   Opacity="0.6"/>
-                    </StackPanel>
+                <!-- ========== Send ========== -->
+                <Border Grid.Row="4"
+                        Background="{ThemeResource AppSurfaceBrush}"
+                        BorderBrush="{ThemeResource AppHairlineBrush}"
+                        BorderThickness="0,1,0,0"
+                        Padding="12,9">
                     <Grid>
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
+                        <StackPanel Grid.Column="0"
+                                    Orientation="Horizontal"
+                                    Spacing="12"
+                                    VerticalAlignment="Center"
+                                    Margin="0,0,12,0">
+                            <CheckBox Content="十六进制发送"
+                                      IsChecked="{x:Bind ViewModel.SendAsHex, Mode=TwoWay}" />
+                            <CheckBox Content="显示发送数据"
+                                      IsChecked="{x:Bind ViewModel.ShowSentData, Mode=TwoWay}" />
+                            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <TextBlock Text="TX"
+                                           Style="{StaticResource AppCaptionTextStyle}"
+                                           FontFamily="{StaticResource AppMonoFontFamily}"
+                                           VerticalAlignment="Center"
+                                           ToolTipService.ToolTip="发送行的颜色。接收行颜色在左侧已打开串口列表中设置。" />
+                                <ComboBox x:Name="TxColorComboBox"
+                                          ItemsSource="{x:Bind ViewModel.TxColorOptions}"
+                                          SelectedValuePath="Hex"
+                                          SelectedValue="{x:Bind ViewModel.TxColorHex, Mode=TwoWay}"
+                                          MinHeight="{StaticResource AppControlHeightCompact}"
+                                          MinWidth="92">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                                <Rectangle Width="13"
+                                                           Height="13"
+                                                           RadiusX="3"
+                                                           RadiusY="3"
+                                                           Fill="{Binding Brush}"
+                                                           VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding Name}" FontSize="12" VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </StackPanel>
+                        </StackPanel>
+
                         <TextBox x:Name="SendTextBox"
-                                 Grid.Column="0"
+                                 Grid.Column="1"
                                  Text="{x:Bind ViewModel.SendText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                 PlaceholderText="输入要发送的数据..."
-                                 Margin="0,0,8,0"/>
+                                 PlaceholderText="输入要发送的数据，回车发送…"
+                                 VerticalAlignment="Center"
+                                 MinHeight="{StaticResource AppControlHeightPrimary}" />
 
-                        <Button Grid.Column="1"
-                                Content="发送"
+                        <Button Grid.Column="2"
                                 Style="{StaticResource AccentButtonStyle}"
-                                Click="SendButton_Click"/>
+                                MinHeight="{StaticResource AppControlHeightPrimary}"
+                                MinWidth="92"
+                                Margin="8,0,0,0"
+                                Click="SendButton_Click"
+                                ToolTipService.ToolTip="发送到全部已打开串口">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <FontIcon Glyph="&#xE724;" FontSize="13" />
+                                <TextBlock Text="发送" />
+                            </StackPanel>
+                        </Button>
                     </Grid>
-                </StackPanel>
-            </Grid>
-        </Grid>
+                </Border>
 
-        <!-- Status Bar -->
-        <Grid Grid.Row="2"
-              Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-              Padding="8,4"
-              BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
-              BorderThickness="0,1,0,0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            
-            <TextBlock Grid.Column="0"
-                       Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
-                       VerticalAlignment="Center"/>
-            
-            <TextBlock Grid.Column="1"
-                       Text="{x:Bind ViewModel.VersionDisplay, Mode=OneWay}"
-                       VerticalAlignment="Center"
-                       Opacity="0.7"
-                       FontSize="11"
-                       Margin="16,0,0,0"/>
+                <!-- ========== Status bar ========== -->
+                <Border Grid.Row="5"
+                        Background="{ThemeResource AppSurfaceBrush}"
+                        BorderBrush="{ThemeResource AppHairlineBrush}"
+                        BorderThickness="0,1,0,0"
+                        Padding="12,5">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0"
+                                    Orientation="Horizontal"
+                                    Spacing="6"
+                                    VerticalAlignment="Center">
+                            <Ellipse Width="6"
+                                     Height="6"
+                                     VerticalAlignment="Center"
+                                     Fill="{ThemeResource AppOkBrush}"
+                                     Visibility="{Binding HasOpenPorts, Converter={StaticResource BoolToVisibilityConverter}}" />
+                            <Ellipse Width="6"
+                                     Height="6"
+                                     VerticalAlignment="Center"
+                                     Fill="{ThemeResource AppTextTertiaryBrush}"
+                                     Visibility="{Binding HasOpenPorts, Converter={StaticResource InverseBoolToVisibilityConverter}}" />
+                            <TextBlock Text="{x:Bind ViewModel.OpenPortCountDisplay, Mode=OneWay}"
+                                       Style="{StaticResource AppCaptionTextStyle}"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+
+                        <Border Grid.Column="1" Style="{StaticResource AppVerticalDividerStyle}" />
+
+                        <TextBlock Grid.Column="2"
+                                   Text="{x:Bind ViewModel.TotalTrafficDisplay, Mode=OneWay}"
+                                   FontFamily="{StaticResource AppMonoFontFamily}"
+                                   FontSize="11"
+                                   Foreground="{ThemeResource AppTextSecondaryBrush}"
+                                   VerticalAlignment="Center"
+                                   ToolTipService.ToolTip="全部已打开串口的累计接收 / 发送字节数" />
+
+                        <StackPanel Grid.Column="3"
+                                    Orientation="Horizontal"
+                                    Spacing="12"
+                                    Margin="12,0"
+                                    VerticalAlignment="Center">
+                            <TextBlock Text="{x:Bind ViewModel.MatchCountDisplay, Mode=OneWay}"
+                                       FontFamily="{StaticResource AppMonoFontFamily}"
+                                       FontSize="11"
+                                       Foreground="{ThemeResource AppTextSecondaryBrush}"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                                       Style="{StaticResource AppCaptionTextStyle}"
+                                       TextTrimming="CharacterEllipsis"
+                                       VerticalAlignment="Center"
+                                       ToolTipService.ToolTip="{x:Bind ViewModel.StatusMessage, Mode=OneWay}" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="4"
+                                    Orientation="Horizontal"
+                                    Spacing="10"
+                                    VerticalAlignment="Center">
+                            <TextBlock Text="{x:Bind ViewModel.AppearanceDisplay, Mode=OneWay}"
+                                       Style="{StaticResource AppCaptionTextStyle}"
+                                       FontSize="11"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="{x:Bind ViewModel.VersionDisplay, Mode=OneWay}"
+                                       Style="{StaticResource AppCaptionTextStyle}"
+                                       FontFamily="{StaticResource AppMonoFontFamily}"
+                                       FontSize="11"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
         </Grid>
     </Grid>
 </Window>

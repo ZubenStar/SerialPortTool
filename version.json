@@ -1,7 +1,27 @@
 ﻿{
-    "version": "2.0.4",
+    "version": "2.1.0",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-18",
+            "version": "2.1.0",
+            "changes": [
+                "Redesigned the interface around a bench-instrument faceplate: graphite/paper neutrals, hairline dividers, monospace data and one live-signal accent, replacing the stock-control look",
+                "Added an appearance switch (follow system / light / dark) under a new 外观 menu; the choice is remembered and applied before the first frame, so a dark-theme launch no longer flashes light",
+                "Both palettes are calibrated separately rather than inverted - including the ten port identity colours, which gained a lifted, desaturated dark variant so multi-port logs stay readable on graphite",
+                "Fused the title bar with the app chrome: brand, menus, port overview and the window buttons now share one band, backed by Mica with an automatic opaque fallback where Mica is unavailable (Windows 10, transparency effects off)",
+                "Rearranged the layout: a narrower foldable configuration rail that also collapses itself below 900 px, search and Tuning merged into a single two-row toolbar with file paths reduced to name chips (full path on hover), and the log area absorbing all remaining height",
+                "Added a channel trace and channel legend to the log: a 3 px bar in the row's port colour plus a legend strip mapping colour to port and byte counts, so interleaved multi-port traffic stays attributable at a glance",
+                "Log rows now re-colour immediately when a port colour changes or the appearance switches, instead of staying on the previous palette",
+                "Status bar now reports the open-port count, combined RX/TX totals, the live match count and the current appearance",
+                "Replaced the emoji icons with themed Fluent glyphs and unified button, input, dropdown, checkbox, menu, tooltip, scrollbar and dialog styling on one token set",
+                "Removed the last hard-coded light-theme colours (the baud-rate banner and the regex error hint) in favour of semantic tokens, and added a high-contrast theme dictionary that follows the system colours",
+                "UI-thread exceptions raised by the XAML framework are now logged: only AppDomain.UnhandledException was wired up, which never sees a binding, template or window-construction failure, so such a crash left the log completely empty",
+                "Serilog and the exception handlers are configured before App.xaml is loaded and before the XAML compiler's generated break-on-unhandled-exception hook is registered, so the log now names the failure before the debugger stops on it",
+                "Window chrome setup (Mica material, custom title bar, caption button colours) is now best-effort: an unsupported or policy-blocked API logs a warning and falls back to the plain window instead of preventing the window from appearing",
+                "Reading the system animation preference can no longer fail the startup path"
+            ]
+        },
         {
             "date": "2026-09-17",
             "version": "2.0.4",
