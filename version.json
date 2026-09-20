@@ -1,7 +1,22 @@
 {
-    "version": "2.1.2",
+    "version": "2.1.3",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-20",
+            "version": "2.1.3",
+            "changes": [
+                "Closing a port can no longer be undone by the automatic reconnect: a close that landed while a reconnect was waiting out its delay used to be followed by the reconnect reopening the port, and that handle was then invisible to both the app and the UI — the only way to release it was to exit the app",
+                "Closing a port now also cancels a running baud-rate scan for that port; the scan owns the port while it probes (~40 s) and used to reopen it afterwards, so a close during a scan looked like it had silently failed",
+                "The baud-rate scan no longer reopens a port that was closed while it was running, and duplicate scan requests for the same port are ignored instead of stacking another close/reopen cycle",
+                "An auto-reconnect that lost the race to a close no longer reports the port as Connected",
+                "关闭全部 now also undoes ports that were still being opened at that moment, instead of letting them appear (open) a moment later",
+                "Port lookups are case-insensitive, matching Windows: a close using a differently spelled port name (com3 / COM3) used to do nothing at all, silently leaving the port open",
+                "The same case-insensitivity applies to opening: a saved port name in a different case was refused as “not available in the system” after waiting, even though the port was there",
+                "Closing a port is no longer queued behind its log file: the port is released first and the file logger is stopped afterwards, so a slow or redirected log volume can no longer look like an unclosable port, and the tail of the log is kept instead of being cut off",
+                "An open request that outlives the app no longer registers a port after shutdown has already released everything"
+            ]
+        },
         {
             "date": "2026-09-18",
             "version": "2.1.2",

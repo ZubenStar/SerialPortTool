@@ -1304,6 +1304,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // awaits below, and the second one used to add a second entry for the same port name.
     private readonly ConcurrentDictionary<string, byte> _openingPorts = new(StringComparer.OrdinalIgnoreCase);
 
+    // Bumped by every "close all" request (CloseAllPortsAsync).
+    //
+    // An open request spends up to a few seconds inside SerialPortService (availability probe + up to
+    // three open attempts with 500 ms backoff), and a 全部关闭 pressed in that window had nothing to
+    // close: the port is not in the service's map yet and has no row. The close-all therefore
+    // completed "successfully", and seconds later the port appeared — open. Sampled before an open
+    // starts and compared after it returns, so an open that began before the close-all undoes itself,
+    // while one started afterwards is unaffected.
+    private int _closeAllEpoch;
+
     [RelayCommand]
     private async Task OpenPortAsync(string portName)
     {
@@ -1347,9 +1357,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 Parity = Parity
             };
 
+            // Sampled before the open and compared after it: 全部关闭 pressed while this port was
+            // still being opened must not be undone by the port arriving a second later.
+            var closeAllEpoch = Volatile.Read(ref _closeAllEpoch);
+
             var opened = await _serialPortService.OpenPortAsync(config);
             if (opened)
             {
+                if (Volatile.Read(ref _closeAllEpoch) != closeAllEpoch)
+                {
+                    _logger.LogInformation(
+                        "Port {PortName} finished opening after a close-all request; closing it again",
+                        portName);
+                    await _serialPortService.ClosePortAsync(portName);
+                    StatusMessage = $"Port {portName} closed";
+                    return;
+                }
+
                 // Start file logging
                 await _fileLoggerService.StartLoggingAsync(portName);
 
@@ -1423,7 +1447,35 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 Parity = Parity
             };
 
+            // Sampled before the batch and compared after it: 全部关闭 pressed while this loop was
+            // still opening ports must not be undone by those ports arriving afterwards.
+            var closeAllEpoch = Volatile.Read(ref _closeAllEpoch);
+
+            // What was already open before the batch, so the rollback below touches only the ports
+            // this batch brought up.
+            var alreadyOpen = _serialPortService.GetOpenPorts()
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
             var openedCount = await _serialPortService.OpenAllPortsAsync(defaultConfig);
+
+            if (Volatile.Read(ref _closeAllEpoch) != closeAllEpoch)
+            {
+                // Close exactly the ports this batch opened, not every open port: a port the user
+                // opened by hand after pressing 关闭全部 is not ours to close. No rows are added
+                // either, and OpenPorts is left alone — the concurrent 全部关闭 already cleared it.
+                foreach (var portName in _serialPortService.GetOpenPorts())
+                {
+                    if (!alreadyOpen.Contains(portName))
+                    {
+                        await _serialPortService.ClosePortAsync(portName);
+                    }
+                }
+
+                _logger.LogInformation(
+                    "Batch open finished after a close-all request; rolled back the ports it opened");
+                StatusMessage = "Ports closed";
+                return;
+            }
 
             // Start file logging and create ViewModels for each opened port
             foreach (var portName in _serialPortService.GetOpenPorts())
@@ -1468,6 +1520,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanCloseAllPorts))]
     private async Task CloseAllPortsAsync()
     {
+        // Bumped before anything else, including the "nothing to close" return, and also when the
+        // request is rejected for being a duplicate: any open that is already in flight must notice
+        // that a close-all happened, or it will finish and re-add a port the user just closed.
+        Interlocked.Increment(ref _closeAllEpoch);
+
         if (OpenPorts.Count == 0)
         {
             StatusMessage = "No open ports to close";
@@ -1476,18 +1533,28 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            var portCount = OpenPorts.Count;
+            var portsToClose = OpenPorts.ToList();
+            var portCount = portsToClose.Count;
             StatusMessage = $"Closing {portCount} port(s)...";
 
-            // Stop file logging for all ports
-            foreach (var port in OpenPorts.ToList())
+            // Cancel any baud-rate scan first — a scan reopens the port when it ends, which would undo
+            // this close for a port the user can no longer see (see CancelBaudRateDetection).
+            foreach (var port in portsToClose)
             {
+                CancelBaudRateDetection(port.PortName);
                 _lineAssemblers.TryRemove(port.PortName, out _);
-                await _fileLoggerService.StopLoggingAsync(port.PortName);
             }
 
-            // Close all ports with enhanced cleanup
+            // Close the ports before stopping their file loggers. Stopping a logger awaits its writer
+            // (see FileLoggerService), and the ports are what the user asked to close — bookkeeping
+            // must not be able to sit in front of that. Closing first also captures the tail of the
+            // log rather than truncating it.
             await _serialPortService.CloseAllPortsAsync();
+
+            foreach (var port in portsToClose)
+            {
+                await _fileLoggerService.StopLoggingAsync(port.PortName);
+            }
 
             // Clear the OpenPorts collection
             OpenPorts.Clear();
@@ -2555,15 +2622,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
             StatusMessage = $"Closing port {portName}...";
             _logger.LogInformation("User requested to close port {PortName}", portName);
 
+            // Stop a baud-rate scan for this port first. The scan closes the port for its duration
+            // (up to ~40 s) and reopens it when it ends, so without cancelling it this close would
+            // be undone a moment later — and the reopened handle would be invisible to both the
+            // service and the UI, leaving the port impossible to close until the app exits.
+            CancelBaudRateDetection(portName);
+
             // Drop the port's line-assembly buffer; a partial tail line would otherwise leak
             // into the next session on the same port name.
             _lineAssemblers.TryRemove(portName, out _);
 
-            // Stop file logging
-            await _fileLoggerService.StopLoggingAsync(portName);
-
-            // Close the port with enhanced cleanup
+            // Close the port first, then stop its file logger. Stopping the logger awaits its writer
+            // (see FileLoggerService); the port is what the user asked to close, so bookkeeping must
+            // not be able to sit in front of it — a slow log writer must never look like "the port
+            // won't close". Closing first also captures the tail of the log instead of truncating it.
             await _serialPortService.ClosePortAsync(portName);
+
+            await _fileLoggerService.StopLoggingAsync(portName);
 
             // Give OS time to fully release the serial port handle before allowing reopen
             await Task.Delay(500);
@@ -3227,6 +3302,46 @@ public partial class MainViewModel : ObservableObject, IDisposable
         RunOnUiThread(() => StartBaudRateDetection(portName, currentBaudRate, reason, cancellationToken));
     }
 
+    // In-flight baud-rate scans, keyed by port name.
+    //
+    // A scan closes the port for its whole duration (up to ~40 s) and reopens it when it finishes,
+    // entirely outside SerialPortService's bookkeeping. That made a user close during a scan a
+    // no-op that was undone moments later — the port came back open while the UI had already
+    // dropped it, so nothing could close it again short of ending the process. The handle kept
+    // here is what lets a close (and shutdown) stop the scan instead of racing it.
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _baudRateDetections =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Stops the baud-rate scan running for <paramref name="portName"/>, if any.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The scan observes the cancellation at its next await and closes the port it opened on the way
+    /// out. Used by the close paths; shutdown cancels them through <see cref="_shutdownCts"/>, which
+    /// every scan is linked to.
+    /// </para>
+    /// <para>
+    /// The dictionary entry is deliberately <em>not</em> removed here — the scan removes it in its
+    /// own <c>finally</c>. Removing it now would let a new scan for the same port start while the
+    /// cancelled one was still releasing its handle, putting two scans on one port again.
+    /// </para>
+    /// </remarks>
+    private void CancelBaudRateDetection(string portName)
+    {
+        if (_baudRateDetections.TryGetValue(portName, out var detectionCts))
+        {
+            try
+            {
+                detectionCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The scan finished and disposed its own source between the lookup and here.
+            }
+        }
+    }
+
     private void StartBaudRateDetection(
         string portName,
         int currentBaudRate,
@@ -3251,17 +3366,31 @@ public partial class MainViewModel : ObservableObject, IDisposable
         int currentBaudRate,
         CancellationToken cancellationToken)
     {
+        // One scan per port: the quality watchdog can request one repeatedly while the data stays
+        // bad, and each scan holds the port closed for its whole run, so stacking them multiplies
+        // both the port churn and the window in which a user close can be lost.
+        using var detectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (!_baudRateDetections.TryAdd(portName, detectionCts))
+        {
+            _logger.LogInformation(
+                "Baud rate detection for {PortName} is already running; ignoring the duplicate request",
+                portName);
+            return;
+        }
+
         try
         {
+            var token = detectionCts.Token;
+
             // The detector opens the port itself; as long as we still hold the port, every probe
             // fails with UnauthorizedAccessException and the whole detection burns ~40s only to
             // report "无法确定". Close it for the duration, then reopen with the detected (or
             // original) baud rate.
             await _serialPortService.ClosePortAsync(portName);
-            await Task.Delay(500, cancellationToken);
+            await Task.Delay(500, token);
 
             var detectionResults = await _baudRateDetectorService!
-                .DetectOptimalBaudRateAsync(portName, cancellationToken: cancellationToken);
+                .DetectOptimalBaudRateAsync(portName, cancellationToken: token);
 
             if (detectionResults.Count > 0 && detectionResults[0].ConfidenceScore > 0.5)
             {
@@ -3301,8 +3430,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException)
         {
-            // Shutting down: leave the port closed. Reopening here would race the service teardown.
-            _logger.LogInformation("Baud rate detection for {PortName} cancelled during shutdown", portName);
+            // Shutdown, or the user closed the port while the scan was running: leave it closed.
+            // Reopening here would race the service teardown — or resurrect a port the user just
+            // closed, which is exactly the bug this cancellation exists to prevent.
+            _logger.LogInformation(
+                "Baud rate detection for {PortName} was cancelled; leaving the port closed", portName);
         }
         catch (Exception ex)
         {
@@ -3318,6 +3450,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 _logger.LogError(reopenEx, "Failed to reopen {PortName} after detection failure", portName);
             }
+        }
+        finally
+        {
+            _baudRateDetections.TryRemove(portName, out _);
         }
     }
 
@@ -3342,6 +3478,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task ReopenPortWithBaudRateAsync(string portName, int baudRate)
     {
+        // Never resurrect a port the user closed while the scan/switch was in flight. Such a reopen
+        // produced an open handle that was in neither OpenPorts nor SerialPortService's map, so it
+        // could not be closed from the UI at all — the user had to exit the app to free COMx.
+        if (!_portsByName.ContainsKey(portName))
+        {
+            _logger.LogInformation(
+                "Not reopening {PortName}: the port is no longer open", portName);
+            return;
+        }
+
         var config = new SerialPortConfig
         {
             PortName = portName,

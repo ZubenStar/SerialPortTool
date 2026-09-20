@@ -19,8 +19,17 @@ namespace SerialPortTool.Services;
 public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposable
 {
     private readonly ILogger<SerialPortService> _logger;
-    private readonly ConcurrentDictionary<string, PortInstance> _ports = new();
-    private readonly ConcurrentDictionary<string, DateTime> _lastReconnectAttempt = new();
+
+    // Both maps are OrdinalIgnoreCase, matching MainViewModel._portsByName. COM names are
+    // case-insensitive at the OS level (CreateFile accepts "com3" for "COM3"), and _ports is keyed by
+    // whatever string the caller passed to OpenPortAsync. With the default ordinal comparer a
+    // differently-cased close was a *silent* no-op — TryRemove missed, the port stayed open, and the
+    // UI had already dropped the row, so nothing could close it again. The dictionaries are the only
+    // place where two independently-sourced spellings of the same port could ever meet.
+    private readonly ConcurrentDictionary<string, PortInstance> _ports =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTime> _lastReconnectAttempt =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly IDataValidationService? _dataValidationService;
     private static readonly TimeSpan ReconnectCooldown = TimeSpan.FromSeconds(3);
 
@@ -61,11 +70,30 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         });
     }
 
+    /// <summary>
+    /// Case-insensitive membership test against a scan result.
+    /// </summary>
+    /// <remarks>
+    /// <c>List&lt;string&gt;.Contains</c> is ordinal, and the name asked for here comes from the caller
+    /// (persisted settings, a previous session) while the list comes from the registry. A
+    /// differently-cased spelling therefore looked like "this COM port does not exist", and the open
+    /// was refused after a 1.5 s wait with a misleading message — while the port was in fact there.
+    /// </remarks>
+    private static bool IsListed(IEnumerable<string> ports, string portName)
+        => ports.Any(p => string.Equals(p, portName, StringComparison.OrdinalIgnoreCase));
+
     public async Task<bool> OpenPortAsync(SerialPortConfig config)
     {
         if (string.IsNullOrEmpty(config.PortName))
         {
             _logger.LogWarning("Port name is empty");
+            return false;
+        }
+
+        if (_disposed)
+        {
+            _logger.LogWarning("Refusing to open port {PortName}: the serial service is shutting down",
+                config.PortName);
             return false;
         }
 
@@ -80,12 +108,12 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
             // Verify port is actually available before attempting to open
             // Retry availability check to handle OS handle release delay after recent close
             var availablePorts = (await GetAvailablePortsAsync()).ToList();
-            if (!availablePorts.Contains(config.PortName))
+            if (!IsListed(availablePorts, config.PortName))
             {
                 _logger.LogInformation("Port {PortName} not immediately available, waiting for OS to release handle", config.PortName);
 
                 // Wait for OS to release the serial port handle (classic Windows SerialPort issue)
-                for (int waitAttempt = 0; waitAttempt < 3 && !availablePorts.Contains(config.PortName); waitAttempt++)
+                for (int waitAttempt = 0; waitAttempt < 3 && !IsListed(availablePorts, config.PortName); waitAttempt++)
                 {
                     await Task.Delay(500);
                     availablePorts = (await GetAvailablePortsAsync()).ToList();
@@ -93,7 +121,7 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
                         waitAttempt + 1, string.Join(", ", availablePorts));
                 }
 
-                if (!availablePorts.Contains(config.PortName))
+                if (!IsListed(availablePorts, config.PortName))
                 {
                     _logger.LogWarning("Port {PortName} is not available in the system after waiting", config.PortName);
                     return false;
@@ -133,6 +161,19 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
             
             if (opened)
             {
+                // Teardown may have run while this open was in flight (app shutdown disposes the whole
+                // container). Registering the instance now would leave an open handle that nothing
+                // owns: _ports has already been cleared and no further teardown is coming.
+                if (_disposed)
+                {
+                    _logger.LogWarning(
+                        "Port {PortName} finished opening during shutdown; closing it again",
+                        config.PortName);
+                    portInstance.RequestTeardown();
+                    portInstance.Dispose();
+                    return false;
+                }
+
                 // TryAdd, not the indexer: the ContainsKey check at the top of this method is separated
                 // from here by several awaits (availability probe, up to 3 open attempts with 500 ms
                 // backoff), so two concurrent open calls for the same port can both get this far. With
@@ -145,7 +186,7 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
                         config.PortName);
                     try
                     {
-                        portInstance.BeginShutdown();
+                        portInstance.RequestTeardown();
                         portInstance.Dispose();
                     }
                     catch (Exception ex)
@@ -184,6 +225,14 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
             try
             {
                 _logger.LogInformation("Closing port {PortName}", portName);
+
+                // Mark the instance as torn down before anything else. The auto-reconnect path runs
+                // close → 500 ms delay → open on this very instance, so a user close landing inside
+                // that window used to be undone by the reconnect: the port came back open while
+                // _ports no longer had it — an open handle that neither the service nor the UI could
+                // reach, i.e. "the port can only be released by exiting the app". The flag makes the
+                // reopen refuse to happen.
+                portInstance.RequestTeardown();
 
                 // Unsubscribe from events first to prevent callbacks during disposal
                 try
@@ -365,19 +414,42 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
 
     private async Task TryReconnectAsync(string portName)
     {
-        if (_ports.TryGetValue(portName, out var port))
+        if (!_ports.TryGetValue(portName, out var port))
         {
-            try
+            // Closed while the reconnect was waiting out its interval/delay.
+            return;
+        }
+
+        try
+        {
+            _logger.LogInformation("Attempting to reconnect {PortName}", portName);
+
+            if (!await port.ReconnectAsync())
             {
-                _logger.LogInformation("Attempting to reconnect {PortName}", portName);
-                await port.ReconnectAsync();
-                RaisePortStateChanged(portName, ConnectionState.Error, ConnectionState.Connected);
-                _logger.LogInformation("Port {PortName} reconnected successfully", portName);
+                // The port was torn down while the reconnect was in flight (a user close, or app
+                // shutdown). Reopening it here is what produced the untracked open handle, so the
+                // reconnect now gives up instead.
+                _logger.LogInformation(
+                    "Reconnect of {PortName} was abandoned because the port was closed", portName);
+                return;
             }
-            catch (Exception ex)
+
+            // Second window, between the reopen and this line: the close may have won again. The
+            // handle itself is already closed (the close path took it back); this only keeps us
+            // from announcing "Connected" for a port that is gone.
+            if (!_ports.TryGetValue(portName, out var current) || !ReferenceEquals(current, port))
             {
-                _logger.LogError(ex, "Failed to reconnect {PortName}", portName);
+                _logger.LogInformation(
+                    "Port {PortName} was closed during the reconnect; dropping the reconnect result", portName);
+                return;
             }
+
+            RaisePortStateChanged(portName, ConnectionState.Error, ConnectionState.Connected);
+            _logger.LogInformation("Port {PortName} reconnected successfully", portName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to reconnect {PortName}", portName);
         }
     }
 
@@ -476,8 +548,9 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         try
         {
             // Stop in-flight sends first, then close: the other order lets a queued write land on a
-            // half-disposed port.
-            portInstance.BeginShutdown();
+            // half-disposed port. RequestTeardown also makes a concurrent OpenAsync/ReconnectAsync
+            // refuse to publish a handle after this point.
+            portInstance.RequestTeardown();
             portInstance.Dispose();
         }
         catch (Exception ex)
@@ -497,6 +570,21 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         private readonly IDataValidationService? _dataValidationService;
         private readonly SerialPortService _parentService;
         private volatile bool _isClosing = false; // Flag to prevent DataReceived during close
+
+        // Serializes every transition of _serialPort (publish while opening, take while closing or
+        // disposing) together with _teardownRequested. Written on the open/close threads only, never
+        // on the read path, so it costs nothing under load.
+        private readonly object _lifecycleLock = new();
+
+        // Set once when the *owner* tears this instance down: a user close, app shutdown, or the
+        // duplicate-instance discard in OpenPortAsync. Purely instance-internal closes (the
+        // auto-reconnect's own close) deliberately do not set it.
+        //
+        // Without it, a reconnect that was between its 500 ms delay and its reopen would resurrect a
+        // port that had just been closed: the handle came back open while _ports (and the UI) no
+        // longer knew about it, so nothing could close it again — the user had to exit the app to
+        // release COMx. See SerialPortService.ClosePortAsync.
+        private volatile bool _teardownRequested;
 
         // Cancels writes that are already waiting on / inside a send when the port is closing.
         // Null while the port is not open, so a send on a closed port fails fast with
@@ -540,6 +628,15 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         {
             return Task.Run(() =>
             {
+                // A torn-down instance must never open a port again. This is what makes a user close
+                // win over the auto-reconnect (or a baud-rate switch) that is already in flight.
+                if (_teardownRequested)
+                {
+                    _logger.LogInformation(
+                        "Refusing to open {PortName}: the port has already been closed", Config.PortName);
+                    return false;
+                }
+
                 // Reset closing flag - ensures clean state for reopen after previous close
                 _isClosing = false;
 
@@ -638,10 +735,41 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
                         _logger.LogWarning(ex, "Failed to discard buffers after opening port {PortName}", Config.PortName);
                     }
                     
-                    // Only assign to field after successful open
-                    _serialPort = port;
-                    Statistics.ConnectedAt = DateTime.Now;
-                    return true;
+                    // Publish only under the lifecycle lock, and only if no teardown was requested in
+                    // the meantime. A bare assignment here could land *after* ClosePortAsync had
+                    // already looked at _serialPort (and seen null), which left an open handle that
+                    // nothing tracked — the "ports leak until the app exits" bug.
+                    lock (_lifecycleLock)
+                    {
+                        if (!_teardownRequested)
+                        {
+                            _serialPort = port;
+                            Statistics.ConnectedAt = DateTime.Now;
+                            return true;
+                        }
+                    }
+
+                    // Rejected: we own this handle now, so it is ours to release.
+                    _logger.LogInformation(
+                        "Port {PortName} was closed while it was opening; discarding the new handle",
+                        Config.PortName);
+                    try
+                    {
+                        port.DataReceived -= SerialPort_DataReceived;
+                        port.ErrorReceived -= SerialPort_ErrorReceived;
+                        if (port.IsOpen)
+                        {
+                            port.Close();
+                        }
+                        port.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error discarding the handle opened for closed port {PortName}",
+                            Config.PortName);
+                    }
+
+                    return false;
                 }
                 catch (Exception ex)
                 {
@@ -692,6 +820,29 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
             Interlocked.Exchange(ref _writeCts, null)?.Cancel();
         }
 
+        /// <summary>
+        /// Marks this instance as closed for good: no <see cref="OpenAsync"/> or
+        /// <see cref="ReconnectAsync"/> will publish a handle afterwards.
+        /// </summary>
+        /// <remarks>
+        /// Called by the owner (<see cref="SerialPortService"/>) on a user close, app shutdown and
+        /// the duplicate-instance discard. Instance-internal closes — the reconnect's own
+        /// <see cref="CloseAsync"/> — do not call it, because those are followed by a deliberate
+        /// reopen.
+        /// </remarks>
+        public void RequestTeardown()
+        {
+            // Under the lock so it is ordered against the publish step of a concurrent OpenAsync:
+            // either the publish sees the flag and discards its handle, or it publishes first and
+            // the close that follows this call takes the handle back.
+            lock (_lifecycleLock)
+            {
+                _teardownRequested = true;
+            }
+
+            BeginShutdown();
+        }
+
         public Task CloseAsync()
         {
             // Runs on a pool thread: Close() can block on a wedged driver, and callers await this from
@@ -703,14 +854,18 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         {
             BeginShutdown();
 
-            if (_serialPort == null)
+            SerialPort? port;
+            lock (_lifecycleLock)
+            {
+                port = _serialPort;
+                _serialPort = null;
+            }
+
+            if (port == null)
             {
                 _logger.LogDebug("CloseCore called but _serialPort is already null");
                 return;
             }
-
-            var port = _serialPort;
-            _serialPort = null;
 
             try
             {
@@ -794,12 +949,28 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
             }
         }
 
-        public async Task ReconnectAsync()
+        /// <summary>
+        /// Closes and reopens the port.
+        /// </summary>
+        /// <returns>
+        /// <c>true</c> when the port is open again; <c>false</c> when the reconnect was abandoned
+        /// because the port was closed (by the user or by app shutdown) while it was in flight.
+        /// </returns>
+        public async Task<bool> ReconnectAsync()
         {
             await CloseAsync();
             await Task.Delay(500); // Wait longer for OS to release port resources
+
+            // The 500 ms above is a wide-open window for a user close. Reopening past it is what
+            // produced an open SerialPort that no longer appeared in _ports or in the UI. OpenAsync
+            // checks the flag again, so this is belt-and-braces rather than the only guard.
+            if (_teardownRequested)
+            {
+                return false;
+            }
+
             _isClosing = false; // Reset closing flag for reconnection
-            await OpenAsync();
+            return await OpenAsync();
         }
 
         public async Task SendDataAsync(byte[] data)
@@ -1001,11 +1172,21 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         {
             try
             {
-                if (_serialPort != null)
+                // Dispose is the last stop for this instance, so it also shuts the door: an
+                // OpenAsync still in flight must not publish a handle onto a disposed instance —
+                // that handle would be an open port nothing can reach. The flag is set and the
+                // handle taken under the lock; the (potentially blocking) close itself runs
+                // outside it.
+                SerialPort? port;
+                lock (_lifecycleLock)
                 {
-                    var port = _serialPort;
+                    _teardownRequested = true;
+                    port = _serialPort;
                     _serialPort = null;
+                }
 
+                if (port != null)
+                {
                     _logger.LogDebug("Disposing port {PortName}", Config.PortName);
 
                     // Unsubscribe from events
