@@ -362,15 +362,40 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // NOTE: there used to be a `Filters` collection here, plus an injected ILogFilterService that was
     // forwarded to PortViewModel and immediately discarded (`_ = logFilterService;`). Nothing bound to
     // it and nothing subscribed to ILogFilterService.FiltersChanged, so the whole chain was dead code
-    // that only obscured where filtering actually happens (it is the SearchText/GetOrCreateSearchRegex
+    // that only obscured where filtering actually happens (it is the SearchText/GetOrCreateSearchMatcher
     // path in FlushPendingLogBatches and FilterLogs). The service itself is still registered in DI for
     // a future rule-based filter UI; wiring it up is an explicit requirement, not an accident.
 
     [ObservableProperty]
     private ObservableCollection<string> _recentSearchTexts = new();
 
+    /// <summary>Whether the recent-search panel has anything to show.</summary>
+    public bool HasRecentSearches => RecentSearchTexts.Count > 0;
+
+    /// <summary>
+    /// Raw text of the search box. Typing only updates this; nothing is filtered until the query is
+    /// committed (Enter / 搜索 button), so a half-typed pattern never triggers the O(n) rebuild that
+    /// RequestFilterLogs performs.
+    /// </summary>
+    [ObservableProperty]
+    private string _searchDraft = string.Empty;
+
+    partial void OnSearchDraftChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasSearchDraft));
+        OnPropertyChanged(nameof(CanClearSearch));
+    }
+
+    public bool HasSearchDraft => !string.IsNullOrEmpty(SearchDraft);
+
     private string _searchText = string.Empty;
 
+    /// <summary>
+    /// The committed query, and the ONLY input to filtering: <see cref="FilterLogs"/> rebuilds from
+    /// it and <see cref="FlushPendingLogBatches"/> decides from it whether a newly arriving line
+    /// belongs on screen. Keeping it separate from <see cref="SearchDraft"/> is what stops
+    /// uncommitted keystrokes from filtering live data.
+    /// </summary>
     public string SearchText
     {
         get => _searchText;
@@ -378,11 +403,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref _searchText, value))
             {
-                // Validate regex pattern
+                // Validate regex pattern (text mode is always valid)
                 ValidateSearchPattern();
 
                 // Update clear button visibility
                 OnPropertyChanged(nameof(HasSearchText));
+                OnPropertyChanged(nameof(CanClearSearch));
 
                 // Debounce filter updates to reduce UI thrashing
                 RequestFilterLogs();
@@ -394,10 +420,79 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// Gets whether there is search text (for clear button visibility)
     /// </summary>
     public bool HasSearchText => !string.IsNullOrEmpty(SearchText);
+
+    /// <summary>Clearing is offered while the box has text OR a query is still applied.</summary>
+    public bool CanClearSearch => HasSearchDraft || HasSearchText;
+
+    /// <summary>Placeholder that follows the active search mode.</summary>
+    public string SearchPlaceholder => IsRegexSearch ? "输入正则表达式…" : "输入关键字…";
+
+    /// <summary>
+    /// Commits the draft as the active query (Enter key / 搜索 button) and records it in history.
+    /// </summary>
+    /// <remarks>
+    /// Assigning <see cref="SearchText"/> already validates and arms the debounced rebuild, so this
+    /// deliberately does not call FilterLogs itself — doing that on top of the setter is exactly how
+    /// one keystroke used to trigger several full rebuilds.
+    /// </remarks>
+    [RelayCommand]
+    private void ExecuteSearch()
+    {
+        var query = SearchDraft?.Trim() ?? string.Empty;
+
+        // Reflect the trimmed value back so the box shows exactly what is applied.
+        if (!string.Equals(SearchDraft, query, StringComparison.Ordinal))
+        {
+            SearchDraft = query;
+        }
+
+        SearchText = query;
+
+        if (!string.IsNullOrEmpty(query))
+        {
+            AddToRecentSearches(query);
+        }
+    }
+
+    /// <summary>Clears the box and drops the applied query, restoring the full log list.</summary>
+    [RelayCommand]
+    private void ClearSearch()
+    {
+        SearchDraft = string.Empty;
+        SearchText = string.Empty;
+    }
+
+    /// <summary>
+    /// Re-runs a query picked from the history panel.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does not re-record the query: the history list is being browsed at that moment,
+    /// and reordering it under the pointer is both surprising and a needless settings write.
+    /// </remarks>
+    [RelayCommand]
+    private void ApplyRecentSearch(string? search)
+    {
+        if (string.IsNullOrWhiteSpace(search))
+        {
+            return;
+        }
+
+        SearchDraft = search;
+        SearchText = search;
+    }
+
+    /// <summary>Empties the history list; the confirmation dialog lives in the view.</summary>
+    [RelayCommand]
+    private void ClearSearchHistory() => ClearRecentSearches();
     
     /// <summary>
-    /// Add a search text to recent history
+    /// Add a search text to recent history.
     /// </summary>
+    /// <remarks>
+    /// Called from the commit path only (<see cref="ExecuteSearch"/>). It used to also be driven from
+    /// the view's LostFocus handler, which is why the window needed a pair of "did I already save
+    /// this" fields to avoid recording the same query twice.
+    /// </remarks>
     public void AddToRecentSearches(string searchText)
     {
         _logger.LogInformation("AddToRecentSearches called with: '{SearchText}'", searchText);
@@ -508,13 +603,86 @@ public partial class MainViewModel : ObservableObject, IDisposable
     
     private System.Threading.Timer? _filterDebounceTimer;
 
-    // Compiled-regex cache for the live search filter. FlushPendingLogBatches runs ~20x/sec
-    // while a search is active and FilterLogs runs on every debounced keystroke; both must
-    // reuse the same compiled instance instead of paying milliseconds of RegexOptions.Compiled
-    // codegen on the UI thread each time. Only touched on the UI thread (SearchText setter,
-    // FilterLogs, flush timer), so no synchronization is needed.
-    private string? _cachedSearchRegexPattern;
-    private Regex? _cachedSearchRegex;
+    // Cache for the search matcher. FlushPendingLogBatches runs ~20x/sec while a search is active
+    // and FilterLogs runs on every committed query; both must reuse the same instance instead of
+    // paying the RegexOptions.Compiled codegen cost on the UI thread each time. Keyed by
+    // (query, mode, case) so flipping a switch can never hand back a stale matcher. Only touched on
+    // the UI thread (SearchText setter, FilterLogs, flush timer), so no synchronization is needed.
+    private string? _cachedSearchMatcherKey;
+    private SearchMatcher? _cachedSearchMatcher;
+
+    /// <summary>Search mode: <c>false</c> = literal text, <c>true</c> = regular expression. Persisted.</summary>
+    [ObservableProperty]
+    private bool _isRegexSearch = false;
+
+    partial void OnIsRegexSearchChanged(bool value)
+    {
+        PersistSearchOption(SearchUseRegexSettingKey, value ? 1 : 0);
+        OnPropertyChanged(nameof(SearchPlaceholder));
+        ValidateSearchPattern();
+        RequestFilterLogs();
+    }
+
+    /// <summary>Whether the query is matched case-sensitively. Persisted.</summary>
+    [ObservableProperty]
+    private bool _isCaseSensitiveSearch = false;
+
+    partial void OnIsCaseSensitiveSearchChanged(bool value)
+    {
+        PersistSearchOption(SearchCaseSensitiveSettingKey, value ? 1 : 0);
+        ValidateSearchPattern();
+        RequestFilterLogs();
+    }
+
+    private const string SearchUseRegexSettingKey = "SearchUseRegex";
+    private const string SearchCaseSensitiveSettingKey = "SearchCaseSensitive";
+
+    /// <summary>Set while the persisted options are read at startup, so the read is not written back.</summary>
+    private bool _skipSearchOptionPersistence = false;
+
+    private void PersistSearchOption(string key, int value)
+    {
+        if (_skipSearchOptionPersistence)
+        {
+            return;
+        }
+
+        _ = SaveSearchOptionAsync(key, value);
+    }
+
+    private async Task SaveSearchOptionAsync(string key, int value)
+    {
+        try
+        {
+            await _settingsService.SaveSettingAsync(key, value);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to save search option {Key}", key);
+        }
+    }
+
+    /// <summary>
+    /// Reads the persisted search mode / case-sensitivity flags. The write-back is suppressed so a
+    /// startup read is not mistaken for a user toggle.
+    /// </summary>
+    private async Task LoadSearchOptionsAsync()
+    {
+        try
+        {
+            _skipSearchOptionPersistence = true;
+            IsRegexSearch = await _settingsService.LoadSettingAsync(SearchUseRegexSettingKey, 0) == 1;
+            IsCaseSensitiveSearch = await _settingsService.LoadSettingAsync(SearchCaseSensitiveSettingKey, 0) == 1;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load search options");
+        }
+        finally
+        {
+            _skipSearchOptionPersistence = false;
+        }
+    }
 
     [ObservableProperty]
     private bool _isRegexValid = true;
@@ -529,9 +697,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>Match count for the status bar; empty when nothing is being filtered.</summary>
     public string MatchCountDisplay => MatchCount > 0 ? $"匹配 {MatchCount} 条" : string.Empty;
 
+    /// <summary>
+    /// Parses the committed query when it is a regex. Text mode is always valid and therefore never
+    /// produces an error message, whatever characters the query contains.
+    /// </summary>
     private void ValidateSearchPattern()
     {
-        if (string.IsNullOrEmpty(SearchText))
+        if (string.IsNullOrEmpty(SearchText) || !IsRegexSearch)
         {
             IsRegexValid = true;
             RegexErrorMessage = string.Empty;
@@ -540,17 +712,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            // Validation only parses the pattern; a non-compiled instance is cheap and the
-            // compiled version is built once (and cached) by GetOrCreateSearchRegex when the
-            // pattern is actually used for filtering.
-            _ = new Regex(SearchText, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
+            // Validation only parses the pattern; the compiled instance is built once (and cached)
+            // by GetOrCreateSearchMatcher when the pattern is actually used for filtering. The
+            // options do not affect whether a pattern parses, so a default instance is enough.
+            _ = new Regex(SearchText, RegexOptions.None, TimeSpan.FromMilliseconds(100));
             IsRegexValid = true;
             RegexErrorMessage = string.Empty;
         }
         catch (ArgumentException ex)
         {
             IsRegexValid = false;
-            RegexErrorMessage = $"Invalid regex: {ex.Message}";
+            RegexErrorMessage = $"正则表达式无效：{ex.Message}";
             _logger.LogWarning(ex, "Invalid regex pattern: {Pattern}", SearchText);
         }
     }
@@ -1167,6 +1339,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // lookups instead of LINQ scans. OpenPorts itself is the source of truth for the UI.
         OpenPorts.CollectionChanged += OnOpenPortsChanged;
 
+        // The history panel's empty state and its "清空历史" affordance follow the collection.
+        RecentSearchTexts.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasRecentSearches));
+
         // Subscribe to events
         _serialPortService.DataReceived += OnDataReceived;
         _serialPortService.PortStateChanged += OnPortStateChanged;
@@ -1223,6 +1398,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             RefreshTuningAvailability();
         }
+
+        // Load the persisted search mode / case-sensitivity switches first, so the history below is
+        // restored against an already-correct UI state.
+        await LoadSearchOptionsAsync();
 
         // Load recent search texts
         await LoadRecentSearchesAsync();
@@ -1580,11 +1759,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     /// <remarks>
     /// This is the ONLY entry point callers outside this class should use. FilterLogs is an O(n) full
-    /// rebuild of DisplayLogs (two HashSet passes plus the regex sweep over AllLogs, ~2000 entries), and
-    /// it used to be invoked synchronously from three separate UI handlers — the search dropdown
+    /// rebuild of DisplayLogs (two HashSet passes plus the matcher sweep over AllLogs, ~2000 entries),
+    /// and it used to be invoked synchronously from three separate UI handlers — the search dropdown
     /// selection, the dropdown closing, and the Enter key — each of which had already assigned
     /// <see cref="SearchText"/> and therefore already armed the debounce. The result was up to four
-    /// full rebuilds per keystroke or selection, which is exactly what the debounce exists to prevent.
+    /// full rebuilds per keystroke or selection.
+    ///
+    /// Typing no longer reaches this method at all (it only writes <see cref="SearchDraft"/>); the
+    /// debounce is kept because <see cref="SearchText"/> can also change twice in a row — switching a
+    /// search-mode toggle re-validates and re-arms it immediately after a commit.
     /// </remarks>
     public void RequestFilterLogs()
     {
@@ -1597,8 +1780,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         if (timer == null)
         {
             // Created once and re-armed with Change(). Creating (and disposing) a Timer per call meant a
-            // fresh timer — and its internal wait-handle bookkeeping — on every keystroke in the search
-            // box.
+            // fresh timer — and its internal wait-handle bookkeeping — on every call.
             timer = new System.Threading.Timer(
                 _ => _dispatcherQueue.TryEnqueue(FilterLogs),
                 null,
@@ -1629,36 +1811,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
             filtered = AllLogs.ToList();
             MatchCount = 0;
         }
-        else if (!IsRegexValid)
-        {
-            // If regex is invalid, show no results
-            filtered = new List<LogEntry>();
-            MatchCount = 0;
-        }
         else
         {
-            try
-            {
-                var regex = GetOrCreateSearchRegex(SearchText, IsRegexValid);
-                if (regex != null)
-                {
-                    filtered = AllLogs.Where(log =>
-                        regex.IsMatch(log.Content) ||
-                        regex.IsMatch(log.PortName))
-                        .ToList();
-                }
-                else
-                {
-                    filtered = new List<LogEntry>();
-                }
+            var matcher = GetOrCreateSearchMatcher(SearchText, IsRegexSearch, IsCaseSensitiveSearch);
 
-                MatchCount = filtered.Count;
-            }
-            catch (Exception ex)
+            if (!matcher.IsValid)
             {
-                _logger.LogError(ex, "Error applying regex filter: {Pattern}", SearchText);
+                // Only reachable in regex mode, with a pattern that does not parse. Show nothing
+                // rather than silently ignoring the query — the inline error beside the box says why.
                 filtered = new List<LogEntry>();
                 MatchCount = 0;
+            }
+            else
+            {
+                filtered = AllLogs
+                    .Where(log => matcher.IsMatch(log.Content) || matcher.IsMatch(log.PortName))
+                    .ToList();
+                MatchCount = filtered.Count;
             }
         }
 
@@ -3018,8 +3187,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
             var updateStartTime = DateTime.Now;
             var openPortMap = _portsByName;
             var searchTextSnapshot = SearchText;
-            var isRegexValidSnapshot = IsRegexValid;
-            var filterRegex = GetOrCreateSearchRegex(searchTextSnapshot, isRegexValidSnapshot);
+            var searchMatcher = string.IsNullOrEmpty(searchTextSnapshot)
+                ? null
+                : GetOrCreateSearchMatcher(searchTextSnapshot, IsRegexSearch, IsCaseSensitiveSearch);
 
             var estimatedLogCount = batchesToFlush.Sum(batch => batch.Logs.Count);
             var allLogsToAdd = new List<LogEntry>(estimatedLogCount);
@@ -3036,18 +3206,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 allLogsToAdd.AddRange(pendingBatch.Logs);
                 _pendingStatsPorts.Add(pendingBatch.PortName);
 
-                if (string.IsNullOrEmpty(searchTextSnapshot))
+                if (searchMatcher == null)
                 {
                     displayLogsToAdd.AddRange(pendingBatch.Logs);
                 }
-                else if (filterRegex != null)
+                else if (searchMatcher.IsValid)
                 {
                     // The port name is constant for the whole batch — match it once instead of
-                    // running the regex over it for every entry.
-                    var portNameMatches = MatchesSearch(pendingBatch.PortName, filterRegex);
+                    // running the matcher over it for every entry.
+                    var portNameMatches = searchMatcher.IsMatch(pendingBatch.PortName);
                     foreach (var logEntry in pendingBatch.Logs)
                     {
-                        if (portNameMatches || MatchesSearch(logEntry.Content, filterRegex))
+                        if (portNameMatches || searchMatcher.IsMatch(logEntry.Content))
                         {
                             displayLogsToAdd.Add(logEntry);
                         }
@@ -3074,9 +3244,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             TrimDisplayLogs();
             TrimLogCollection(AllLogs, AllLogsTrimThreshold, MaxDisplayLogs * 2, nameof(AllLogs));
 
-            MatchCount = !string.IsNullOrEmpty(searchTextSnapshot) && isRegexValidSnapshot
-                ? DisplayLogs.Count
-                : 0;
+            MatchCount = searchMatcher is { IsValid: true } ? DisplayLogs.Count : 0;
 
             // Refresh port stats at most every StatsRefreshIntervalMs; the exception is the
             // final flush of a stream (queue drained), where we refresh so the counters
@@ -3129,55 +3297,122 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// Returns the compiled regex for <paramref name="searchText"/>, rebuilding it only when the
-    /// pattern actually changes. Called from the 50ms flush loop and from FilterLogs — both on
-    /// the UI thread, which is why recompiling per call (milliseconds with Compiled) was a
-    /// direct hit on UI responsiveness while a search is active.
+    /// Returns the cached matcher for the given query, rebuilding it only when the query, the mode or
+    /// the case-sensitivity flag changes. Called from the 50ms flush loop and from FilterLogs — both
+    /// on the UI thread, which is why recompiling per call (milliseconds with Compiled) was a direct
+    /// hit on UI responsiveness while a search is active.
     /// </summary>
-    private Regex? GetOrCreateSearchRegex(string searchText, bool isRegexValid)
+    private SearchMatcher GetOrCreateSearchMatcher(string query, bool useRegex, bool caseSensitive)
     {
-        if (string.IsNullOrEmpty(searchText) || !isRegexValid)
+        var cacheKey = $"{useRegex}|{caseSensitive}|{query}";
+
+        if (_cachedSearchMatcher != null &&
+            string.Equals(_cachedSearchMatcherKey, cacheKey, StringComparison.Ordinal))
         {
-            return null;
+            return _cachedSearchMatcher;
         }
 
-        if (_cachedSearchRegex != null &&
-            string.Equals(_cachedSearchRegexPattern, searchText, StringComparison.Ordinal))
-        {
-            return _cachedSearchRegex;
-        }
-
-        try
-        {
-            _cachedSearchRegex = new Regex(
-                searchText,
-                RegexOptions.IgnoreCase | RegexOptions.Compiled,
-                TimeSpan.FromMilliseconds(100));
-            _cachedSearchRegexPattern = searchText;
-            return _cachedSearchRegex;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to create search regex for live log filtering: Pattern={Pattern}", searchText);
-            return null;
-        }
+        _cachedSearchMatcher = SearchMatcher.Create(query, useRegex, caseSensitive, _logger);
+        _cachedSearchMatcherKey = cacheKey;
+        return _cachedSearchMatcher;
     }
 
-    private bool MatchesSearch(string text, Regex filterRegex)
+    /// <summary>
+    /// One predicate for both search modes. <see cref="FilterLogs"/> and
+    /// <see cref="FlushPendingLogBatches"/> share it so the already-displayed set and the
+    /// newly-arriving set can never disagree on how a query is interpreted.
+    /// </summary>
+    private sealed class SearchMatcher
     {
-        try
+        private readonly ILogger _logger;
+        private readonly string _query;
+        private readonly bool _useRegex;
+        private readonly StringComparison _comparison;
+        private readonly Regex? _regex;
+
+        private SearchMatcher(
+            string query,
+            bool useRegex,
+            bool caseSensitive,
+            Regex? regex,
+            ILogger logger,
+            bool isValid)
         {
-            return filterRegex.IsMatch(text);
+            _query = query;
+            _useRegex = useRegex;
+            _comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+            _regex = regex;
+            _logger = logger;
+            IsValid = isValid;
         }
-        catch (RegexMatchTimeoutException ex)
+
+        /// <summary>False only for a regex that failed to parse; text mode is always valid.</summary>
+        public bool IsValid { get; }
+
+        public static SearchMatcher Create(string? query, bool useRegex, bool caseSensitive, ILogger logger)
         {
-            _logger.LogWarning(ex, "Regex match timeout during live log filtering");
-            return false;
+            query ??= string.Empty;
+
+            // An empty query is not a filter at all — callers check that separately and never ask
+            // this instance to match. Text mode needs no compilation whatsoever.
+            if (query.Length == 0 || !useRegex)
+            {
+                return new SearchMatcher(query, useRegex, caseSensitive, null, logger, isValid: true);
+            }
+
+            try
+            {
+                var options = RegexOptions.Compiled;
+                if (!caseSensitive)
+                {
+                    options |= RegexOptions.IgnoreCase;
+                }
+
+                var regex = new Regex(query, options, TimeSpan.FromMilliseconds(100));
+                return new SearchMatcher(query, useRegex, caseSensitive, regex, logger, isValid: true);
+            }
+            catch (ArgumentException ex)
+            {
+                logger.LogWarning(ex, "Invalid regex pattern: {Pattern}", query);
+                return new SearchMatcher(query, useRegex, caseSensitive, null, logger, isValid: false);
+            }
         }
-        catch (Exception ex)
+
+        /// <summary>
+        /// Literal <c>Contains</c> in text mode, regex match in regex mode. A match timeout degrades
+        /// to "no match" instead of throwing into the 50ms flush loop.
+        /// </summary>
+        public bool IsMatch(string? text)
         {
-            _logger.LogDebug(ex, "Regex match failed during live log filtering");
-            return false;
+            if (text == null)
+            {
+                return false;
+            }
+
+            if (!_useRegex)
+            {
+                return _query.Length == 0 || text.Contains(_query, _comparison);
+            }
+
+            if (_regex == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                return _regex.IsMatch(text);
+            }
+            catch (RegexMatchTimeoutException ex)
+            {
+                _logger.LogWarning(ex, "Regex match timeout for pattern: {Pattern}", _query);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Regex match failed for pattern: {Pattern}", _query);
+                return false;
+            }
         }
     }
 

@@ -454,7 +454,9 @@
                         <!-- Row 1: search + log actions -->
                         <Grid Grid.Row="0">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" MinWidth="220" />
+                                <!-- Wide enough for the text box plus 搜索 / Aa / .* / 历史 / 清空 so a
+                                     narrow window shrinks the box, never the buttons. -->
+                                <ColumnDefinition Width="*" MinWidth="300" />
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
@@ -464,54 +466,120 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
 
-                                <ComboBox x:Name="SearchBox"
-                                          Grid.Column="0"
-                                          PlaceholderText="正则表达式搜索…"
-                                          IsEditable="True"
-                                          Text="{x:Bind ViewModel.SearchText, Mode=TwoWay}"
-                                          ItemsSource="{x:Bind ViewModel.RecentSearchTexts, Mode=OneWay}"
-                                          SelectionChanged="SearchBox_SelectionChanged"
-                                          DropDownClosed="SearchBox_DropDownClosed"
-                                          LostFocus="SearchBox_LostFocus"
-                                          KeyDown="SearchBox_KeyDown"
-                                          HorizontalAlignment="Stretch"
-                                          MaxDropDownHeight="220">
-                                    <ComboBox.ItemContainerStyle>
-                                        <Style TargetType="ComboBoxItem">
-                                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                            <Setter Property="MinWidth" Value="300" />
-                                        </Style>
-                                    </ComboBox.ItemContainerStyle>
-                                    <ComboBox.ItemTemplate>
-                                        <DataTemplate x:DataType="x:String">
-                                            <Grid Margin="0,3" HorizontalAlignment="Stretch">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Grid.Column="0"
-                                                          Text="{x:Bind}"
-                                                          VerticalAlignment="Center"
-                                                          Margin="0,0,8,0"
-                                                          TextWrapping="NoWrap"
-                                                          TextTrimming="CharacterEllipsis"
-                                                          ToolTipService.ToolTip="{x:Bind}" />
-                                                <Button Grid.Column="1"
-                                                       Style="{StaticResource AppToolbarIconButtonStyle}"
-                                                       Content="&#xE74D;"
-                                                       FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                                       FontSize="12"
-                                                       Click="DeleteSearchHistory_Click"
-                                                       Tag="{x:Bind}"
-                                                       ToolTipService.ToolTip="删除此历史记录" />
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ComboBox.ItemTemplate>
-                                </ComboBox>
+                                <!-- The box only carries the draft. Nothing filters until the query is
+                                     committed, so a half-typed pattern (or a stray "(" ) can neither
+                                     blank the log out nor rebuild it on every keystroke.
+                                     UpdateSourceTrigger=PropertyChanged keeps the draft one step ahead
+                                     of the Enter key / 搜索 button that commits it. -->
+                                <TextBox x:Name="SearchBox"
+                                         Grid.Column="0"
+                                         MinWidth="80"
+                                         MinHeight="{StaticResource AppControlHeightCompact}"
+                                         Padding="8,0"
+                                         VerticalContentAlignment="Center"
+                                         PlaceholderText="{x:Bind ViewModel.SearchPlaceholder, Mode=OneWay}"
+                                         Text="{x:Bind ViewModel.SearchDraft, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         KeyDown="SearchBox_KeyDown"
+                                         HorizontalAlignment="Stretch" />
 
                                 <Button Grid.Column="1"
+                                        x:Name="ExecuteSearchButton"
+                                        Style="{StaticResource AccentButtonStyle}"
+                                        MinHeight="{StaticResource AppControlHeightCompact}"
+                                        MinWidth="52"
+                                        Padding="12,0"
+                                        Margin="6,0,0,0"
+                                        Content="搜索"
+                                        Click="ExecuteSearch_Click"
+                                        ToolTipService.ToolTip="执行搜索 (Enter)" />
+
+                                <!-- Mode switches. IsChecked is bool? while the ViewModel exposes bool, so
+                                     these use {Binding} (which converts) instead of {x:Bind}. -->
+                                <ToggleButton Grid.Column="2"
+                                              x:Name="CaseSensitiveToggle"
+                                              Style="{StaticResource AppToolbarToggleButtonStyle}"
+                                              Content="Aa"
+                                              Margin="6,0,0,0"
+                                              IsChecked="{Binding IsCaseSensitiveSearch, Mode=TwoWay}"
+                                              ToolTipService.ToolTip="区分大小写" />
+
+                                <ToggleButton Grid.Column="3"
+                                              x:Name="RegexToggle"
+                                              Style="{StaticResource AppToolbarToggleButtonStyle}"
+                                              Content=".*"
+                                              Margin="4,0,0,0"
+                                              IsChecked="{Binding IsRegexSearch, Mode=TwoWay}"
+                                              ToolTipService.ToolTip="按正则表达式匹配" />
+
+                                <!-- History sits behind an explicit button: typing opens nothing. -->
+                                <Button Grid.Column="4"
+                                        x:Name="SearchHistoryButton"
+                                        Style="{StaticResource AppToolbarIconButtonStyle}"
+                                        Margin="6,0,0,0"
+                                        ToolTipService.ToolTip="搜索历史">
+                                    <FontIcon Glyph="&#xE81C;" FontSize="13" />
+                                    <Button.Flyout>
+                                        <Flyout x:Name="SearchHistoryFlyout" Placement="Bottom">
+                                            <StackPanel Width="300" Spacing="4">
+                                                <ListView x:Name="SearchHistoryList"
+                                                          ItemsSource="{x:Bind ViewModel.RecentSearchTexts, Mode=OneWay}"
+                                                          SelectionMode="None"
+                                                          MaxHeight="220">
+                                                    <!-- Stretch so each row's delete button sits at the
+                                                         right edge instead of hugging the text. -->
+                                                    <ListView.ItemContainerStyle>
+                                                        <Style TargetType="ListViewItem">
+                                                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                        </Style>
+                                                    </ListView.ItemContainerStyle>
+                                                    <ListView.ItemTemplate>
+                                                        <DataTemplate x:DataType="x:String">
+                                                            <Grid Margin="0,2">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <Button Grid.Column="0"
+                                                                        Style="{StaticResource AppHistoryItemButtonStyle}"
+                                                                        Content="{x:Bind}"
+                                                                        Tag="{x:Bind}"
+                                                                        Click="ApplyRecentSearch_Click"
+                                                                        ToolTipService.ToolTip="{x:Bind}" />
+                                                                <Button Grid.Column="1"
+                                                                        Style="{StaticResource AppToolbarIconButtonStyle}"
+                                                                        Content="&#xE74D;"
+                                                                        FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                                        FontSize="12"
+                                                                        Click="DeleteSearchHistory_Click"
+                                                                        Tag="{x:Bind}"
+                                                                        ToolTipService.ToolTip="删除此历史记录" />
+                                                            </Grid>
+                                                        </DataTemplate>
+                                                    </ListView.ItemTemplate>
+                                                </ListView>
+                                                <TextBlock Text="暂无搜索历史"
+                                                           Foreground="{ThemeResource AppTextTertiaryBrush}"
+                                                           FontSize="{StaticResource AppFontSizeCaption}"
+                                                           HorizontalAlignment="Center"
+                                                           Margin="0,8"
+                                                           Visibility="{Binding HasRecentSearches, Converter={StaticResource InverseBoolToVisibilityConverter}}" />
+                                                <Border Style="{StaticResource AppVerticalDividerStyle}" />
+                                                <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                                        HorizontalAlignment="Stretch"
+                                                        Content="清空历史"
+                                                        Click="ClearSearchHistory_Click"
+                                                        IsEnabled="{Binding HasRecentSearches}" />
+                                            </StackPanel>
+                                        </Flyout>
+                                    </Button.Flyout>
+                                </Button>
+
+                                <Button Grid.Column="5"
                                         x:Name="ClearSearchTextButton"
                                         Style="{StaticResource AppToolbarIconButtonStyle}"
                                         Content="&#xE711;"
@@ -520,16 +588,7 @@
                                         Margin="4,0,0,0"
                                         Click="ClearSearchText_Click"
                                         ToolTipService.ToolTip="清空当前搜索"
-                                        Visibility="{Binding HasSearchText, Converter={StaticResource BoolToVisibilityConverter}}" />
-
-                                <Button Grid.Column="2"
-                                        Style="{StaticResource AppToolbarIconButtonStyle}"
-                                        Content="&#xE74D;"
-                                        FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                        FontSize="12"
-                                        Margin="4,0,0,0"
-                                        Click="ClearSearchHistory_Click"
-                                        ToolTipService.ToolTip="清空搜索历史" />
+                                        Visibility="{Binding CanClearSearch, Converter={StaticResource BoolToVisibilityConverter}}" />
                             </Grid>
 
                             <!-- Regex diagnostics sit next to the box they describe -->

@@ -89,7 +89,7 @@ There is **no automated test suite**. Verification is manual:
 
 - open several ports simultaneously (open/close/reopen, including with a wrong baud rate first),
 - send/receive at various baud rates, including hex mode,
-- exercise log filtering (plain text + regex) under a high-throughput stream,
+- exercise log filtering (plain text + regex) under a high-throughput stream. With the commit-based search this means: typing filters **nothing** until Enter / 搜索 (stream data while typing a pattern and watch the view stay put), 文本 mode — the default — matches `(` `[` `*` literally and never reports an error, flipping `.*` on makes the same query report 正则表达式无效：…, flipping `Aa` changes the match set, both switches survive a restart, the 历史 flyout only opens on a click, a committed query is what gets recorded there, and per-item delete plus 清空历史 (with confirmation) both work,
 - tuning is hidden by default: on a fresh profile the toolbar must show **no** Tuning row and 工具 → 启用 Tuning 功能 must start unticked. Tick it, select a `.bin` + descriptor, and broadcast across ≥2 ports; then untick it while the watch is running — the panel must disappear, the watch must stop, and re-ticking must bring the panel back and resume the watch (the `.bin` / JSON paths and the was-watching preference survive the untick),
 - appearance: switch 跟随系统 / 浅色 / 深色 from the 外观 menu and check legibility of the log rows, the channel legend, the baud-rate banner, the regex error, the title-bar caption buttons and the dialogs; then restart and confirm the choice survived. Do this with ≥2 ports open so the per-port colours are actually exercised,
 - shell: fold/unfold the rail, resize across the 900 px breakpoint, and maximise/restore to confirm content is not hidden under the caption buttons,
@@ -206,6 +206,7 @@ Views (XAML) ←→ ViewModels ←→ Services ←→ Hardware / Infrastructure
 - `_portsByName` is a **`ConcurrentDictionary`**, written on the UI thread from `OpenPorts.CollectionChanged` and read from each port's read thread in `GetPortColor` / `GetPortDisplayColor`. Keep it concurrent — a plain `Dictionary` here is a data race on the hottest path in the app.
 - **Every** log entry takes the same route: received lines are queued by `OnDataReceived`, and locally generated entries (TX, tuning summaries) go through `AddSentLog` → the same `_pendingLogBatches` queue → `FlushPendingLogBatches`. Never write to `AllLogs`/`DisplayLogs` directly: that bypasses the FIFO trim, the search filter, the batch window and the queued-count cap.
 - Serial chunks are reassembled **per port** before splitting: `PortLineAssembler` (a persistent `Decoder` + `StringBuilder`) carries UTF-8 sequences and partial lines across `DataReceived` events, and `ExtractCompleteLines` emits only terminator-delimited lines (`\n`, `\r`, `\r\n`), leaving a trailing `\r` buffered for the next chunk.
+- Search is split into a **draft and an applied query**: `SearchDraft` is bound to the box and filters nothing, `SearchText` is the committed query and is the only input to `FilterLogs()` and to the flush loop (both through `GetOrCreateSearchMatcher`). Committing is `ExecuteSearchCommand` (Enter / 搜索). Binding the box straight to `SearchText` would make uncommitted keystrokes filter live traffic, because `FlushPendingLogBatches` snapshots `SearchText` to decide whether a newly arrived line is displayed.
 - Re-filtering has exactly one entry point: `RequestFilterLogs()` (a 150 ms debounce on a reused `System.Threading.Timer`). `FilterLogs()` itself is private. Do not call a full rebuild synchronously from a UI handler — three of them used to, which cancelled out the debounce entirely.
 - Long-running background flows take `_shutdownCts.Token` (cancelled in `Dispose`) and marshal UI updates with `RunOnUiThread`. Do not pass an `async` lambda to `DispatcherQueue.TryEnqueue`: it is a de-facto `async void` whose exceptions land in the XAML unhandled-exception handler and whose continuations outlive the window.
 - The baud-rate scan is tracked per port in `_baudRateDetections` (a `ConcurrentDictionary<string, CancellationTokenSource>`, one entry per running scan, removed by the scan itself in its `finally`). It closes the port for its whole duration and reopens it at the end, entirely outside `SerialPortService`, so **every** close path (`ClosePortAsync`, `CloseAllPortsAsync`) calls `CancelBaudRateDetection(portName)` first and `ReopenPortWithBaudRateAsync` refuses to reopen a port that left `_portsByName`. Do not drop either half: without the cancellation the close is undone a moment later; without the reopen guard the port comes back as a handle nothing can reach.
@@ -272,12 +273,12 @@ The interface is a bench-instrument faceplate: graphite / paper neutrals, hairli
 | File | Owns |
 | --- | --- |
 | `Themes/Tokens.xaml` | Colour, typography and geometry tokens, **plus overrides of WinUI's own lightweight-styling keys** (`ApplicationPageBackgroundThemeBrush`, `LayerFillColor*`, `Card*`, `DividerStrokeColorDefaultBrush`, `TextFillColor*`, `Control*`, `TextControl*`, `ComboBox*`, `CheckBox*`, `MenuFlyout*`, `ToolTip*`, `ScrollBar*`, `ListViewItem*`, `ContentDialog*`, `ControlCornerRadius`, `OverlayCornerRadius`) |
-| `Themes/Controls.xaml` | The button family only — `AppButtonStyle` (the base), `AppToolbarButtonStyle`, `AppIconButtonStyle` (base), `AppToolbarIconButtonStyle`, `AccentButtonStyle` (overrides the framework key, so `ContentDialog` primary buttons match the toolbar) — plus `AppVerticalDividerStyle`. Nothing else is re-templated. |
+| `Themes/Controls.xaml` | The button family only — `AppButtonStyle` (the base), `AppToolbarButtonStyle`, `AppIconButtonStyle` (base), `AppToolbarIconButtonStyle`, `AppHistoryItemButtonStyle` (a search-history row), `AccentButtonStyle` (overrides the framework key, so `ContentDialog` primary buttons match the toolbar), `AppToolbarToggleButtonStyle` (the search mode switches; `Checked` fills with the accent) — plus `AppVerticalDividerStyle`. Nothing else is re-templated. |
 | `MainWindow.xaml` | Layout. **No colour literals** — only `{ThemeResource App*}` / `{StaticResource App*}` |
 
 Both dictionaries are merged in `App.xaml` **after** `XamlControlsResources`. A merged dictionary only wins if it is consulted after the framework's, so reordering them silently reverts the whole app to the stock palette with no error.
 
-**The override strategy is deliberate.** Re-templating a control whose template carries behaviour would mean re-implementing that behaviour: `ComboBox` backs the search box and is `IsEditable`, and `ScrollBar` / `ListViewItem` carry the virtualization contract. Those are themed through lightweight keys instead, which is why `Themes/Controls.xaml` is small. Anything *not* in the two tables above has no business defining a colour.
+**The override strategy is deliberate.** Re-templating a control whose template carries behaviour would mean re-implementing that behaviour: `ComboBox` backs the baud-rate and port pickers, and `ScrollBar` / `ListViewItem` carry the virtualization contract. Those are themed through lightweight keys instead, which is why `Themes/Controls.xaml` is small. Anything *not* in the two tables above has no business defining a colour.
 
 **High contrast is not an afterthought.** The `HighContrast` theme dictionary maps every token onto `SystemColor*`, and the port palette collapses to the system text colour there (contrast beats hue). A token added to Light and Dark must be added to HighContrast in the same edit.
 
@@ -357,12 +358,20 @@ _pendingLogBatches.Enqueue(new PendingLogBatch { PortName = portName, Logs = new
 // NOT: DisplayLogs.AddRange(...) from a background thread, and not one Add per entry either.
 ```
 
-### Regex filtering
+### Search matching (text + regex)
 
 ```csharp
-GetOrCreateSearchRegex(SearchText, IsRegexValid);   // cached compiled instance, rebuilt on pattern change
-Regex.IsMatch(text, pattern);                       // avoid: compiles on every call
+// Cached by (query, mode, case); rebuilt only when one of them changes. UI thread only.
+var matcher = GetOrCreateSearchMatcher(SearchText, IsRegexSearch, IsCaseSensitiveSearch);
+matcher.IsValid;              // false only for a regex that does not parse
+matcher.IsMatch(log.Content); // literal Contains in text mode, Regex.IsMatch in regex mode
+Regex.IsMatch(text, pattern); // avoid: compiles on every call and re-derives the mode by hand
 ```
+
+`FilterLogs()` (rebuild of what is on screen) and `FlushPendingLogBatches()` (newly arrived lines)
+must go through the same matcher — they are the "already displayed" and "just arrived" halves of one
+predicate, and two separate instances drift on mode/case. `IsValid == false` is only reachable in
+regex mode: text mode is always valid, which is what keeps a query like `(` from blanking the log.
 
 `ILogFilterService` holds a separate rule-based cache (`ShouldDisplay`, 100 ms timeout) but nothing
 calls it yet — see the Service Layer note.
@@ -379,7 +388,7 @@ File.AppendAllText(path, entry.ToString());        // never: blocks the UI threa
 
 ## Common Development Scenarios
 
-**New log filter type** — add the enum value in `Core/Enums/FilterType.cs`, handle it in `LogFilterService.MatchesFilter()` / `ShouldDisplay()`, add UI in the filter panel if needed, and keep any expensive operation cached. Note that the live search box is a *separate* mechanism (`MainViewModel.GetOrCreateSearchRegex` + `FlushPendingLogBatches`), so a new rule type in `LogFilterService` will not appear in the search box's behaviour until the service is actually wired up.
+**New log filter type** — add the enum value in `Core/Enums/FilterType.cs`, handle it in `LogFilterService.MatchesFilter()` / `ShouldDisplay()`, add UI in the filter panel if needed, and keep any expensive operation cached. Note that the live search box is a *separate* mechanism (`MainViewModel.GetOrCreateSearchMatcher` + `FlushPendingLogBatches`), so a new rule type in `LogFilterService` will not appear in the search box's behaviour until the service is actually wired up.
 
 **Baud-rate scoring** — the scoring lives in `BaudRateDetectorService.TestBaudRateAsync` (per-candidate listen window) and `CountValidDataBytes` (printable ratio, with a bonus for `_commonPatternRegex`). Thresholds are `PrintableCharThreshold` (0.7) and `MinDataBytesForValidation` (10). There is no `AnalyzeDataQuality` / `SuggestBaudRate` method — earlier revisions of this file referenced them and they never existed. Validate changes against real device data at multiple baud rates, including the cancel path (close the window mid-scan).
 
@@ -542,6 +551,7 @@ Each of these exists because a specific bug caused a crash or an error storm; re
 - **Clipboard failures are caught** (`Controls/LogListView.xaml.cs`, v2.1.1) — `Clipboard.SetContent` throws `COMException` whenever another process holds the clipboard open, which is routine. Unhandled it reached the XAML unhandled-exception handler and terminated the process, reachable by accident through a toolbar button and Ctrl+C. The failure now raises `CopyFailed` and becomes a status message.
 - **`LogListView` re-subscribes on `Loaded`** (`Controls/LogListView.xaml.cs`, v2.1.1) — the `ItemsSource` dependency property is not re-assigned across an unload/load cycle, so the property-changed callback does not run again and the `CollectionChanged` subscription (auto-scroll) stayed gone for the rest of the session.
 - **Filter re-entry has one entry point** (`MainViewModel.RequestFilterLogs`, v2.1.1) — the search dropdown selection, the dropdown closing and the Enter key each called the synchronous O(n) rebuild *on top of* the debounce their own `SearchText` assignment had already armed. `FilterLogs()` is private now; call `RequestFilterLogs()`.
+- **Search filters on commit only** (`MainViewModel.SearchDraft` / `SearchText`, v2.1.4) — the box writes `SearchDraft`; only `ExecuteSearchCommand` assigns `SearchText`. That single assignment is what re-filters, what the flush loop snapshots for newly arriving lines, and what records history. Merging the two back together restores "every keystroke rebuilds ~2000 rows" *and* lets live traffic be filtered by a pattern the user has not finished typing.
 - **`WaitForStableTuningFileAsync` reports instability** (`MainViewModel`, v2.1.1) — it returns `false` instead of falling through silently after the retry budget. Hashing a `.bin` that is still being written stored a baseline for content that no longer existed, which suppressed every later auto-send as "content unchanged".
 - **Hex input is parsed per group** (`MainViewModel.TryParseHexInput`, v2.1.1) — a global `Replace("0x", "")` corrupted any payload containing those characters (`A0x0B` → `A0B`). The prefix is per-group notation and is only stripped at the start of a group.
 - **`checked` arithmetic in the tuning builder** (`TuningProtocolService`, v2.1.1) — expression evaluation and checksum accumulation are `checked` and translate overflow into `TuningProtocolException`. An unchecked wrap in a length expression produces a header whose declared total does not match the bytes sent, which fails on the device rather than at build time.
@@ -580,7 +590,7 @@ Only the ones that change how you should reason about the code — `version.json
 - **Appearance switch** (v2.1.0) — 跟随系统 / 浅色 / 深色 from the 外观 menu, persisted as `AppTheme` and applied as `ElementTheme` on the window root. Required reading before touching anything visual: see "UI and Appearance".
 - **Channel trace + channel legend** (v2.1.0) — every log row carries a 3 px bar in its port's colour, and a legend strip above the log states the colour → port → byte-count mapping, so interleaved multi-port traffic stays attributable at a glance.
 - **Log pause toggle** — pauses UI appending without stopping reception; buffering continues while paused and batched updates resume on unpause. Anything touching the data-flow pipeline must respect this.
-- **Search history** (v1.5.0 / v1.6.2) — debounced persistence, per-item delete, clear-all with confirmation.
+- **Search** (v1.5.0 / v1.6.2, reworked v2.1.4) — 文本 / 正则 and 区分大小写 switches (both persisted as `SearchUseRegex` / `SearchCaseSensitive`), commit-based filtering (Enter / 搜索) rather than as-you-type, and history in a flyout behind an explicit 历史 button with per-item delete and a confirmed clear-all. Text mode is the default, so regex metacharacters are literal there and an invalid pattern can only come from regex mode.
 - **Baud-rate mismatch banner** — surfaced when detection confidence is high, with one-click correction.
 - **Tuning broadcast** — see the Tuning/TOTA section.
 - **Check for updates / auto-update** (v2.0.0) — "Help → Check for updates" for a manual check, plus a silent check a few seconds after the window is first activated. Finding a newer version opens a `ContentDialog` with the release notes and the release page. `ContentDialog` only has Primary / Secondary / Close slots, so the buttons are apportioned per scenario: installed + silent → "Download and install / Skip this version / Later"; installed + manual → "Download and install / Open download page / Close"; portable (cannot self-install) → "Open download page / Skip this version (silent only) / Later". Dialogs are built in code-behind following the `About_Click` pattern, with `XamlRoot = Content.XamlRoot` and a re-entrancy guard because WinUI 3 cannot show two `ContentDialog`s at once.

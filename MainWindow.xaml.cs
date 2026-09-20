@@ -36,13 +36,6 @@ public sealed partial class MainWindow : Window
 
     public MainViewModel ViewModel { get; }
 
-    // Flag to prevent duplicate history saves
-    private string _lastSavedSearchText = string.Empty;
-    private DateTime _lastSaveTime = DateTime.MinValue;
-
-    // Flag to track if current text is from selecting history
-    private bool _isFromHistorySelection = false;
-
     // Update-related services. Resolved from the container (Window has a parameterless ctor for XAML).
     private readonly IUpdateService _updateService;
     private readonly IUpdateInstallerService _updateInstallerService;
@@ -164,26 +157,6 @@ public sealed partial class MainWindow : Window
         // 运行期补查定时器随窗口关闭一并停止，避免窗口销毁后仍去弹对话框
         Closed += (_, _) => StopRuntimeUpdateCheckTimer();
 
-        // Debug: Monitor search history changes
-        ViewModel.RecentSearchTexts.CollectionChanged += (s, e) =>
-        {
-            System.Diagnostics.Debug.WriteLine($"RecentSearchTexts changed: Action={e.Action}, Count={ViewModel.RecentSearchTexts.Count}");
-            if (e.NewItems != null)
-            {
-                foreach (var item in e.NewItems)
-                {
-                    System.Diagnostics.Debug.WriteLine($"  Added: {item}");
-                }
-            }
-
-            // Force ComboBox to refresh - this is a workaround for WinUI 3 binding issues
-            DispatcherQueue.TryEnqueue(() =>
-            {
-                // Trigger a UI update by accessing the ItemsSource
-                var count = SearchBox.Items.Count;
-                System.Diagnostics.Debug.WriteLine($"ComboBox Items Count: {count}");
-            });
-        };
     }
 
     private void InitializeCustomBaudRateUI()
@@ -200,16 +173,12 @@ public sealed partial class MainWindow : Window
 
     private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(ViewModel.MatchCount))
+        if (e.PropertyName == nameof(ViewModel.MatchCount) ||
+            e.PropertyName == nameof(ViewModel.IsRegexValid) ||
+            e.PropertyName == nameof(ViewModel.RegexErrorMessage) ||
+            e.PropertyName == nameof(ViewModel.SearchText))
         {
-            MatchCountTextBlock.Text = $"匹配 {ViewModel.MatchCount} 条";
-            MatchCountTextBlock.Visibility = ViewModel.IsRegexValid && !string.IsNullOrEmpty(ViewModel.SearchText)
-                ? Visibility.Visible
-                : Visibility.Collapsed;
-        }
-        else if (e.PropertyName == nameof(ViewModel.IsRegexValid) || e.PropertyName == nameof(ViewModel.RegexErrorMessage))
-        {
-            UpdateRegexState();
+            UpdateSearchDiagnostics();
         }
         else if (e.PropertyName == nameof(ViewModel.ThemePreference))
         {
@@ -224,27 +193,35 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Reports a bad regex inline instead of recolouring the search box border.
+    /// Keeps the inline diagnostics beside the search box in step with the committed query: a regex
+    /// that does not parse owns the line (glyph + message), otherwise the match count shows as soon
+    /// as something is actually applied.
     /// </summary>
     /// <remarks>
     /// The previous version assigned hand-built <c>SolidColorBrush</c>s (literal green / red) to
     /// <c>SearchBox.BorderBrush</c>. That hard-coded a light-theme colour and stomped the themed
     /// border; the inline message plus its warning glyph is a stronger, keyboard- and
-    /// screen-reader-visible signal that also survives an appearance change.
+    /// screen-reader-visible signal that also survives an appearance change. Text mode is always
+    /// valid, so an error can only ever come from the regex switch.
     /// </remarks>
-    private void UpdateRegexState()
+    private void UpdateSearchDiagnostics()
     {
-        if (ViewModel.IsRegexValid)
+        if (!ViewModel.IsRegexValid)
         {
-            RegexErrorIcon.Visibility = Visibility.Collapsed;
-            RegexErrorTextBlock.Visibility = Visibility.Collapsed;
+            RegexErrorTextBlock.Text = ViewModel.RegexErrorMessage;
+            RegexErrorIcon.Visibility = Visibility.Visible;
+            RegexErrorTextBlock.Visibility = Visibility.Visible;
+            MatchCountTextBlock.Visibility = Visibility.Collapsed;
             return;
         }
 
-        RegexErrorTextBlock.Text = ViewModel.RegexErrorMessage;
-        RegexErrorIcon.Visibility = Visibility.Visible;
-        RegexErrorTextBlock.Visibility = Visibility.Visible;
-        MatchCountTextBlock.Visibility = Visibility.Collapsed;
+        RegexErrorIcon.Visibility = Visibility.Collapsed;
+        RegexErrorTextBlock.Visibility = Visibility.Collapsed;
+
+        MatchCountTextBlock.Text = $"匹配 {ViewModel.MatchCount} 条";
+        MatchCountTextBlock.Visibility = string.IsNullOrEmpty(ViewModel.SearchText)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
     }
 
     #region Appearance
@@ -786,111 +763,32 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void SearchBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    /// <summary>Commits the draft as the active query (搜索 button).</summary>
+    private void ExecuteSearch_Click(object sender, RoutedEventArgs e)
     {
-        // When user selects an item from the dropdown
-        if (sender is ComboBox comboBox && e.AddedItems.Count > 0 && e.AddedItems[0] is string selectedText)
-        {
-            System.Diagnostics.Debug.WriteLine($"SelectionChanged: Selected '{selectedText}'");
-
-            // Mark that this text is from selecting a history item
-            _isFromHistorySelection = true;
-
-            // Update ViewModel. Assigning SearchText already arms the 150 ms re-filter debounce —
-            // calling the (now private) synchronous rebuild here as well doubled the O(n) work per
-            // selection, which is precisely what the debounce exists to collapse.
-            ViewModel.SearchText = selectedText;
-        }
-    }
-
-    private void SearchBox_DropDownClosed(object sender, object e)
-    {
-        // When dropdown closes
-        if (sender is ComboBox comboBox)
-        {
-            System.Diagnostics.Debug.WriteLine($"DropDownClosed: Text='{comboBox.Text}'");
-
-            // Ensure ViewModel has the current text (which arms the re-filter debounce)
-            if (!string.IsNullOrWhiteSpace(comboBox.Text))
-            {
-                ViewModel.SearchText = comboBox.Text;
-            }
-        }
-    }
-
-    private void SearchBox_LostFocus(object sender, RoutedEventArgs e)
-    {
-        // When the ComboBox loses focus
-        if (sender is ComboBox comboBox)
-        {
-            var searchText = comboBox.Text?.Trim() ?? string.Empty;
-            System.Diagnostics.Debug.WriteLine($"LostFocus: Text='{searchText}', IsFromHistorySelection={_isFromHistorySelection}");
-
-            // DON'T clear SelectedItem - this causes recursive LostFocus events
-            // Let the ComboBox manage it naturally
-
-            // If the text is from selecting a history item, don't add it again
-            if (_isFromHistorySelection)
-            {
-                System.Diagnostics.Debug.WriteLine($"Skipping save - text is from history selection");
-                _isFromHistorySelection = false; // Reset flag
-                _lastSavedSearchText = searchText; // Update last saved
-                _lastSaveTime = DateTime.Now;
-                return;
-            }
-
-            // Save to history if text is not empty
-            if (!string.IsNullOrWhiteSpace(searchText))
-            {
-                var timeSinceLastSave = DateTime.Now - _lastSaveTime;
-                if (searchText != _lastSavedSearchText || timeSinceLastSave.TotalSeconds > 1)
-                {
-                    ViewModel.AddToRecentSearches(searchText);
-                    _lastSavedSearchText = searchText;
-                    _lastSaveTime = DateTime.Now;
-                    System.Diagnostics.Debug.WriteLine($"Saved to history: '{searchText}'");
-                }
-                else
-                {
-                    System.Diagnostics.Debug.WriteLine($"Skipped duplicate save: '{searchText}'");
-                }
-            }
-        }
+        ViewModel.ExecuteSearchCommand.Execute(null);
     }
 
     private void SearchBox_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
-        // When user presses Enter key
-        if (e.Key == Windows.System.VirtualKey.Enter && sender is ComboBox comboBox)
+        // Enter is the only key that commits; anything else is just typing into the draft, which
+        // deliberately filters nothing until it is committed.
+        if (e.Key != Windows.System.VirtualKey.Enter)
         {
-            var searchText = comboBox.Text?.Trim() ?? string.Empty;
-            System.Diagnostics.Debug.WriteLine($"KeyDown Enter: Text='{searchText}'");
+            return;
+        }
 
-            // Clear the history selection flag - this is manual input
-            _isFromHistorySelection = false;
+        ViewModel.ExecuteSearchCommand.Execute(null);
+        e.Handled = true;
+    }
 
-            if (!string.IsNullOrWhiteSpace(searchText))
-            {
-                // Update ViewModel (arms the re-filter debounce)
-                ViewModel.SearchText = searchText;
-
-                // Add to recent searches (using debounce logic)
-                var timeSinceLastSave = DateTime.Now - _lastSaveTime;
-                if (searchText != _lastSavedSearchText || timeSinceLastSave.TotalSeconds > 1)
-                {
-                    ViewModel.AddToRecentSearches(searchText);
-                    _lastSavedSearchText = searchText;
-                    _lastSaveTime = DateTime.Now;
-                    System.Diagnostics.Debug.WriteLine($"Saved to history (Enter): '{searchText}'");
-                }
-
-                // Close dropdown and clear selection
-                comboBox.IsDropDownOpen = false;
-                comboBox.SelectedItem = null;
-            }
-
-            // Mark event as handled to prevent further processing
-            e.Handled = true;
+    /// <summary>Re-runs a query picked from the history flyout, then closes the flyout.</summary>
+    private void ApplyRecentSearch_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button button && button.Tag is string searchText)
+        {
+            ViewModel.ApplyRecentSearchCommand.Execute(searchText);
+            SearchHistoryFlyout.Hide();
         }
     }
     
@@ -904,8 +802,8 @@ public sealed partial class MainWindow : Window
 
     private void ClearSearchText_Click(object sender, RoutedEventArgs e)
     {
-        // Clear the current search text
-        ViewModel.SearchText = string.Empty;
+        // Drops both the draft and the applied query, so the full log list comes straight back.
+        ViewModel.ClearSearchCommand.Execute(null);
 
         // Focus the search box for user convenience
         SearchBox.Focus(FocusState.Programmatic);
@@ -923,7 +821,7 @@ public sealed partial class MainWindow : Window
         var result = await dialog.ShowAsync();
         if (result == ContentDialogResult.Primary)
         {
-            ViewModel.ClearRecentSearches();
+            ViewModel.ClearSearchHistoryCommand.Execute(null);
         }
     }
 

@@ -186,7 +186,90 @@
         <Setter Property="Template" Value="{StaticResource AppAccentButtonTemplate}" />
     </Style>
 
+    <!-- =============================== Toggle button =============================== -->
+    <!-- Compact pill used for the search mode switches (Aa / .*). Unchecked is deliberately quiet
+         (outlined, secondary text); Checked fills with the accent so the active mode is obvious at a
+         glance. CheckStates is declared after CommonStates on purpose: the later group wins for a
+         property both groups set, which is what keeps the accent fill stable while hovering a
+         checked toggle. -->
+    <ControlTemplate x:Key="AppToggleButtonTemplate" TargetType="ToggleButton">
+        <ContentPresenter
+            x:Name="Presenter"
+            Background="{TemplateBinding Background}"
+            BorderBrush="{TemplateBinding BorderBrush}"
+            BorderThickness="{TemplateBinding BorderThickness}"
+            CornerRadius="{TemplateBinding CornerRadius}"
+            Content="{TemplateBinding Content}"
+            ContentTemplate="{TemplateBinding ContentTemplate}"
+            Foreground="{TemplateBinding Foreground}"
+            Padding="{TemplateBinding Padding}"
+            HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+            VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+            AutomationProperties.AccessibilityView="Raw">
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates">
+                    <VisualState x:Name="Normal" />
+                    <VisualState x:Name="PointerOver">
+                        <VisualState.Setters>
+                            <Setter Target="Presenter.Background" Value="{ThemeResource AppSubtleHoverBrush}" />
+                        </VisualState.Setters>
+                    </VisualState>
+                    <VisualState x:Name="Pressed">
+                        <VisualState.Setters>
+                            <Setter Target="Presenter.Background" Value="{ThemeResource AppSubtlePressedBrush}" />
+                        </VisualState.Setters>
+                    </VisualState>
+                    <VisualState x:Name="Disabled">
+                        <VisualState.Setters>
+                            <Setter Target="Presenter.Opacity" Value="0.4" />
+                        </VisualState.Setters>
+                    </VisualState>
+                </VisualStateGroup>
+                <VisualStateGroup x:Name="CheckStates">
+                    <VisualState x:Name="Unchecked" />
+                    <VisualState x:Name="Checked">
+                        <VisualState.Setters>
+                            <Setter Target="Presenter.Background" Value="{ThemeResource AppAccentSubtleBrush}" />
+                            <Setter Target="Presenter.BorderBrush" Value="{ThemeResource AppAccentBrush}" />
+                            <Setter Target="Presenter.Foreground" Value="{ThemeResource AppAccentBrush}" />
+                        </VisualState.Setters>
+                    </VisualState>
+                    <VisualState x:Name="Indeterminate" />
+                </VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+        </ContentPresenter>
+    </ControlTemplate>
+
+    <Style x:Key="AppToolbarToggleButtonStyle" TargetType="ToggleButton">
+        <Setter Property="FontFamily" Value="{StaticResource AppUiFontFamily}" />
+        <Setter Property="FontSize" Value="{StaticResource AppFontSizeCaption}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="MinWidth" Value="30" />
+        <Setter Property="MinHeight" Value="{StaticResource AppControlHeightCompact}" />
+        <Setter Property="Padding" Value="6,0" />
+        <Setter Property="CornerRadius" Value="{StaticResource AppCornerRadiusControl}" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="{ThemeResource AppControlBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Foreground" Value="{ThemeResource AppTextSecondaryBrush}" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template" Value="{StaticResource AppToggleButtonTemplate}" />
+    </Style>
+
     <!-- =============================== Misc =============================== -->
+    <!-- Search-history row: a full-width, chrome-free button so the whole line is the click target
+         while the per-row delete button next to it stays a separate hit area. -->
+    <Style x:Key="AppHistoryItemButtonStyle" TargetType="Button" BasedOn="{StaticResource AppButtonStyle}">
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="{StaticResource AppControlHeightCompact}" />
+        <Setter Property="Padding" Value="8,0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+        <Setter Property="HorizontalContentAlignment" Value="Left" />
+    </Style>
+
     <!-- Hairline vertical rule used between toolbar groups. -->
     <Style x:Key="AppVerticalDividerStyle" TargetType="Border">
         <Setter Property="Width" Value="1" />
