@@ -10,7 +10,14 @@
     <!-- Hosting the log ListView inside a UserControl (a FrameworkElement) instead of directly
          under MainWindow (a Window, which is NOT a FrameworkElement in WinUI 3) lets us use x:Bind
          in the DataTemplate. Compiled bindings shave ~5-10x off per-item realization compared to
-         reflection-based {Binding}, which is the dominant cost during wheel-scroll virtualization. -->
+         reflection-based {Binding}, which is the dominant cost during wheel-scroll virtualization.
+
+         Wheel scrolling is intercepted in code-behind (LogListView.xaml.cs) and is NOT driven by
+         anything declared here. Rows are deliberately short — ListViewItem MinHeight/Padding/Margin
+         are 0, the row is a single NoWrap 13px line, so ~20px tall — which makes the framework's
+         own per-notch step read as "the wheel does nothing"; the control therefore asks the
+         template's ScrollViewer for a fixed, viewport-relative offset. Anything that changes the
+         row height must be checked against that step (MinWheelStepPixels ≈ 3 rows). -->
 
     <ListView x:Name="InnerListView"
               ItemsSource="{x:Bind ItemsSource, Mode=OneWay}"

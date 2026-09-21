@@ -1,7 +1,15 @@
 {
-    "version": "2.1.4",
+    "version": "2.1.5",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-21",
+            "version": "2.1.5",
+            "changes": [
+                "Log list wheel scrolling now moves in proportional, viewport-relative steps (about a fifth of the list per notch) instead of barely one row, so scrolling back through a paused log actually works",
+                "The wheel is now handled by the log list itself rather than by the framework: the step is viewport-relative (60-240 px) and scaled for precision wheels and touchpads, horizontal-wheel gestures and scrolling with the scrollbar or the keyboard are unaffected, and the 'locked to latest' follow behaviour while running is unchanged"
+            ]
+        },
         {
             "date": "2026-09-20",
             "version": "2.1.4",
