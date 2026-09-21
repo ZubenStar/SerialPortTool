@@ -1,7 +1,15 @@
 {
-    "version": "2.2.0",
+    "version": "2.2.1",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-21",
+            "version": "2.2.1",
+            "changes": [
+                "Renamed the installed application and its shortcuts from 串口工具 (SerialPortTool) to SerialPortTool, so the Start-menu folder, the desktop shortcut, the Setup window and Apps & features all read SerialPortTool",
+                "The installer now removes the previous 串口工具 (SerialPortTool) Start-menu group and desktop shortcut while upgrading, so a renamed display name can no longer leave both the old and the new entry behind"
+            ]
+        },
         {
             "date": "2026-09-21",
             "version": "2.2.0",

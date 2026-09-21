@@ -35,9 +35,12 @@
   #define Excludes "*.pdb"
 #endif
 
-#define AppDisplayName "串口工具 (SerialPortTool)"
+#define AppDisplayName "SerialPortTool"
 #define AppPublisher "SerialPortTool"
 #define AppExeName "SerialPortTool.exe"
+
+; 旧的应用显示名（v2.2.1 之前）。仅用于升级时清理遗留的开始菜单组与桌面快捷方式，见 [InstallDelete]。
+#define LegacyAppDisplayName "串口工具 (SerialPortTool)"
 
 [Setup]
 ; AppId 必须与 Services/UpdateInstallerService.cs 的 InstalledBuildInfo.AppId 完全一致。
@@ -94,6 +97,12 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; 升级时先清空安装目录，避免上一版本遗留的 DLL / 语言资源堆积（WinUI 3 对残留程序集很敏感）。
 ; 用户设置（%LOCALAPPDATA%\SerialPortTool）与运行日志（Documents\SerialPortTool）都不在 {app} 下，不会受影响。
 Type: filesandordirs; Name: "{app}\*"
+; 显示名由「串口工具 (SerialPortTool)」改为 SerialPortTool（v2.2.1）：旧的开始菜单组和桌面快捷方式
+; 不在新的 [Icons] 列表里，Inno Setup 覆盖安装时不会自动回收，升级用户会同时看到新旧两个条目。
+; 这里必须写死旧名字 —— {group} / {autodesktop} 此刻已解析为新名字，指不到旧位置。
+; PrivilegesRequired=lowest 下 {group} = {userprograms}\<DefaultGroupName>，所以旧组目录位于 {userprograms}。
+Type: filesandordirs; Name: "{userprograms}\{#LegacyAppDisplayName}"
+Type: files; Name: "{autodesktop}\{#LegacyAppDisplayName}.lnk"
 
 [Files]
 ; 语言资源目录在调用 ISCC 之前就已被 scripts/prune-publish-output.ps1 从 publish 目录里删掉，
