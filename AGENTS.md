@@ -319,6 +319,25 @@ Two consequences worth remembering:
 - The rail folds either because the user asked (`SidebarCollapsed`, persisted) or because the window is narrower than 900 px (not persisted, so widening the window restores the user's choice). `SidebarHost.Width` animates over 150 ms through a `DoubleAnimation` with `EnableDependentAnimation` (width drives layout, so the compositor cannot run it), and animation is skipped entirely when `UISettings.AnimationsEnabled` is false.
 - Every `ContentDialog` goes through `MainWindow.CreateDialog()`. A dialog lives in its own popup root and does **not** inherit the window root's `ElementTheme`; without the explicit `RequestedTheme` assignment they stay light in dark mode.
 
+### Keyboard shortcuts
+
+Window-level gestures are resolved in **one** place: `MainWindow.OnRootKeyDown`, reached through a `KeyDown` handler added to the root content `Grid` (`RootLayout`) with `handledEventsToo: true`. That element spans the whole window, so a gesture works no matter which control has focus — and `handledEventsToo` matters, because the search and send boxes mark their own editing keys as handled.
+
+**Do not switch this back to `KeyboardAccelerator` (v2.2.0).** A `KeyboardAccelerator` was tried first, declared on that same `RootLayout`, and never fired in this application: `Ctrl+Shift+L` and `Ctrl+Alt+L` both did nothing at all, while the same keys work in other programs. Two more strikes against it here: `Alt` is the menu-activation key, which the `MenuBar` is entitled to consume first, and a declared accelerator advertises itself in its owner's tooltip by default since Windows 10 1803 — on an element spanning the whole window that produced a `Ctrl+Alt+L` tooltip under the pointer everywhere in the UI. `MainWindow` is a `Window`, not a `FrameworkElement`, so accelerators cannot live on the window itself either.
+
+| Gesture | Resolved in | Handler |
+| --- | --- | --- |
+| `F9` — open the log folder | `MainWindow.OnRootKeyDown` (root Grid `KeyDown`) | `OpenLogFolder()` (shared with the menu's `OpenLogFolder_Click`) |
+
+The 工具 → 打开日志文件夹 menu item carries its own `KeyboardAccelerator Key="F9"` for **display**: a `MenuFlyoutItem` renders the gesture beside the item text (the framework's documented exception to the tooltip behaviour) and keeps working while the menu is open. It cannot double-fire with `OnRootKeyDown` — a flyout is a separate popup root, so its key events never travel through the window's element tree, and a `MenuFlyoutItem` only routes keys while its flyout is open.
+
+Other keyboard gestures in the app are **control-scoped** rather than window-scoped and stay where they are — do not migrate them without a reason:
+
+- `Ctrl+C` / `Ctrl+A` in the log list — `Controls/LogListView.xaml.cs` `InnerListView_KeyDown`, active only while the list has focus.
+- `Enter` to search / to send — `MainWindow.SearchBox_KeyDown` and `MainWindow.SendTextBox_KeyDown`.
+
+To add a window-level shortcut: add a `case` to `OnRootKeyDown` and, if it belongs in a menu, the matching `KeyboardAccelerator` on that menu item. The handler switches on `e.Key` alone, so a gesture that needs modifiers must read them explicitly (`InputKeyboardSource.GetKeyStateForCurrentThread`, as `LogListView` does). Prefer a **function key**: `Ctrl+Shift+字母` and similar combinations are routinely claimed by IMEs and resident tools.
+
 ### XAML rules that are not stylistic
 
 - **A compiled `{x:Bind}` with a `Converter` cannot be used in the window's own element tree.** The generated code calls `SetConverterLookupRoot(this)`, and a WinUI 3 `Window` is not a `FrameworkElement`, so the build fails with `CS1503` inside `MainWindow.g.cs` — pointing at generated code, not at your XAML. `RootLayout` therefore carries `DataContext="{x:Bind ViewModel}"` and anything needing a converter uses `{Binding}`; plain value bindings still use `{x:Bind}`. Inside a `DataTemplate` the bindings object is element-scoped, which is why `LogListView.xaml` can use converters freely.

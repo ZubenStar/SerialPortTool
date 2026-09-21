@@ -5,6 +5,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using SerialPortTool.Core.Enums;
@@ -150,6 +151,24 @@ public sealed partial class MainWindow : Window
 
         // Initialize custom baud rate UI based on saved settings
         InitializeCustomBaudRateUI();
+
+        // ---------------------------------------------------------------------------------
+        // Window-level keyboard shortcuts.
+        //
+        // Handled with a plain KeyDown on the root content Grid rather than a
+        // KeyboardAccelerator. Accelerators were tried first and never fired in this app:
+        // Ctrl+Shift+L and Ctrl+Alt+L both did nothing at all while the same keys work in other
+        // programs, and Alt is the menu-activation key, which a MenuBar is entitled to consume
+        // first. KeyDown on the element that spans the window is the mechanism the log list
+        // already uses successfully for Ctrl+C / Ctrl+A, so it is the known-good path here.
+        //
+        // handledEventsToo: true is required - the search box and the send box mark their own
+        // (unrelated) editing keys as handled, and that must not swallow this gesture.
+        // ---------------------------------------------------------------------------------
+        RootLayout.AddHandler(
+            UIElement.KeyDownEvent,
+            new KeyEventHandler(OnRootKeyDown),
+            handledEventsToo: true);
 
         // 窗口首次激活后再启动静默更新检查（此时 Content.XamlRoot 才可用）
         Activated += OnFirstActivated;
@@ -825,7 +844,47 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OpenLogFolder_Click(object sender, RoutedEventArgs e)
+    private void OpenLogFolder_Click(object sender, RoutedEventArgs e) => OpenLogFolder();
+
+    /// <summary>
+    /// Every window-level keyboard shortcut, resolved from one place. Reached for any key pressed
+    /// while the window has focus, whichever control owns that focus.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately a <c>KeyDown</c> handler instead of a <c>KeyboardAccelerator</c>: accelerators
+    /// never fired in this application (Ctrl+Shift+L and Ctrl+Alt+L both did nothing at all), and
+    /// this is the mechanism the log list already uses for Ctrl+C / Ctrl+A. Keep new window-level
+    /// gestures in this one method - it is the single place to look.
+    /// </para>
+    /// <para>
+    /// <c>Handled</c> is set so the key does not continue through the tree; the shared
+    /// <see cref="OpenLogFolder"/> body keeps the menu entry and the keyboard entry identical.
+    /// The 工具 menu item carries its own <c>KeyboardAccelerator</c> for display, and it cannot
+    /// double-fire with this handler: a flyout is a separate popup root, so its key events never
+    /// travel through the window's element tree, and a MenuFlyoutItem only routes keys while its
+    /// flyout is open.
+    /// </para>
+    /// </remarks>
+    private void OnRootKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Windows.System.VirtualKey.F9:
+                e.Handled = true;
+                OpenLogFolder();
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Opens the log directory in the shell. Shared by 工具 → 打开日志文件夹 and F9.
+    /// </summary>
+    /// <remarks>
+    /// Failure stays silent (a debug trace only) by design: a missing folder or a refused shell
+    /// launch is not worth interrupting log monitoring for.
+    /// </remarks>
+    private void OpenLogFolder()
     {
         try
         {
@@ -842,7 +901,6 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            // Log error - you may want to show a dialog to the user
             System.Diagnostics.Debug.WriteLine($"Error opening log folder: {ex.Message}");
         }
     }

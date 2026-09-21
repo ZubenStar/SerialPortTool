@@ -1,7 +1,15 @@
 {
-    "version": "2.1.5",
+    "version": "2.2.0",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-21",
+            "version": "2.2.0",
+            "changes": [
+                "Added window-level keyboard shortcuts, resolved by a single KeyDown handler on the root content Grid so a gesture works wherever the focus is - the search and send boxes included",
+                "F9 now opens the log folder from anywhere in the window, and the 工具 → 打开日志文件夹 menu entry shows the gesture"
+            ]
+        },
         {
             "date": "2026-09-21",
             "version": "2.1.5",

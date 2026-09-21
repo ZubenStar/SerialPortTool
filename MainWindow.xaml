@@ -36,6 +36,18 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
+        <!-- Window-level keyboard shortcuts are NOT declared here. A KeyboardAccelerator on this
+             element was tried first and never fired in this application: Ctrl+Shift+L and
+             Ctrl+Alt+L both did nothing at all, while the same keys work in every other program.
+             The same element was also what made the framework advertise the gesture in a tooltip
+             under the pointer anywhere in the UI (an accelerator advertises itself in its owner's
+             tooltip by default since Windows 10 1803).
+
+             The gestures are handled by MainWindow.OnRootKeyDown instead - the same KeyDown
+             mechanism the log list already uses for Ctrl+C / Ctrl+A - and the 工具 menu item
+             carries its own KeyboardAccelerator only so the gesture is visible in the menu. -->
+
+
         <!-- ============================= Title bar ============================= -->
         <Grid x:Name="AppTitleBar"
               Grid.Row="0"
@@ -90,7 +102,16 @@
                         </MenuFlyoutItem.Icon>
                     </MenuFlyoutItem>
                     <MenuFlyoutSeparator />
-                    <MenuFlyoutItem Text="打开日志文件夹" Click="OpenLogFolder_Click">
+                    <!-- F9. The window-level trigger is MainWindow.OnRootKeyDown (see the note on
+                         the root Grid); this accelerator is here so the menu shows the gesture, and
+                         it also makes F9 work while this menu is open. It cannot double-fire with
+                         that handler: a flyout is a separate popup root, so its key events never
+                         travel through the window's element tree. -->
+                    <MenuFlyoutItem Text="打开日志文件夹"
+                                    Click="OpenLogFolder_Click">
+                        <MenuFlyoutItem.KeyboardAccelerators>
+                            <KeyboardAccelerator Key="F9" />
+                        </MenuFlyoutItem.KeyboardAccelerators>
                         <MenuFlyoutItem.Icon>
                             <FontIcon Glyph="&#xE8B7;" />
                         </MenuFlyoutItem.Icon>
