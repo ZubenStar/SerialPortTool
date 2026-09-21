@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json.Serialization;
 using SerialPortTool.Core.Enums;
 
 namespace SerialPortTool.Models;
@@ -44,6 +45,11 @@ public sealed class UpdateReleaseInfo
     /// <summary>
     /// 是否提供可用于自动更新的安装包
     /// </summary>
+    /// <remarks>
+    /// 派生自 <see cref="SetupDownloadUrl"/>，因此不参与序列化：待处理更新缓存
+    /// （<c>Update.PendingRelease</c>）存的就是这个类型，写进去只会是一份可能过期的副本。
+    /// </remarks>
+    [JsonIgnore]
     public bool HasInstaller => !string.IsNullOrWhiteSpace(SetupDownloadUrl);
 }
 

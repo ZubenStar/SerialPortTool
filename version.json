@@ -1,7 +1,17 @@
 {
-    "version": "2.2.1",
+    "version": "2.2.2",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-21",
+            "version": "2.2.2",
+            "changes": [
+                "A found update is now remembered locally: once a newer version has been discovered, later silent checks read it back instead of asking GitHub again, so dismissing the prompt with 稍后 and restarting the app shows the update immediately - no waiting out a throttle window and no extra API request",
+                "The remembered update stays valid for 24 hours, so the app re-confirms against GitHub once a day instead of advertising a superseded or withdrawn release indefinitely, and it is dropped immediately when it stops being newer than the running build (i.e. you installed it) or when you choose 跳过此版本 - it can never pin the app to a version it has already installed or to one you deliberately skipped",
+                "Silent update checks are now throttled on the success side as well: when no update is pending, two successful checks are at least 30 minutes apart, so restarting the app repeatedly (or sharing a public IP with other GitHub users behind NAT or a proxy) can no longer burn through the anonymous 60 requests/hour API limit and surface as \"更新检查过于频繁（GitHub 接口限流）\" - Help → Check for updates is unaffected and still hits the network immediately",
+                "A new version is now found within at most 30 minutes of its release instead of within a day, and the failed-check backoff (1 hour) is unchanged, so a rate-limited or offline check still cannot turn into a request storm"
+            ]
+        },
         {
             "date": "2026-09-21",
             "version": "2.2.1",

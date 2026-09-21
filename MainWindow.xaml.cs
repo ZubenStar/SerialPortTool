@@ -1140,8 +1140,13 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 静默检查：网络失败静默、命中「跳过此版本」或处于失败退避窗口时静默，仅在有新版本时提示。
+    /// 静默检查：网络失败静默、命中「跳过此版本」或处于节流窗口（失败退避 1 小时 / 成功冷却 30 分钟）时静默，
+    /// 仅在有新版本时提示。已知有更新时 <see cref="IUpdateService"/> 直接返回本地缓存的结果、不联网
+    /// （该缓存 24 小时后作废并重新联网确认），所以「稍后」之后的下一次启动同样会立刻再次提示。
     /// </summary>
+    /// <remarks>
+    /// 是否联网、是否复用缓存、是否被节流都由 <see cref="IUpdateService"/> 决定，这里只负责“什么时候问”。
+    /// </remarks>
     /// <param name="isStartup">
     /// <c>true</c>：启动检查，先延迟 <see cref="SilentUpdateCheckDelay"/> 让窗口初始化 / 串口扫描先跑完；
     /// <c>false</c>：运行期补查，立即执行。

@@ -21,7 +21,7 @@ public enum UpdateCheckStatus
     Failed,
 
     /// <summary>
-    /// 本次检查被跳过（静默检查距上次检查不足缓存时长，或命中已跳过的版本）
+    /// 本次检查被跳过（静默检查仍在节流窗口内，或命中已跳过的版本）
     /// </summary>
     Skipped
 }
