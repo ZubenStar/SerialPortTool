@@ -1,7 +1,17 @@
 {
-    "version": "2.2.2",
+    "version": "2.2.3",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-28",
+            "version": "2.2.3",
+            "changes": [
+                "Log list wheel scrolling is now a short glide instead of a teleport: one notch still covers about a fifth of the list, but the view eases into place over ~150-200ms, and a burst of notches (or a touchpad's fine-grained deltas) now adds up instead of each event overwriting the previous one",
+                "Scrolling away from the newest row now detaches the follow instead of being dragged back by the next batch: you can read history during a live stream without pausing reception, and scrolling back down re-attaches automatically",
+                "Added a 回到最新 button at the bottom-right of the log area - it appears only while the view is detached from the newest row and jumps straight back to it, resuming the follow",
+                "While you are reading history the display buffer stops being trimmed from the head, so rows are no longer pulled out from under the cursor (the buffer still has a hard cap, and the trims that were skipped are made up as soon as the view returns to the newest row)"
+            ]
+        },
         {
             "date": "2026-09-21",
             "version": "2.2.2",

@@ -16,103 +16,131 @@
          anything declared here. Rows are deliberately short — ListViewItem MinHeight/Padding/Margin
          are 0, the row is a single NoWrap 13px line, so ~20px tall — which makes the framework's
          own per-notch step read as "the wheel does nothing"; the control therefore asks the
-         template's ScrollViewer for a fixed, viewport-relative offset. Anything that changes the
-         row height must be checked against that step (MinWheelStepPixels ≈ 3 rows). -->
+         template's ScrollViewer for a fixed, viewport-relative offset, and walks to it smoothly
+         (v2.2.3) instead of jumping. Anything that changes the row height must be checked against
+         that step (MinWheelStepPixels ≈ 3 rows) and against the "at the bottom" slack. -->
 
-    <ListView x:Name="InnerListView"
-              ItemsSource="{x:Bind ItemsSource, Mode=OneWay}"
-              SelectionMode="Extended"
-              Background="{ThemeResource AppSurfaceSunkenBrush}"
-              Padding="8,4"
-              IsTabStop="True"
-              ScrollViewer.HorizontalScrollMode="Disabled"
-              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-              KeyDown="InnerListView_KeyDown">
-        <ListView.ContextFlyout>
-            <MenuFlyout>
-                <MenuFlyoutItem Text="复制选中 (Ctrl+C)" Click="CopySelected_Click"/>
-                <MenuFlyoutItem Text="全选 (Ctrl+A)" Click="SelectAllInList_Click"/>
-            </MenuFlyout>
-        </ListView.ContextFlyout>
-        <!-- Reduce off-screen item realization. Default CacheLength=1.0 realizes ~3x visible items. -->
-        <ListView.ItemsPanel>
-            <ItemsPanelTemplate>
-                <ItemsStackPanel CacheLength="0.5"/>
-            </ItemsPanelTemplate>
-        </ListView.ItemsPanel>
-        <!-- Disable item transitions: animations on add/recycle cause stutter while wheel-scrolling. -->
-        <ListView.ItemContainerTransitions>
-            <TransitionCollection/>
-        </ListView.ItemContainerTransitions>
-        <ListView.ItemContainerStyle>
-            <Style TargetType="ListViewItem">
-                <Setter Property="MinHeight" Value="0"/>
-                <Setter Property="Padding" Value="0"/>
-                <Setter Property="Margin" Value="0"/>
-                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="ListViewItem">
-                            <!-- Minimal template: only Normal/Selected states. PointerOver removed because
-                                 wheel-scrolling parades items under a stationary cursor, triggering rapid
-                                 state changes and per-item layout invalidation. -->
-                            <Grid x:Name="Root"
-                                  Background="Transparent"
-                                  Padding="4,0">
-                                <VisualStateManager.VisualStateGroups>
-                                    <VisualStateGroup x:Name="CommonStates">
-                                        <VisualState x:Name="Normal"/>
-                                        <VisualState x:Name="Selected">
-                                            <VisualState.Setters>
-                                                <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
-                                            </VisualState.Setters>
-                                        </VisualState>
-                                    </VisualStateGroup>
-                                </VisualStateManager.VisualStateGroups>
-                                <ContentPresenter Content="{TemplateBinding Content}"
-                                                  ContentTemplate="{TemplateBinding ContentTemplate}"
-                                                  Margin="0"/>
-                            </Grid>
-                        </ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
-        </ListView.ItemContainerStyle>
-        <ListView.ItemTemplate>
-            <!-- x:Bind compiles bindings at build time — no per-item reflection.
-                 Two elements per row, on purpose: the channel bar and the text. Column alignment
-                 (timestamp / port / direction) is carried by LogEntry.FormattedText itself, which is
-                 far cheaper than adding columns to every realized row. Adding containers here directly
-                 costs virtualization time — see the do-not-regress notes in AGENTS.md.
+    <!-- The Grid exists only to float the 回到最新 pill above the list. The ListView keeps every
+         performance property it had (compiled x:Bind, CacheLength, no item transitions, a two
+         element row); the wrapper adds no container to the scroll path. -->
+    <Grid>
+        <ListView x:Name="InnerListView"
+                  ItemsSource="{x:Bind ItemsSource, Mode=OneWay}"
+                  SelectionMode="Extended"
+                  Background="{ThemeResource AppSurfaceSunkenBrush}"
+                  Padding="8,4"
+                  IsTabStop="True"
+                  ScrollViewer.HorizontalScrollMode="Disabled"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                  KeyDown="InnerListView_KeyDown">
+            <ListView.ContextFlyout>
+                <MenuFlyout>
+                    <MenuFlyoutItem Text="复制选中 (Ctrl+C)" Click="CopySelected_Click"/>
+                    <MenuFlyoutItem Text="全选 (Ctrl+A)" Click="SelectAllInList_Click"/>
+                </MenuFlyout>
+            </ListView.ContextFlyout>
+            <!-- Reduce off-screen item realization. Default CacheLength=1.0 realizes ~3x visible items. -->
+            <ListView.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <ItemsStackPanel CacheLength="0.5"/>
+                </ItemsPanelTemplate>
+            </ListView.ItemsPanel>
+            <!-- Disable item transitions: animations on add/recycle cause stutter while wheel-scrolling. -->
+            <ListView.ItemContainerTransitions>
+                <TransitionCollection/>
+            </ListView.ItemContainerTransitions>
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <Setter Property="MinHeight" Value="0"/>
+                    <Setter Property="Padding" Value="0"/>
+                    <Setter Property="Margin" Value="0"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ListViewItem">
+                                <!-- Minimal template: only Normal/Selected states. PointerOver removed because
+                                     wheel-scrolling parades items under a stationary cursor, triggering rapid
+                                     state changes and per-item layout invalidation. -->
+                                <Grid x:Name="Root"
+                                      Background="Transparent"
+                                      Padding="4,0">
+                                    <VisualStateManager.VisualStateGroups>
+                                        <VisualStateGroup x:Name="CommonStates">
+                                            <VisualState x:Name="Normal"/>
+                                            <VisualState x:Name="Selected">
+                                                <VisualState.Setters>
+                                                    <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
+                                                </VisualState.Setters>
+                                            </VisualState>
+                                        </VisualStateGroup>
+                                    </VisualStateManager.VisualStateGroups>
+                                    <ContentPresenter Content="{TemplateBinding Content}"
+                                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                      Margin="0"/>
+                                </Grid>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </ListView.ItemContainerStyle>
+            <ListView.ItemTemplate>
+                <!-- x:Bind compiles bindings at build time — no per-item reflection.
+                     Two elements per row, on purpose: the channel bar and the text. Column alignment
+                     (timestamp / port / direction) is carried by LogEntry.FormattedText itself, which is
+                     far cheaper than adding columns to every realized row. Adding containers here directly
+                     costs virtualization time — see the do-not-regress notes in AGENTS.md.
 
-                 ColorHex is Mode=OneWay (a compiled x:Bind is OneTime by default) because switching
-                 appearance re-assigns the colour of rows that are already on screen; FormattedText
-                 stays OneTime since it never changes after construction. -->
-            <DataTemplate x:DataType="models:LogEntry">
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
+                     ColorHex is Mode=OneWay (a compiled x:Bind is OneTime by default) because switching
+                     appearance re-assigns the colour of rows that are already on screen; FormattedText
+                     stays OneTime since it never changes after construction. -->
+                <DataTemplate x:DataType="models:LogEntry">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
 
-                    <!-- Channel trace: the port's identity colour, readable at a glance when several
-                         ports interleave in the same stream. -->
-                    <Border Grid.Column="0"
-                            Width="3"
-                            Margin="0,1,6,1"
-                            CornerRadius="1.5"
-                            Background="{x:Bind ColorHex, Converter={StaticResource HexColorToBrushConverter}, Mode=OneWay}" />
+                        <!-- Channel trace: the port's identity colour, readable at a glance when several
+                             ports interleave in the same stream. -->
+                        <Border Grid.Column="0"
+                                Width="3"
+                                Margin="0,1,6,1"
+                                CornerRadius="1.5"
+                                Background="{x:Bind ColorHex, Converter={StaticResource HexColorToBrushConverter}, Mode=OneWay}" />
 
-                    <TextBlock Grid.Column="1"
-                               Text="{x:Bind FormattedText}"
-                               Foreground="{x:Bind ColorHex, Converter={StaticResource HexColorToBrushConverter}, Mode=OneWay}"
-                               FontFamily="{StaticResource AppMonoFontFamily}"
-                               FontSize="13"
-                               TextWrapping="NoWrap"
-                               IsTextSelectionEnabled="False"
-                               Padding="0,1,0,1" />
-                </Grid>
-            </DataTemplate>
-        </ListView.ItemTemplate>
-    </ListView>
+                        <TextBlock Grid.Column="1"
+                                   Text="{x:Bind FormattedText}"
+                                   Foreground="{x:Bind ColorHex, Converter={StaticResource HexColorToBrushConverter}, Mode=OneWay}"
+                                   FontFamily="{StaticResource AppMonoFontFamily}"
+                                   FontSize="13"
+                                   TextWrapping="NoWrap"
+                                   IsTextSelectionEnabled="False"
+                                   Padding="0,1,0,1" />
+                    </Grid>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+
+        <!-- "回到最新" (v2.2.3). Visible only while the view has been scrolled away from the newest
+             row, which is exactly when new data has stopped pulling it along: without an explicit
+             way back, the only ways to re-attach were to scroll all the way down by hand or to
+             toggle 暂停. OneWay matters — an x:Bind is OneTime by default, and the state is a
+             dependency property that flips repeatedly during a session. -->
+        <Button x:Name="FollowLatestButton"
+                Style="{StaticResource AppToolbarButtonStyle}"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Bottom"
+                Margin="0,0,24,16"
+                Padding="10,0"
+                Click="FollowLatest_Click"
+                ToolTipService.ToolTip="回到最新一行，并继续跟随新数据"
+                Visibility="{x:Bind IsPinnedToBottom, Converter={StaticResource InverseBoolToVisibilityConverter}, Mode=OneWay}">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <FontIcon Glyph="&#xE896;"
+                          FontSize="12" />
+                <TextBlock Text="回到最新"
+                           FontSize="12" />
+            </StackPanel>
+        </Button>
+    </Grid>
 </UserControl>

@@ -7,6 +7,7 @@ using SerialPortTool.Models;
 using System;
 using System.Collections;
 using System.Collections.Specialized;
+using System.Diagnostics;
 using System.Linq;
 
 namespace SerialPortTool.Controls;
@@ -31,6 +32,12 @@ public sealed partial class LogListView : UserControl
         typeof(LogListView),
         new PropertyMetadata(false));
 
+    public static readonly DependencyProperty IsPinnedToBottomProperty = DependencyProperty.Register(
+        nameof(IsPinnedToBottom),
+        typeof(bool),
+        typeof(LogListView),
+        new PropertyMetadata(true));
+
     public IEnumerable? ItemsSource
     {
         get => (IEnumerable?)GetValue(ItemsSourceProperty);
@@ -38,15 +45,36 @@ public sealed partial class LogListView : UserControl
     }
 
     /// <summary>
-    /// When false (the default), the view auto-follows the latest log entry — every batch of new
-    /// items triggers a scroll-to-bottom. When true, no auto-scrolling happens and the user is
-    /// free to scroll back through history. The owning ViewModel is also expected to stop pushing
-    /// new entries into the bound ItemsSource while paused (file logging continues on disk).
+    /// When false (the default), the view follows the latest log entry — every batch of new items
+    /// triggers a scroll-to-bottom, but only while the view is actually sitting at the bottom
+    /// (<see cref="IsPinnedToBottom"/>): scrolling away from it detaches the follow until the view
+    /// comes back or 回到最新 is pressed, so history can be read without pausing reception.
+    /// When true, no auto-scrolling happens and the user is free to scroll back through history.
+    /// The owning ViewModel is also expected to stop pushing new entries into the bound ItemsSource
+    /// while paused (file logging continues on disk).
     /// </summary>
     public bool IsPaused
     {
         get => (bool)GetValue(IsPausedProperty);
         set => SetValue(IsPausedProperty, value);
+    }
+
+    /// <summary>
+    /// Whether the view is sitting at the newest row — i.e. whether arriving lines are allowed to
+    /// pull it along. Bound TwoWay to <c>MainViewModel.IsLogPinnedToBottom</c>, which gates the
+    /// display-buffer trim: while the user is reading history, removing rows from the head would
+    /// slide the content out from under the cursor.
+    /// </summary>
+    /// <remarks>
+    /// Written by this control whenever a scroll takes the view off the bottom (or back onto it),
+    /// and by the ViewModel whenever the list is replaced wholesale (clear, a new search) — those
+    /// are the only two writers, and both only write on an actual change, so the TwoWay binding
+    /// cannot ping-pong.
+    /// </remarks>
+    public bool IsPinnedToBottom
+    {
+        get => (bool)GetValue(IsPinnedToBottomProperty);
+        set => SetValue(IsPinnedToBottomProperty, value);
     }
 
     /// <summary>Raised after Ctrl+C or context-menu copy completes. Argument is the count copied.</summary>
@@ -75,15 +103,67 @@ public sealed partial class LogListView : UserControl
     // never travel through the items presenter — the empty area below the last row hit-tests
     // the ScrollViewer directly. That fallback is a no-op whenever the primary handler ran,
     // because the primary one has already set Handled (the early return below).
+    //
+    // What changed in v2.2.3: the step used to be applied as one instantaneous jump
+    // (ChangeView(..., disableAnimation: true) straight to VerticalOffset - step), which reads as
+    // the view teleporting rather than scrolling, and which also *lost* deltas — several wheel
+    // events can arrive inside one frame and each one recomputed its target from a VerticalOffset
+    // that had not caught up yet. The step size is unchanged (it is derived from the row height
+    // and is what makes one notch a real move); only the traversal is new: the deltas are
+    // accumulated into a target offset and a short pump walks the view to it with an exponential
+    // approach, so a notch is a ~150-200ms glide and a burst of notches adds up instead of
+    // overwriting itself.
     // ---------------------------------------------------------------------------------------
     private const double WheelStepViewportFraction = 0.2; // one notch ≈ 1/5 of the viewport
     private const double MinWheelStepPixels = 60;         // ≈ 3 rows at the ~20px row height
     private const double MaxWheelStepPixels = 240;        // no half-screen jumps on tall windows
     private const double WheelNotchDelta = 120.0;         // MouseWheelDelta units per detent
 
+    // Traversal constants (v2.2.3). These describe how the step is *covered*, not how far it goes:
+    //   · TimeConstantMs — exponential approach; ~3x tau covers ~95% of the distance, so one notch
+    //     reads as a short glide instead of a teleport, and a held wheel reads as continuous motion.
+    //   · FrameIntervalMs — the pump's cadence. dt is *measured* (Stopwatch) rather than assumed, so
+    //     a late frame costs smoothness, never distance.
+    //   · MaxFrameDeltaMs — a stalled frame (a 1000 lines/s flush landing mid-gesture) must not turn
+    //     into a jump, so the elapsed time is clamped before it feeds the exponential.
+    //   · EpsilonPx — convergence: below this the pump snaps exactly onto the target and stops, so
+    //     the timer only ever runs while a gesture is actually in flight.
+    private const double WheelScrollTimeConstantMs = 70.0;
+    private const int WheelScrollFrameIntervalMs = 10;
+    private const double WheelScrollMaxFrameDeltaMs = 32.0;
+    private const double WheelScrollEpsilonPx = 0.5;
+
+    // How close a wheel glide has to be to its destination before the auto-follow is allowed to
+    // take the view over again. The exponential tail is long in time but sub-pixel in distance, so
+    // waiting for full convergence would freeze the follow for ~0.4 s after every gesture.
+    private const double WheelGlideHandoffPx = 8.0;
+
+    // "Is the view at the newest row?" The slack is about one row: without it, sub-pixel rounding
+    // at the bottom flips the follow state on and off while data lands.
+    private const double FollowBottomSlackPx = 24.0;
+
+    // Two guards keep "did the user scroll away?" honest:
+    //   · A whole-list replacement (clear, a new search, a trim) rebuilds the view from scratch and
+    //     raises ViewChanged for offsets nobody asked for — ignore those for a moment. Only Reset
+    //     gets this window: batches of arriving lines are ~20/s, so suppressing on every change
+    //     would keep the window permanently open and no scrollbar drag would ever be noticed.
+    //   · Our own auto-follow scroll raises ViewChanged as well, and so does an arriving batch that
+    //     grows the scrollable extent while the offset is still the old bottom (i.e. "further from
+    //     the bottom" without anybody moving). Both land exactly on the offset we last commanded,
+    //     so that is recognised instead of suppressed — see IsOwnProgrammaticScroll.
+    private const int PinEvaluationSuppressionMs = 250;
+    private const double CommandedOffsetTolerancePx = 1.5;
+
     private ScrollViewer? _innerScrollViewer;
     private UIElement? _wheelHost;
     private PointerEventHandler? _wheelHandler;
+
+    private DispatcherQueueTimer? _wheelSmootherTimer;
+    private readonly Stopwatch _wheelFrameClock = new();
+    private double? _wheelTargetOffset;
+    private double _wheelCurrentOffset;
+    private double? _lastCommandedOffset;
+    private long _pinEvaluationSuppressedUntilTick;
 
     public LogListView()
     {
@@ -99,6 +179,12 @@ public sealed partial class LogListView : UserControl
             _autoScrollTimer.Interval = TimeSpan.FromMilliseconds(40);
             _autoScrollTimer.IsRepeating = false;
             _autoScrollTimer.Tick += (_, _) => PerformPendingAutoScroll();
+
+            // Only runs while a wheel gesture is in flight — see StartWheelScrollPump.
+            _wheelSmootherTimer = dispatcher.CreateTimer();
+            _wheelSmootherTimer.Interval = TimeSpan.FromMilliseconds(WheelScrollFrameIntervalMs);
+            _wheelSmootherTimer.IsRepeating = true;
+            _wheelSmootherTimer.Tick += OnWheelSmootherTick;
         }
 
         // Both directions are needed. A control can be unloaded and re-loaded (template re-application,
@@ -156,11 +242,24 @@ public sealed partial class LogListView : UserControl
         // Fallback: a wheel gesture over the empty area below the last row never passes through
         // the items presenter. It is ignored whenever the primary handler already ran.
         InnerListView.AddHandler(PointerWheelChangedEvent, _wheelHandler, handledEventsToo: true);
+
+        // Scrollbar drags, keyboard scrolling and touch panning never reach the wheel handler, so
+        // they are the only way those gestures can update the follow state.
+        scrollViewer.ViewChanged += OnScrollViewChanged;
     }
 
     /// <summary>Detaches the wheel handler and drops the resolved ScrollViewer.</summary>
     private void ReleaseWheelInterception()
     {
+        if (_innerScrollViewer != null)
+        {
+            try { _innerScrollViewer.ViewChanged -= OnScrollViewChanged; } catch { }
+        }
+
+        // A pending gesture must not survive a template re-application: the new ScrollViewer starts
+        // at the same offset, so replaying the old target would yank the view somewhere else.
+        CancelWheelScroll();
+
         if (_wheelHandler != null)
         {
             if (_wheelHost != null)
@@ -177,16 +276,18 @@ public sealed partial class LogListView : UserControl
     }
 
     /// <summary>
-    /// Scrolls the list by a fixed, viewport-relative amount per wheel detent.
+    /// Accumulates one wheel detent into the pending scroll target and starts the pump that walks
+    /// the view there. The distance covered is a fixed, viewport-relative amount per detent; how
+    /// the view gets there is <see cref="OnWheelSmootherTick"/>'s job.
     /// </summary>
     /// <remarks>
     /// <para>
     /// <c>MouseWheelDelta</c> is a multiple of 120 for a classic mouse and a smaller, arbitrary
     /// value for a precision wheel or a touchpad, so the step is scaled by <c>delta / 120</c>
     /// instead of being applied flat — a touchpad flick has to stay proportional or it becomes
-    /// unusable. <c>ChangeView</c> clamps to the scrollable range on its own, so the ends of the
-    /// list need no special casing, and the animation is disabled so the offset follows the wheel
-    /// immediately (and cannot race the auto-follow <c>ScrollIntoView</c>).
+    /// unusable. The target is accumulated rather than recomputed from <c>VerticalOffset</c>:
+    /// several events can arrive inside a single frame, and each of them used to compute its own
+    /// target from an offset that had not caught up, so all but one were silently dropped.
     /// </para>
     /// <para>
     /// Horizontal wheel/tilt gestures are left to the framework: horizontal scrolling is disabled
@@ -225,10 +326,244 @@ public sealed partial class LogListView : UserControl
             MinWheelStepPixels,
             MaxWheelStepPixels);
 
-        var targetOffset = scrollViewer.VerticalOffset - delta / WheelNotchDelta * step;
-        scrollViewer.ChangeView(null, targetOffset, null, disableAnimation: true);
+        // First event of a gesture: start from wherever the view actually is. Later events extend
+        // the same gesture, so a burst of notches adds up instead of overwriting itself.
+        var target = _wheelTargetOffset ?? scrollViewer.VerticalOffset;
+        if (_wheelTargetOffset == null)
+        {
+            _wheelCurrentOffset = target;
+        }
 
+        var maxOffset = Math.Max(0, scrollViewer.ScrollableHeight);
+        _wheelTargetOffset = Math.Clamp(target - delta / WheelNotchDelta * step, 0, maxOffset);
+
+        // The follow state is decided by where the gesture is *heading*, not by where the view is
+        // right now — scrolling back down to the newest row must re-attach immediately, not after
+        // the pump finishes.
+        SetPinnedToBottom(_wheelTargetOffset.Value >= maxOffset - FollowBottomSlackPx);
+
+        StartWheelScrollPump();
         e.Handled = true;
+    }
+
+    /// <summary>Starts (or keeps alive) the interpolation pump for the current wheel gesture.</summary>
+    private void StartWheelScrollPump()
+    {
+        var timer = _wheelSmootherTimer;
+        if (timer == null)
+        {
+            // No dispatcher timer (headless construction): fall back to the pre-v2.2.3 behaviour so
+            // the wheel still moves the view, just without the glide.
+            ApplyWheelTargetImmediate();
+            return;
+        }
+
+        if (!timer.IsRunning)
+        {
+            _wheelFrameClock.Restart();
+            timer.Start();
+        }
+    }
+
+    /// <summary>Stops the pump and forgets the gesture. Used on convergence, on unload and by
+    /// <see cref="ResumeFollowLatest"/>.</summary>
+    private void CancelWheelScroll()
+    {
+        _wheelTargetOffset = null;
+
+        if (_wheelSmootherTimer != null)
+        {
+            try { _wheelSmootherTimer.Stop(); } catch { }
+        }
+
+        _wheelFrameClock.Reset();
+    }
+
+    private void ApplyWheelTargetImmediate()
+    {
+        if (_innerScrollViewer == null || _wheelTargetOffset is not { } target)
+        {
+            return;
+        }
+
+        var maxOffset = Math.Max(0, _innerScrollViewer.ScrollableHeight);
+        _innerScrollViewer.ChangeView(null, Math.Clamp(target, 0, maxOffset), null, disableAnimation: true);
+        CancelWheelScroll();
+    }
+
+    /// <summary>
+    /// Walks the view towards the pending wheel target with an exponential approach, one call per
+    /// pump tick, until the remaining distance is below the convergence threshold.
+    /// </summary>
+    /// <remarks>
+    /// The offset is tracked locally (<c>_wheelCurrentOffset</c>) rather than read back from
+    /// <c>ScrollViewer.VerticalOffset</c>, because that property does not necessarily reflect a
+    /// <c>ChangeView</c> from the same tick; reading it back would make the pump re-apply the same
+    /// step forever. The pump therefore also snaps exactly onto the target on the final tick, so a
+    /// divergence between the two can never leave the view short of the gesture's destination.
+    ///
+    /// <c>disableAnimation: true</c> is deliberate: this pump *is* the animation. The alternative —
+    /// letting the framework animate each <c>ChangeView</c> — retargets differently on mouse vs
+    /// touchpad and fights the auto-follow scroll, and is the fallback to try if this interpolation
+    /// ever misbehaves on a newer Windows App SDK.
+    /// </remarks>
+    private void OnWheelSmootherTick(DispatcherQueueTimer sender, object args)
+    {
+        var scrollViewer = _innerScrollViewer;
+        if (scrollViewer == null || _wheelTargetOffset is not { } requested)
+        {
+            CancelWheelScroll();
+            return;
+        }
+
+        var maxOffset = Math.Max(0, scrollViewer.ScrollableHeight);
+        var target = Math.Clamp(requested, 0, maxOffset);
+
+        var remaining = target - _wheelCurrentOffset;
+        if (Math.Abs(remaining) <= WheelScrollEpsilonPx)
+        {
+            _wheelCurrentOffset = target;
+            scrollViewer.ChangeView(null, target, null, disableAnimation: true);
+            CancelWheelScroll();
+            SetPinnedToBottom(target >= maxOffset - FollowBottomSlackPx);
+            return;
+        }
+
+        var elapsedMs = _wheelFrameClock.Elapsed.TotalMilliseconds;
+        _wheelFrameClock.Restart();
+
+        // Clamped so one stalled frame (a big flush landing mid-gesture) cannot become a jump.
+        if (elapsedMs < 0)
+        {
+            elapsedMs = 0;
+        }
+        else if (elapsedMs > WheelScrollMaxFrameDeltaMs)
+        {
+            elapsedMs = WheelScrollMaxFrameDeltaMs;
+        }
+
+        var alpha = 1.0 - Math.Exp(-elapsedMs / WheelScrollTimeConstantMs);
+        _wheelCurrentOffset += remaining * alpha;
+
+        scrollViewer.ChangeView(null, _wheelCurrentOffset, null, disableAnimation: true);
+    }
+
+    /// <summary>
+    /// Immediately returns to the newest row and re-attaches the follow. Bound to the overlay
+    /// button that appears while the view is detached.
+    /// </summary>
+    public void ResumeFollowLatest()
+    {
+        CancelWheelScroll();
+
+        var scrollViewer = _innerScrollViewer;
+        if (scrollViewer == null)
+        {
+            if (InnerListView.Items.Count > 0 &&
+                InnerListView.Items[InnerListView.Items.Count - 1] is { } lastItem)
+            {
+                InnerListView.ScrollIntoView(lastItem);
+            }
+
+            SetPinnedToBottom(true);
+            return;
+        }
+
+        SuppressPinEvaluation();
+        CommandScroll(Math.Max(0, scrollViewer.ScrollableHeight));
+        SetPinnedToBottom(true);
+    }
+
+    /// <summary>
+    /// Scrolls to <paramref name="offset"/> and remembers the command, so the <c>ViewChanged</c> it
+    /// raises is not mistaken for the user scrolling (see <see cref="IsOwnProgrammaticScroll"/>).
+    /// </summary>
+    private void CommandScroll(double offset)
+    {
+        var scrollViewer = _innerScrollViewer;
+        if (scrollViewer == null)
+        {
+            return;
+        }
+
+        var target = Math.Clamp(offset, 0, Math.Max(0, scrollViewer.ScrollableHeight));
+        _lastCommandedOffset = target;
+        scrollViewer.ChangeView(null, target, null, disableAnimation: true);
+    }
+
+    /// <summary>
+    /// True when a reported offset is the one this control last commanded — i.e. the auto-follow,
+    /// or an arriving batch that grew the extent while the view sat on the old bottom. Only trusted
+    /// while the view is still pinned: once the user has scrolled away, any past command is stale.
+    /// </summary>
+    private bool IsOwnProgrammaticScroll(double offset) =>
+        IsPinnedToBottom &&
+        _lastCommandedOffset.HasValue &&
+        Math.Abs(offset - _lastCommandedOffset.Value) <= CommandedOffsetTolerancePx;
+
+    /// <summary>
+    /// Updates the follow state from the view's current offset. Used for every gesture that is not
+    /// a wheel one (scrollbar drag, keyboard, touch panning).
+    /// </summary>
+    private void EvaluatePinnedToBottom()
+    {
+        var scrollViewer = _innerScrollViewer;
+        if (scrollViewer == null)
+        {
+            return;
+        }
+
+        var maxOffset = Math.Max(0, scrollViewer.ScrollableHeight);
+        SetPinnedToBottom(scrollViewer.VerticalOffset >= maxOffset - FollowBottomSlackPx);
+    }
+
+    /// <summary>
+    /// Writes the follow state, but only on a real change — the property is bound TwoWay, so a
+    /// redundant write would push a notification back into the ViewModel on every scroll.
+    /// </summary>
+    private void SetPinnedToBottom(bool value)
+    {
+        if (IsPinnedToBottom == value)
+        {
+            return;
+        }
+
+        IsPinnedToBottom = value;
+    }
+
+    /// <summary>
+    /// Holds off <see cref="EvaluatePinnedToBottom"/> briefly, so our own scrolls and the extents
+    /// growth of an arriving batch are not mistaken for the user scrolling away.
+    /// </summary>
+    private void SuppressPinEvaluation() =>
+        _pinEvaluationSuppressedUntilTick = Environment.TickCount64 + PinEvaluationSuppressionMs;
+
+    private void OnScrollViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
+    {
+        // A wheel gesture owns the state while it is in flight: it is judged by its target, which
+        // is where the user is going, not by the intermediate offsets the pump walks through.
+        if (_wheelTargetOffset.HasValue)
+        {
+            return;
+        }
+
+        var scrollViewer = _innerScrollViewer;
+        if (scrollViewer == null)
+        {
+            return;
+        }
+
+        if (IsOwnProgrammaticScroll(scrollViewer.VerticalOffset))
+        {
+            return;
+        }
+
+        if (Environment.TickCount64 < _pinEvaluationSuppressedUntilTick)
+        {
+            return;
+        }
+
+        EvaluatePinnedToBottom();
     }
 
     private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
@@ -312,6 +647,15 @@ public sealed partial class LogListView : UserControl
         if (e.Action == NotifyCollectionChangedAction.Add && (e.NewItems?.Count ?? 0) == 0)
             return;
 
+        // A Reset means the whole list was replaced (clear, a committed search, a trim), so the
+        // ViewChanged it raises describes a rebuild, not the user scrolling. Never do this for Add:
+        // batches arrive ~20/s, and a window refreshed that often would never let a real scroll
+        // through.
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            SuppressPinEvaluation();
+        }
+
         _isAutoScrollPending = true;
 
         if (_autoScrollTimer != null)
@@ -337,11 +681,47 @@ public sealed partial class LogListView : UserControl
         {
             _isAutoScrollPending = false;
 
-            var lastItem = InnerListView.Items[InnerListView.Items.Count - 1];
-            if (lastItem != null)
+            // Following is something the view earns by sitting at the newest row. Scroll away from
+            // it and arriving data must leave the view exactly where the user put it — that is the
+            // whole point of the detached state.
+            if (!IsPinnedToBottom)
             {
-                InnerListView.ScrollIntoView(lastItem);
+                return;
             }
+
+            // A wheel glide that is still carrying the view somewhere would fight an auto-follow
+            // scroll, so let it arrive first — but only while it still has real distance to cover;
+            // the exponential tail is sub-pixel and would otherwise freeze the follow for ~0.4 s.
+            if (_wheelTargetOffset.HasValue &&
+                Math.Abs(_wheelTargetOffset.Value - _wheelCurrentOffset) > WheelGlideHandoffPx)
+            {
+                return;
+            }
+
+            var scrollViewer = _innerScrollViewer;
+            if (scrollViewer == null)
+            {
+                // Template not resolved (or a restyle moved the ScrollViewer): keep the older,
+                // dumber behaviour instead of silently dropping the follow.
+                if (InnerListView.Items[InnerListView.Items.Count - 1] is { } lastItem)
+                {
+                    InnerListView.ScrollIntoView(lastItem);
+                }
+
+                return;
+            }
+
+            var maxOffset = Math.Max(0, scrollViewer.ScrollableHeight);
+            if (scrollViewer.VerticalOffset >= maxOffset - FollowBottomSlackPx / 2)
+            {
+                // Already there. ChangeView on every 50 ms flush is pure overhead, and it used to
+                // be a ScrollIntoView that forced the last row to be realized each time.
+                return;
+            }
+
+            // Straight to the bottom of the scrollable range: no item realization, no animation
+            // (the auto-follow must stay out of the wheel pump's way).
+            CommandScroll(maxOffset);
         }
         catch (Exception)
         {
@@ -368,6 +748,9 @@ public sealed partial class LogListView : UserControl
     }
 
     private void CopySelected_Click(object sender, RoutedEventArgs e) => CopySelectedToClipboard();
+
+    /// <summary>Overlay button: back to the newest row, and start following again.</summary>
+    private void FollowLatest_Click(object sender, RoutedEventArgs e) => ResumeFollowLatest();
 
     private void SelectAllInList_Click(object sender, RoutedEventArgs e) => InnerListView.SelectAll();
 

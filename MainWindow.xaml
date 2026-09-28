@@ -825,10 +825,14 @@
                 <!-- Logs Display - extracted into a UserControl so the DataTemplate can use compiled
                      x:Bind (Window-rooted DataTemplates can't, which is what was bottlenecking
                      wheel-scroll item realization). -->
+                <!-- IsPinnedToBottom is TwoWay: the view decides it from the scroll position, and the
+                     ViewModel reads it to hold off trimming the head of the buffer while the user is
+                     reading history. -->
                 <controls:LogListView Grid.Row="3"
                                       x:Name="LogListView"
                                       ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
                                       IsPaused="{x:Bind ViewModel.IsPaused, Mode=OneWay}"
+                                      IsPinnedToBottom="{x:Bind ViewModel.IsLogPinnedToBottom, Mode=TwoWay}"
                                       CopyCompleted="LogListView_CopyCompleted"
                                       CopyFailed="LogListView_CopyFailed" />
 

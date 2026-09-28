@@ -728,9 +728,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     // IsPaused replaces the old AutoScroll concept. UX:
-    //   IsPaused = false (default): log view is locked to the bottom; new data flows in and the
-    //     view tracks the latest line. The user cannot meaningfully scroll while data is arriving
-    //     (each new batch yanks the view back to the bottom).
+    //   IsPaused = false (default): new data flows in and the view tracks the latest line — but only
+    //     while the view is sitting at the bottom (IsLogPinnedToBottom). Scrolling away detaches the
+    //     follow instead of being dragged back, so history can be read during a live stream; the
+    //     回到最新 pill (or scrolling back down) re-attaches it.
+    //     (Before v2.2.3 the follow was unconditional and every batch yanked the view back, so the
+    //     only way to read history was to pause reception.)
     //   IsPaused = true: new data stops being added to the UI list (file logging continues
     //     independently). The user can scroll the existing logs freely. Resuming starts feeding
     //     new data again from that moment on — backlog accumulated during pause is not replayed
@@ -743,6 +746,33 @@ public partial class MainViewModel : ObservableObject, IDisposable
     partial void OnIsPausedChanged(bool value)
     {
         OnPropertyChanged(nameof(PauseButtonText));
+    }
+
+    /// <summary>
+    /// Whether the log view is sitting at the newest row — TwoWay from <c>LogListView</c>, which
+    /// decides it from the scroll position.
+    /// </summary>
+    /// <remarks>
+    /// While it is false the user is reading history. New lines keep arriving and keep being
+    /// appended, but the display buffer is <b>not</b> pruned from the head: a trim publishes a
+    /// <c>Reset</c>, which discards every realized container and slides the remaining rows up — i.e.
+    /// it moves the very text the user is reading (see <c>TrimDisplayLogs</c>). Growth is bounded by
+    /// <c>DisplayLogHardCap</c> instead.
+    ///
+    /// Only the UI thread writes this (the scroll position lives in the view), and every
+    /// whole-list replacement (clear, a new search) sets it back to true, because after one of
+    /// those there is no longer any history to be reading.
+    /// </remarks>
+    [ObservableProperty]
+    private bool _isLogPinnedToBottom = true;
+
+    partial void OnIsLogPinnedToBottomChanged(bool value)
+    {
+        // Re-attached: the trims that were skipped while the user was reading history are owed now.
+        if (value)
+        {
+            TrimDisplayLogs();
+        }
     }
 
     [ObservableProperty]
@@ -1206,6 +1236,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // threshold rather than sitting pinned at the cap. See RemoveFromStart for why a multi-item
     // Remove notification is not used instead.
     private const int DisplayLogTrimHeadroom = 400;
+
+    // While the user is scrolled away from the newest row, trims are suspended (they would slide the
+    // content out from under the cursor), so the buffer is allowed to grow past its normal ceiling
+    // up to here. Well above the working set, still bounded: a 20 Hz stream needs minutes to reach
+    // it, and a runaway one is stopped instead of growing without limit.
+    private const int DisplayLogHardCap = MaxDisplayLogs * 3;
+
     private const int AllLogsTrimThreshold = MaxDisplayLogs * 2 + 400;
     private const int MaxQueuedLogEntries = MaxDisplayLogs * 4;
     // Smaller batches at a fixed cadence give shorter, more uniform UI blocks. Bigger batches feel
@@ -1866,6 +1903,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             DisplayLogs.AddRange(toAdd);
         }
+
+        // A committed search rebuilds the whole list, so there is no scroll position worth
+        // preserving and no history being read: re-attach the follow (and let the trim catch up).
+        IsLogPinnedToBottom = true;
     }
 
     /// <summary>Non-whitespace separators accepted inside a hex payload.</summary>
@@ -2769,7 +2810,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // Clear both AllLogs and DisplayLogs collections
             AllLogs.Clear();
             DisplayLogs.Clear();
-            
+
+            // Nothing left to scroll back through, so the view is at the newest row again.
+            IsLogPinnedToBottom = true;
+
             // Reset match count
             MatchCount = 0;
             
@@ -3440,6 +3484,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private void TrimDisplayLogs()
     {
+        // Scrolled away from the newest row: do not pull rows out from under the reader. The trim
+        // publishes a Reset (every realized container discarded) and the rows that survive move up
+        // by the number removed, so the sentence being read slides off the screen. The hard cap
+        // below is the escape hatch — past it, trimming is the lesser evil.
+        if (!IsLogPinnedToBottom && DisplayLogs.Count <= DisplayLogHardCap)
+        {
+            return;
+        }
+
         if (DisplayLogs.Count <= DisplayLogTrimThreshold)
         {
             return;
