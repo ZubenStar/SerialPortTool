@@ -908,6 +908,119 @@ public sealed partial class MainWindow : Window
 
     #endregion
 
+    #region Keyword highlighting
+
+    /// <summary>Deletes one highlight rule. The flyout stays open, like the quick-send list.</summary>
+    private async void DeleteHighlightRule_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: HighlightRule rule })
+        {
+            return;
+        }
+
+        await ViewModel.RemoveHighlightRuleAsync(rule);
+    }
+
+    /// <summary>Enables or disables one rule.</summary>
+    /// <remarks>
+    /// The write goes through the ViewModel rather than a TwoWay binding: enabling a rule has to
+    /// recompile the matcher and persist, and a binding onto the non-observable persistence model
+    /// could do neither.
+    /// </remarks>
+    private async void ToggleHighlightRule_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not CheckBox { Tag: HighlightRule rule } box)
+        {
+            return;
+        }
+
+        await ViewModel.SetHighlightRuleEnabledAsync(rule, box.IsChecked == true);
+    }
+
+    /// <summary>
+    /// Asks for the pattern, the kind of matching and the colour, then adds the rule.
+    /// </summary>
+    /// <remarks>
+    /// The colour list is the port-identity palette, so a highlight can deliberately be tied to a
+    /// channel's colour and there is no second colour picker to keep in sync. The rows are composed in
+    /// code (a swatch plus a name) instead of via <c>XamlReader</c>, which keeps the dialog readable
+    /// and avoids a XAML string that the compiler cannot check. A rejected pattern is reported through
+    /// the status bar by the ViewModel, which validates before compiling — so nothing broken is ever
+    /// stored or compiled.
+    /// </remarks>
+    private async void AddHighlightRule_Click(object sender, RoutedEventArgs e)
+    {
+        var patternBox = new TextBox
+        {
+            Header = "匹配内容",
+            PlaceholderText = @"例如 ERROR、TIMEOUT，或开启正则后的 \d+ms",
+            // Prefilled from the current query because "highlight what I just searched for" is the
+            // overwhelmingly common way this feature gets used.
+            Text = ViewModel.SearchText,
+        };
+        var regexBox = new CheckBox { Content = "按正则表达式匹配" };
+        var caseBox = new CheckBox { Content = "区分大小写" };
+
+        var colorBox = new ComboBox
+        {
+            Header = "颜色",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinWidth = 240,
+        };
+
+        foreach (var option in ViewModel.PortColorOptions)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            row.Children.Add(new Border
+            {
+                Width = 12,
+                Height = 12,
+                CornerRadius = new CornerRadius(3),
+                Background = option.Brush,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = option.Name,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+
+            colorBox.Items.Add(row);
+        }
+
+        // Slots[2] — the palette's red — is the one a keyword rule almost always wants.
+        colorBox.SelectedIndex = 2;
+
+        var panel = new StackPanel { Spacing = 10, MinWidth = 320 };
+        panel.Children.Add(patternBox);
+        panel.Children.Add(regexBox);
+        panel.Children.Add(caseBox);
+        panel.Children.Add(colorBox);
+
+        var dialog = CreateDialog();
+        dialog.Title = "添加高亮规则";
+        dialog.Content = panel;
+        dialog.PrimaryButtonText = "添加";
+        dialog.CloseButtonText = "取消";
+        dialog.DefaultButton = ContentDialogButton.Primary;
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        await ViewModel.AddHighlightRuleAsync(new HighlightRule
+        {
+            Pattern = patternBox.Text,
+            IsRegex = regexBox.IsChecked == true,
+            IsCaseSensitive = caseBox.IsChecked == true,
+            ColorHex = ViewModel.PortColorOptions[colorBox.SelectedIndex].Hex,
+            Enabled = true,
+        });
+    }
+
+    #endregion
+
     private async void SelectTuningBin_Click(object sender, RoutedEventArgs e)
     {
         try

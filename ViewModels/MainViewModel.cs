@@ -269,6 +269,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // binds to lives on this ViewModel — see the Quick-send library region.
     private readonly ISnippetService _snippetService;
 
+    // Highlight rule storage plus compilation. The compiled snapshot is handed to LogListView, which
+    // owns the brushes — see the Keyword highlighting region.
+    private readonly IHighlightRuleService _highlightRuleService;
+
+    /// <summary>
+    /// Last appearance handed to <see cref="ApplyEffectiveTheme"/>, so a rule edit made without an
+    /// appearance change can still resolve its colours. Defaults to light, which is what the shell
+    /// starts on before its first theme pass.
+    /// </summary>
+    private bool _appliedIsDark;
+
     /// <summary>
     /// Transient notifications, bound by the shell's bottom-right host.
     /// </summary>
@@ -1035,6 +1046,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             option.RefreshBrush(isDark);
         }
+
+        // Highlight rules resolve their colours from the same palette, so an appearance switch has to
+        // recompile them as well. Recompiling bumps the snapshot generation, which is what invalidates
+        // every per-entry match cache at once — no walk over the log buffer — and the property change
+        // is what makes the realized rows re-decorate.
+        _appliedIsDark = isDark;
+        RebuildHighlightRules();
     }
 
     /// <summary>
@@ -1424,6 +1442,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         IOutputPressureService outputPressure,
         INotificationService notifications,
         ISnippetService snippetService,
+        IHighlightRuleService highlightRuleService,
         Services.IBaudRateDetectorService? baudRateDetectorService = null,
         Services.IDataValidationService? dataValidationService = null)
     {
@@ -1436,6 +1455,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _outputPressure = outputPressure;
         _notifications = notifications;
         _snippetService = snippetService;
+        _highlightRuleService = highlightRuleService;
         _baudRateDetectorService = baudRateDetectorService;
         _dataValidationService = dataValidationService;
 
@@ -1473,6 +1493,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // it loads on its own task instead of being appended to that chain. It is exception-safe by
         // construction — see InitializeSnippetsAsync — which is what makes fire-and-forget safe here.
         _ = InitializeSnippetsAsync();
+        _ = InitializeHighlightRulesAsync();
     }
 
     private async Task InitializeAsync()
@@ -2224,6 +2245,160 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // the next edit retries. Only durability failed, and saying so is better than silence.
             _logger.LogError(ex, "Failed to persist the quick-send library");
             StatusMessage = "快捷指令保存失败，请检查设置文件是否可写";
+        }
+    }
+
+    #endregion
+
+    #region Keyword highlighting
+
+    /// <summary>Rules in evaluation order; earlier rules win when ranges overlap.</summary>
+    private readonly List<HighlightRule> _highlightRules = new();
+
+    private IHighlightMatcher? _highlightMatcher;
+    private bool _isHighlightSuppressed;
+
+    /// <summary>Rules shown in the 高亮 flyout, in evaluation order.</summary>
+    public ObservableCollection<HighlightRule> HighlightRules { get; } = new();
+
+    /// <summary>Drives the 高亮 flyout's empty state.</summary>
+    public bool HasHighlightRules => HighlightRules.Count > 0;
+
+    /// <summary>
+    /// The compiled snapshot handed to <c>LogListView</c>, or null when there is nothing to paint.
+    /// </summary>
+    /// <remarks>
+    /// Rebuilt — never mutated — on every rule edit and on every appearance switch, because the
+    /// resolved colours come from the palette. The snapshot carries a generation, which is what lets
+    /// each entry's match cache invalidate itself on sight.
+    /// </remarks>
+    public IHighlightMatcher? HighlightMatcher
+    {
+        get => _highlightMatcher;
+        private set => SetProperty(ref _highlightMatcher, value);
+    }
+
+    /// <summary>
+    /// True while the receive path is under output pressure, in which case no row is decorated.
+    /// </summary>
+    /// <remarks>
+    /// Highlighting is the most expensive per-line work the view does, so it is the first thing to
+    /// drop under load — and because the matcher is an immutable snapshot rather than mutable state,
+    /// dropping it is nothing more than not asking it for matches. Nothing has to be rebuilt when the
+    /// flood passes.
+    /// </remarks>
+    public bool IsHighlightSuppressed
+    {
+        get => _isHighlightSuppressed;
+        private set => SetProperty(ref _isHighlightSuppressed, value);
+    }
+
+    private async Task InitializeHighlightRulesAsync()
+    {
+        try
+        {
+            var loaded = await _highlightRuleService.LoadAsync();
+
+            RunOnUiThread(() =>
+            {
+                _highlightRules.Clear();
+                _highlightRules.AddRange(loaded);
+                RebuildHighlightRules();
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to initialise the highlight rules");
+        }
+    }
+
+    /// <summary>Re-projects the rule list and recompiles the snapshot.</summary>
+    /// <remarks>
+    /// Compilation is the only thing that ever bumps the generation, so it is deliberately the single
+    /// place that does it — every cache in the log view is keyed on that number.
+    /// </remarks>
+    private void RebuildHighlightRules()
+    {
+        HighlightRules.Clear();
+        foreach (var rule in _highlightRules)
+        {
+            // Refreshed here rather than in the list template: the template only ever sees the rule,
+            // and the palette resolution needs the active appearance, which lives on this ViewModel.
+            rule.RenderedColorHex = _highlightRuleService.ResolveColorHex(
+                string.IsNullOrEmpty(rule.ColorHex) ? PortColorPalette.Slots[0].SlotHex : rule.ColorHex,
+                _appliedIsDark);
+
+            HighlightRules.Add(rule);
+        }
+
+        OnPropertyChanged(nameof(HasHighlightRules));
+
+        HighlightMatcher = _highlightRules.Count == 0
+            ? null
+            : _highlightRuleService.CreateMatcher(_highlightRules, _appliedIsDark);
+    }
+
+    /// <summary>Adds a rule, recompiles and persists. Rejects a pattern that cannot work.</summary>
+    public async Task AddHighlightRuleAsync(HighlightRule rule)
+    {
+        var error = _highlightRuleService.Validate(rule);
+        if (error is not null)
+        {
+            // Rejected where it can be explained, instead of being compiled into a no-op that looks
+            // like a broken feature.
+            StatusMessage = error;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(rule.Id))
+        {
+            rule.Id = Guid.NewGuid().ToString("N");
+        }
+
+        rule.Sort = _highlightRules.Count == 0 ? 0 : _highlightRules.Max(existing => existing.Sort) + 1;
+
+        _highlightRules.Add(rule);
+        RebuildHighlightRules();
+        await PersistHighlightRulesAsync();
+    }
+
+    /// <summary>Removes a rule, recompiles and persists.</summary>
+    public async Task RemoveHighlightRuleAsync(HighlightRule rule)
+    {
+        if (!_highlightRules.Remove(rule))
+        {
+            return;
+        }
+
+        RebuildHighlightRules();
+        await PersistHighlightRulesAsync();
+    }
+
+    /// <summary>Enables or disables a rule in place, then recompiles and persists.</summary>
+    public async Task SetHighlightRuleEnabledAsync(HighlightRule rule, bool enabled)
+    {
+        if (rule.Enabled == enabled)
+        {
+            return;
+        }
+
+        rule.Enabled = enabled;
+        RebuildHighlightRules();
+        await PersistHighlightRulesAsync();
+    }
+
+    private async Task PersistHighlightRulesAsync()
+    {
+        try
+        {
+            await _highlightRuleService.SaveAsync(_highlightRules);
+        }
+        catch (Exception ex)
+        {
+            // The in-memory rules stay live, so highlighting keeps working for this session and the
+            // next edit retries. Only durability failed, and saying so beats silence.
+            _logger.LogError(ex, "Failed to persist the highlight rules");
+            StatusMessage = "高亮规则保存失败，请检查设置文件是否可写";
         }
     }
 
@@ -3509,6 +3684,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // and give this flush a degraded budget with a non-degraded gate.
         var degraded = _outputPressure.Current.IsDegraded;
         var entryBudget = degraded ? MaxUiLogEntriesPerFlushDegraded : MaxUiLogEntriesPerFlush;
+
+        // Drop keyword highlighting for as long as the flood lasts. SetProperty only notifies on a real
+        // change, which matters here: this line runs on every flush, and notifying per flush would put
+        // a property change plus a viewport walk on the UI thread for a value that had not moved.
+        IsHighlightSuppressed = degraded;
 
         var processedLogCount = 0;
         var batchesToFlush = new List<PendingLogBatch>();

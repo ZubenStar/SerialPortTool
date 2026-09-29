@@ -1,11 +1,14 @@
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using SerialPortTool.Models;
+using SerialPortTool.Services;
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Linq;
@@ -82,6 +85,232 @@ public sealed partial class LogListView : UserControl
 
     /// <summary>Raised when the clipboard refused the content. Argument is the failure message.</summary>
     public event EventHandler<string>? CopyFailed;
+
+    // ---------------------------------------------------------------------------------------
+    // Keyword highlighting (v2.2.4).
+    //
+    // Painted with TextBlock.TextHighlighters rather than inline Runs or an extra TextBlock:
+    // highlighters are a property of the element that is already there, so the row stays at two
+    // elements. That shape is a deliberate virtualization decision (see the template's own comment),
+    // and adding a container per row is exactly what the do-not-regress notes warn against. Nothing
+    // here touches the wheel interception or the pinned-to-bottom state machine.
+    //
+    // The snapshot is supplied by MainViewModel, compiled from the user's rules for the active
+    // appearance; this control knows nothing about "rules" beyond "a pattern with a colour". While
+    // the receive path is under output pressure the ViewModel suppresses it and every realized row
+    // drops its decoration — highlighting is the most expensive per-line work the view does, so it is
+    // the first thing to go, and it comes back on its own once the flood passes.
+    // ---------------------------------------------------------------------------------------
+
+    public static readonly DependencyProperty HighlightMatcherProperty = DependencyProperty.Register(
+        nameof(HighlightMatcher),
+        typeof(IHighlightMatcher),
+        typeof(LogListView),
+        new PropertyMetadata(null, OnHighlightingChanged));
+
+    public static readonly DependencyProperty IsHighlightSuppressedProperty = DependencyProperty.Register(
+        nameof(IsHighlightSuppressed),
+        typeof(bool),
+        typeof(LogListView),
+        new PropertyMetadata(false, OnHighlightingChanged));
+
+    /// <summary>
+    /// The compiled highlight snapshot, or null when highlighting is off.
+    /// </summary>
+    /// <remarks>
+    /// Replaced wholesale on every rule edit and on every appearance switch, because the resolved
+    /// colours come from the palette. Never mutated in place.
+    /// </remarks>
+    public IHighlightMatcher? HighlightMatcher
+    {
+        get => (IHighlightMatcher?)GetValue(HighlightMatcherProperty);
+        set => SetValue(HighlightMatcherProperty, value);
+    }
+
+    /// <summary>
+    /// When true, no row is decorated. Driven by <c>IOutputPressureService</c> through the ViewModel.
+    /// </summary>
+    public bool IsHighlightSuppressed
+    {
+        get => (bool)GetValue(IsHighlightSuppressedProperty);
+        set => SetValue(IsHighlightSuppressedProperty, value);
+    }
+
+    /// <summary>
+    /// Brushes for the current snapshot, keyed by rule index.
+    /// </summary>
+    /// <remarks>
+    /// Keyed by rule rather than by match on purpose: several matches of one rule must resolve to a
+    /// single brush, and the number of rules is small by construction. Cleared whenever the snapshot
+    /// or the suppression changes, because a new generation is exactly when the resolved colours may
+    /// differ — rules edited, or the appearance switched.
+    /// </remarks>
+    private readonly Dictionary<int, SolidColorBrush> _highlightBrushes = new();
+
+    private static void OnHighlightingChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    {
+        if (sender is LogListView list)
+        {
+            list._highlightBrushes.Clear();
+            list.RefreshRowHighlights();
+        }
+    }
+
+    /// <summary>
+    /// Wires a realized row's TextBlock so its decoration follows whichever item it is recycled onto.
+    /// </summary>
+    /// <remarks>
+    /// <c>Loaded</c> alone would not be enough: containers are recycled, so the same TextBlock is
+    /// reused for a different <see cref="LogEntry"/> without ever being reloaded, and
+    /// <c>DataContextChanged</c> is what fires on that handover. The unhook-then-hook is deliberate —
+    /// <c>Loaded</c> can fire again after a detach/re-attach (the same double-subscription hazard the
+    /// wheel handlers document), and a duplicate subscription would decorate twice per recycle.
+    /// </remarks>
+    private void RowText_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBlock text)
+        {
+            return;
+        }
+
+        text.DataContextChanged -= RowText_DataContextChanged;
+        text.DataContextChanged += RowText_DataContextChanged;
+        ApplyRowHighlight(text);
+    }
+
+    private void RowText_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is TextBlock text)
+        {
+            text.DataContextChanged -= RowText_DataContextChanged;
+        }
+    }
+
+    private void RowText_DataContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
+    {
+        if (sender is TextBlock text)
+        {
+            ApplyRowHighlight(text);
+        }
+    }
+
+    /// <summary>Paints, or clears, the decorations on one realized row.</summary>
+    private void ApplyRowHighlight(TextBlock text)
+    {
+        var matcher = HighlightMatcher;
+
+        if (IsHighlightSuppressed ||
+            matcher is null ||
+            matcher.IsEmpty ||
+            text.DataContext is not LogEntry entry)
+        {
+            if (text.TextHighlighters.Count > 0)
+            {
+                text.TextHighlighters.Clear();
+            }
+
+            return;
+        }
+
+        // Per-entry cache keyed by generation. A row is re-realized on every recycle, and the result
+        // depends only on the line text and the rule set — never on which container happens to be
+        // showing it. Reading FormattedText here costs nothing after the binding has done it once.
+        if (entry.HighlightGeneration != matcher.Generation)
+        {
+            entry.HighlightMatches = new List<HighlightMatch>(matcher.Match(entry.FormattedText));
+            entry.HighlightGeneration = matcher.Generation;
+        }
+
+        text.TextHighlighters.Clear();
+
+        var matches = entry.HighlightMatches;
+        if (matches is null || matches.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var match in matches)
+        {
+            var highlighter = new TextHighlighter
+            {
+                // Foreground rather than a translucent Background wash: the palette's dark variants
+                // already exist to stay legible on #101317, so this needs no alpha maths and keeps the
+                // same answer on all three palettes. The port colour is overridden only inside the
+                // match, which is the signal the user asked for.
+                Foreground = GetHighlightBrush(matcher, match.RuleIndex),
+            };
+            highlighter.Ranges.Add(new TextRange
+            {
+                StartIndex = match.Start,
+                Length = match.Length,
+            });
+
+            text.TextHighlighters.Add(highlighter);
+        }
+    }
+
+    /// <summary>Brush for one rule index, built once per snapshot.</summary>
+    private SolidColorBrush GetHighlightBrush(IHighlightMatcher matcher, int ruleIndex)
+    {
+        if (_highlightBrushes.TryGetValue(ruleIndex, out var brush))
+        {
+            return brush;
+        }
+
+        // The hex was already resolved for the active appearance when the snapshot was compiled, so
+        // this is a parse, not a palette lookup.
+        brush = new SolidColorBrush(PortColorPalette.ParseHex(matcher.ColorHexFor(ruleIndex)));
+        _highlightBrushes[ruleIndex] = brush;
+        return brush;
+    }
+
+    /// <summary>
+    /// Re-decorates every realized row.
+    /// </summary>
+    /// <remarks>
+    /// Walks the realized containers instead of forcing a view rebuild: a <c>Reset</c> would discard
+    /// and re-create every container — precisely the cost the flush loop is tuned to avoid — just to
+    /// change some foreground colours. Rules and the suppression flag are both rare, user-driven
+    /// changes, so one viewport walk is the cheap side of that trade.
+    /// </remarks>
+    private void RefreshRowHighlights()
+    {
+        if (InnerListView.ItemsPanelRoot is not Panel panel)
+        {
+            return;
+        }
+
+        foreach (var child in panel.Children)
+        {
+            var text = FindRowTextBlock(child);
+            if (text is not null)
+            {
+                ApplyRowHighlight(text);
+            }
+        }
+    }
+
+    /// <summary>Returns the row's single TextBlock inside one realized container.</summary>
+    private static TextBlock? FindRowTextBlock(DependencyObject container)
+    {
+        var count = VisualTreeHelper.GetChildrenCount(container);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(container, i);
+            if (child is TextBlock text)
+            {
+                return text;
+            }
+
+            var nested = FindRowTextBlock(child);
+            if (nested is not null)
+            {
+                return nested;
+            }
+        }
+
+        return null;
+    }
 
     private readonly DispatcherQueueTimer? _autoScrollTimer;
     private bool _isAutoScrollPending;

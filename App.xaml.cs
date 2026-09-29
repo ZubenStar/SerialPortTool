@@ -161,6 +161,7 @@ public partial class App : Application
         services.AddSingleton<IOutputPressureService, OutputPressureService>();
         services.AddSingleton<INotificationService, NotificationService>();
         services.AddSingleton<ISnippetService, SnippetService>();
+        services.AddSingleton<IHighlightRuleService, HighlightRuleService>();
 
         // Register ViewModels
         services.AddTransient<MainViewModel>();

@@ -25,6 +25,7 @@ SerialPortTool 面向需要同时盯多个串口的调试与产线场景：多�
 - **Tuning / TOTA 推送（隐藏功能，默认关闭）**：需先在「工具 → 启用 Tuning 功能」中勾选（状态会记住），工具条才会出现 Tuning 面板；选择 `.bin` 载荷与自备的 JSON 协议描述文件后广播到所有已打开串口，支持监听文件变化自动重发。取消勾选会隐藏面板并停止自动监听，但已保存的 `.bin` / JSON 路径与监听偏好都会保留。
 - **数据发送**：文本 / 十六进制模式（十六进制支持空格 / `-` / `,` / `:` 等分隔符与每组可选的 `0x` 前缀），回车或点「发送」即可广播到全部已打开串口。
 - **快捷指令库**：把常用内容存成带**名称与分组**的指令，在发送框旁的「快捷」里一键广播到全部已打开串口。指令可标记为十六进制，也可开启变量解释（`${date}` / `${time}` / `${datetime}` / `${epoch}` / `${epochms}` 与 `\r` `\n` `\t` 转义；**未识别的写法原样发送**，不会吞掉你输入的字面内容）。库随 `settings.json` 一起保存，重启与升级都不会丢；每条可单独删除。
+- **关键字高亮**：在搜索框旁的「高亮」里添加规则（纯文本或正则、可选区分大小写、颜色取自与端口标识同一套色板），命中的文字会在日志里染上该颜色，方便一眼扫出 `ERROR` / `TIMEOUT` 之类。规则随 `settings.json` 保存，可逐条启用/停用/删除。高亮属于「装饰」：**数据洪水期间会自动暂停、洪峰过后自动恢复**，日志内容、落盘文件与筛选完全不受影响；添加时无法生效的正则会当场被拒绝，而不是默默什么都不做。
 - **日志落盘**：串口日志异步批量写盘；应用运行日志（Serilog）可在「工具 → 打开日志文件夹」直接定位，或随时按 `F9` 打开。
 - **检查更新 / 自动更新**：每次启动都会在后台静默检查 GitHub Releases（发现新版本后本地记住、不再重复联网；没有待处理更新时两次检查至少间隔 30 分钟，程序持续运行时每 24 小时再补查一次），有新版本时提示并可下载安装；「帮助 → 检查更新」可随时手动检查。
 - **现代化界面**：Fluent Design + 云母材质标题栏，深浅两套配色（另含高对比主题），统一的字形图标与控件样式，统一的卡片/面板外观，日志列表虚拟化，可跑高吞吐数据流；尚未打开串口时日志区会给出「怎么开始」的引导提示，而不是一片空白。
@@ -67,8 +68,9 @@ SerialPortTool/
 ├── Models/                          # SerialPortConfig、LogEntry、FilterRule、PortStatistics、
 │                                    # PortColorSlot / PortColorPalette、LogPressureSnapshot、
 │                                    # NotificationItem、SendSnippet / SnippetGroup、
+│                                    # HighlightRule / HighlightMatch、
 │                                    # UpdateReleaseInfo / UpdateCheckResult
-├── Services/                        # 串口、波特率检测、数据校验、输出压力采样、通知、快捷指令库、日志过滤、文件日志、设置、Tuning 协议、更新与安装
+├── Services/                        # 串口、波特率检测、数据校验、输出压力采样、通知、快捷指令库、关键字高亮、日志过滤、文件日志、设置、Tuning 协议、更新与安装
 ├── ViewModels/                      # MainViewModel（含 RangeObservableCollection、PortViewModel、PortColorOption）
 ├── installer/SerialPortTool.iss     # Inno Setup 安装程序脚本（每用户安装，支持静默替换升级）
 ├── scripts/                         # 版本、构建信息、清单版本、安装包、publish 目录裁剪

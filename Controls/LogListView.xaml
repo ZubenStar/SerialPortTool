@@ -108,6 +108,12 @@
                                 CornerRadius="1.5"
                                 Background="{x:Bind ColorHex, Converter={StaticResource HexColorToBrushConverter}, Mode=OneWay}" />
 
+                        <!-- Keyword highlighting is applied by Loaded/Unloaded here rather than by any
+                             element declared above. TextBlock.TextHighlighters is a property of this
+                             element, so the row keeps its two-element shape — adding a container per row
+                             would cost virtualization time, which is the point of the comment above. The
+                             handlers also subscribe to DataContextChanged, because recycled containers
+                             reuse this TextBlock for a different LogEntry without reloading it. -->
                         <TextBlock Grid.Column="1"
                                    Text="{x:Bind FormattedText}"
                                    Foreground="{x:Bind ColorHex, Converter={StaticResource HexColorToBrushConverter}, Mode=OneWay}"
@@ -115,7 +121,9 @@
                                    FontSize="13"
                                    TextWrapping="NoWrap"
                                    IsTextSelectionEnabled="False"
-                                   Padding="0,1,0,1" />
+                                   Padding="0,1,0,1"
+                                   Loaded="RowText_Loaded"
+                                   Unloaded="RowText_Unloaded" />
                     </Grid>
                 </DataTemplate>
             </ListView.ItemTemplate>

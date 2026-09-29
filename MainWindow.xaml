@@ -479,8 +479,11 @@
                             </Grid.ColumnDefinitions>
 
                             <Grid Grid.Column="0">
+                                <!-- 搜索 / Aa / .* / 历史 / 高亮 / 清空 — all Auto so a narrow window
+                                     shrinks the box, never the buttons. -->
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="Auto" />
@@ -606,6 +609,86 @@
                                         Click="ClearSearchText_Click"
                                         ToolTipService.ToolTip="清空当前搜索"
                                         Visibility="{Binding CanClearSearch, Converter={StaticResource BoolToVisibilityConverter}}" />
+
+                                <!-- Keyword highlighting sits with the search box: it decorates the same
+                                     rows, and it is edited far more often than it is switched. -->
+                                <Button Grid.Column="6"
+                                        x:Name="HighlightRulesButton"
+                                        Style="{StaticResource AppToolbarIconButtonStyle}"
+                                        Margin="4,0,0,0"
+                                        ToolTipService.ToolTip="关键字高亮规则">
+                                    <FontIcon Glyph="&#xE7E6;" FontSize="13" />
+                                    <Button.Flyout>
+                                        <Flyout x:Name="HighlightRulesFlyout" Placement="Bottom">
+                                            <StackPanel Width="360" Spacing="8">
+                                                <TextBlock Text="关键字高亮"
+                                                           Style="{StaticResource AppSectionLabelStyle}" />
+
+                                                <TextBlock Text="还没有高亮规则。添加后命中的文字会被染色；数据洪水期间会自动暂停，洪峰过去后恢复。"
+                                                           Style="{StaticResource AppEmptyStateBodyStyle}"
+                                                           Visibility="{Binding HasHighlightRules, Converter={StaticResource InverseBoolToVisibilityConverter}}" />
+
+                                                <ScrollViewer MaxHeight="240"
+                                                              VerticalScrollBarVisibility="Auto"
+                                                              HorizontalScrollBarVisibility="Disabled">
+                                                    <ItemsControl ItemsSource="{x:Bind ViewModel.HighlightRules, Mode=OneWay}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <Grid Margin="0,1">
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="Auto" />
+                                                                        <ColumnDefinition Width="Auto" />
+                                                                        <ColumnDefinition Width="*" />
+                                                                        <ColumnDefinition Width="Auto" />
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <!-- IsChecked reads the model once; the write goes through the
+                                                                         handler, which recompiles the snapshot and persists. A
+                                                                         TwoWay binding could not do that on a non-observable
+                                                                         persistence model. -->
+                                                                    <CheckBox Grid.Column="0"
+                                                                              MinWidth="0"
+                                                                              Margin="0,0,6,0"
+                                                                              IsChecked="{Binding Enabled, Mode=OneWay}"
+                                                                              Tag="{Binding}"
+                                                                              Click="ToggleHighlightRule_Click"
+                                                                              ToolTipService.ToolTip="启用 / 停用此规则" />
+                                                                    <Border Grid.Column="1"
+                                                                            Width="12"
+                                                                            Height="12"
+                                                                            Margin="0,0,8,0"
+                                                                            VerticalAlignment="Center"
+                                                                            CornerRadius="3"
+                                                                            Background="{Binding RenderedColorHex, Converter={StaticResource HexColorToBrushConverter}}" />
+                                                                    <TextBlock Grid.Column="2"
+                                                                               VerticalAlignment="Center"
+                                                                               TextTrimming="CharacterEllipsis"
+                                                                               Text="{Binding Pattern}"
+                                                                               ToolTipService.ToolTip="{Binding Pattern}" />
+                                                                    <Button Grid.Column="3"
+                                                                            Style="{StaticResource AppToolbarIconButtonStyle}"
+                                                                            Content="&#xE74D;"
+                                                                            FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                                            FontSize="12"
+                                                                            Tag="{Binding}"
+                                                                            Click="DeleteHighlightRule_Click"
+                                                                            ToolTipService.ToolTip="删除此规则" />
+                                                                </Grid>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                </ScrollViewer>
+
+                                                <Border Style="{StaticResource AppVerticalDividerStyle}" />
+
+                                                <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                                        HorizontalAlignment="Stretch"
+                                                        Content="添加高亮规则…"
+                                                        Click="AddHighlightRule_Click"
+                                                        ToolTipService.ToolTip="指定匹配内容与颜色" />
+                                            </StackPanel>
+                                        </Flyout>
+                                    </Button.Flyout>
+                                </Button>
                             </Grid>
 
                             <!-- Regex diagnostics sit next to the box they describe -->
@@ -832,6 +915,8 @@
                                           ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
                                           IsPaused="{x:Bind ViewModel.IsPaused, Mode=OneWay}"
                                           IsPinnedToBottom="{x:Bind ViewModel.IsLogPinnedToBottom, Mode=TwoWay}"
+                                          HighlightMatcher="{x:Bind ViewModel.HighlightMatcher, Mode=OneWay}"
+                                          IsHighlightSuppressed="{x:Bind ViewModel.IsHighlightSuppressed, Mode=OneWay}"
                                           CopyCompleted="LogListView_CopyCompleted"
                                           CopyFailed="LogListView_CopyFailed" />
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace SerialPortTool.Models;
@@ -85,8 +86,35 @@ public partial class LogEntry : ObservableObject
     /// <summary>
     /// 清除缓存的格式化文本(当属性变化时调用)
     /// </summary>
-    partial void OnContentChanged(string value) => _cachedFormattedText = null;
-    partial void OnPortNameChanged(string value) => _cachedFormattedText = null;
-    partial void OnTimestampChanged(DateTime value) => _cachedFormattedText = null;
-    partial void OnIsReceivedChanged(bool value) => _cachedFormattedText = null;
+    partial void OnContentChanged(string value) => InvalidateCaches();
+    partial void OnPortNameChanged(string value) => InvalidateCaches();
+    partial void OnTimestampChanged(DateTime value) => InvalidateCaches();
+    partial void OnIsReceivedChanged(bool value) => InvalidateCaches();
+
+    // ---- Highlight cache (v2.2.4) --------------------------------------------------------------
+    // Keyword highlighting is per-row decoration, and rows are re-realized on every recycle, so the
+    // regex work is cached here against the matcher's generation rather than repeated per
+    // realization. The generation is what makes invalidation free: editing a rule bumps it, and every
+    // entry is then stale on sight — no walk over the log buffer, no per-entry notification.
+    //
+    // A List rather than an array because the matcher produces it, and an *empty* list is a
+    // meaningful cached answer ("this line matched nothing"); null means "not computed yet".
+
+    /// <summary>Matcher generation these matches were computed against, or -1 when never computed.</summary>
+    internal int HighlightGeneration { get; set; } = -1;
+
+    /// <summary>Cached matches for <see cref="HighlightGeneration"/>, or null when not computed yet.</summary>
+    internal List<HighlightMatch>? HighlightMatches { get; set; }
+
+    /// <summary>
+    /// Drops both caches. Every property that feeds <see cref="FormattedText"/> must call this: the
+    /// highlight offsets are indices into that string, so a stale format silently paints the wrong
+    /// characters — the same class of bug as a stale <c>FormattedText</c>, and just as invisible.
+    /// </summary>
+    private void InvalidateCaches()
+    {
+        _cachedFormattedText = null;
+        HighlightGeneration = -1;
+        HighlightMatches = null;
+    }
 }
