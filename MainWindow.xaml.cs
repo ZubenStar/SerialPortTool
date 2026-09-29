@@ -32,6 +32,13 @@ public sealed partial class MainWindow : Window
 
     private const int SidebarAnimationMs = 150;
 
+    /// <summary>Length of the appearance crossfade that softens a light/dark switch.</summary>
+    private const int ThemeTransitionMs = 180;
+
+    /// <summary>Reveal / dismiss lengths for panel-like surfaces (currently the baud-rate banner).</summary>
+    private const int PanelRevealMs = 160;
+    private const int PanelDismissMs = 120;
+
     /// <summary>Fallback when the design token cannot be read; mirrors AppSidebarWidth in Tokens.xaml.</summary>
     private const double SidebarWidthFallback = 272;
 
@@ -41,6 +48,7 @@ public sealed partial class MainWindow : Window
     private readonly IUpdateService _updateService;
     private readonly IUpdateInstallerService _updateInstallerService;
     private readonly ISettingsService _settingsService;
+    private readonly INotificationService _notifications;
 
     // Shell state.
     private AppThemePreference _themePreference = AppThemePreference.System;
@@ -48,6 +56,18 @@ public sealed partial class MainWindow : Window
     private double _sidebarAnimationTarget;
     private bool _sidebarAppliedCollapsed;
     private bool _animationsEnabled = true;
+
+    /// <summary>Darkness the shell last applied — the crossfade only runs when this actually flips.</summary>
+    private bool _appliedEffectiveIsDark;
+
+    /// <summary>False until <see cref="UpdateEffectiveTheme"/> has run once, so startup never fades.</summary>
+    private bool _hasAppliedEffectiveTheme;
+
+    /// <summary>
+    /// Bumped every time the baud-rate banner is shown. A fade-out that is still in flight is
+    /// cancelled by comparing against it, so it cannot collapse a banner that was just re-shown.
+    /// </summary>
+    private int _alertAnimationGeneration;
 
     /// <summary>
     /// Darkness the current <see cref="MicaBackdrop"/> was created for; <c>null</c> when no material
@@ -76,6 +96,7 @@ public sealed partial class MainWindow : Window
         _updateService = App.Current.Services.GetRequiredService<IUpdateService>();
         _updateInstallerService = App.Current.Services.GetRequiredService<IUpdateInstallerService>();
         _settingsService = App.Current.Services.GetRequiredService<ISettingsService>();
+        _notifications = App.Current.Services.GetRequiredService<INotificationService>();
 
         InitializeComponent();
 
@@ -269,9 +290,49 @@ public sealed partial class MainWindow : Window
         // light or dark once the element has actually been themed.
         var isDark = RootLayout.ActualTheme == ElementTheme.Dark;
 
+        // Only a real flip is worth a transition, and never the first resolution: the shell applies
+        // the saved appearance before the window is shown, and fading that would put a pointless
+        // flash on every launch of a dark-theme install.
+        var changed = _hasAppliedEffectiveTheme && _appliedEffectiveIsDark != isDark;
+        _hasAppliedEffectiveTheme = true;
+        _appliedEffectiveIsDark = isDark;
+
         ApplyTitleBarColors(isDark);
         RefreshBackdropTheme(isDark);
         ViewModel.ApplyEffectiveTheme(isDark);
+
+        if (changed)
+        {
+            RunThemeTransition();
+        }
+    }
+
+    /// <summary>
+    /// Softens an appearance switch with a short crossfade of the whole content root.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A dip from ~70% back to full opacity rather than a fade through the *other* palette's
+    /// background: under Mica the root has no background at all (it is cleared so the material shows
+    /// through — see <see cref="SetupBackdrop"/>), so an overlay colour would be wrong on exactly the
+    /// machines that render the material, and a full 0→1 fade reads as a blink.
+    /// </para>
+    /// <para>
+    /// <c>Opacity</c> is composition-backed, so this needs no <c>EnableDependentAnimation</c> and the
+    /// UI thread only pays for the assignment. Skipped entirely when the system reports animations
+    /// disabled — the same guard the sidebar width animation uses. Note the system caption buttons
+    /// are painted outside this tree, so they still change instantly; only the app's own chrome and
+    /// content cross-fade.
+    /// </para>
+    /// </remarks>
+    private void RunThemeTransition()
+    {
+        if (!_animationsEnabled)
+        {
+            return;
+        }
+
+        RunOpacityFade(RootLayout, from: 0.7, to: 1.0, ThemeTransitionMs, EasingMode.EaseOut);
     }
 
     /// <summary>
@@ -933,16 +994,25 @@ public sealed partial class MainWindow : Window
     private void LogListView_CopyCompleted(object? sender, int count)
     {
         ViewModel.StatusMessage = $"已复制 {count} 条日志到剪贴板";
+        _notifications.Notify($"已复制 {count} 条日志", InfoBarSeverity.Success);
     }
 
     /// <remarks>
     /// A clipboard refusal is a normal, recoverable situation (another process has the clipboard
-    /// open), so it degrades to a status message rather than an exception dialog.
+    /// open), so it degrades to a message rather than an exception dialog. It also gets the sticky
+    /// treatment on purpose: the user pressed Ctrl+C and the clipboard stayed empty, which is exactly
+    /// the kind of failure a status-bar line loses. The status line keeps the short form and the bar
+    /// stays until it is dismissed.
     /// </remarks>
     private void LogListView_CopyFailed(object? sender, string message)
     {
         _clipboardCopyFailed = true;
         ViewModel.StatusMessage = $"复制失败：剪贴板被其他程序占用，请稍后重试（{message}）";
+        _notifications.Notify(
+            $"剪贴板被其他程序占用（{message}）。请稍后重试。",
+            InfoBarSeverity.Error,
+            title: "复制失败",
+            autoDismissMs: 0);
     }
 
     private void CustomBaudRateCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -977,13 +1047,103 @@ public sealed partial class MainWindow : Window
         // 如果置信度很高，显示自动修复按钮
         AutoFixBaudRateButton.Visibility = e.ShouldAutoSwitch ? Visibility.Visible : Visibility.Collapsed;
         
+        ShowBaudRateAlert();
+    }
+
+    /// <summary>
+    /// Reveals the banner with a short opacity ramp.
+    /// </summary>
+    /// <remarks>
+    /// Opacity rather than height on purpose: the banner lives in an <c>Auto</c> grid row, so
+    /// animating that row would be a layout animation (<c>EnableDependentAnimation</c>, i.e. UI-thread
+    /// work on every frame) for a surface that is appearing as one piece anyway. The row collapsing
+    /// the instant the dismiss ramp ends is deliberate too — by then the content is already invisible,
+    /// so nothing the eye is following moves.
+    /// </remarks>
+    private void ShowBaudRateAlert()
+    {
+        _alertAnimationGeneration++;
         BaudRateAlertBorder.Visibility = Visibility.Visible;
+
+        if (!_animationsEnabled)
+        {
+            BaudRateAlertBorder.Opacity = 1.0;
+            return;
+        }
+
+        RunOpacityFade(BaudRateAlertBorder, from: 0.0, to: 1.0, PanelRevealMs, EasingMode.EaseOut);
     }
 
     private void HideBaudRateAlert()
     {
-        BaudRateAlertBorder.Visibility = Visibility.Collapsed;
         _suggestedPortName = null;
+
+        var generation = ++_alertAnimationGeneration;
+        if (!_animationsEnabled || BaudRateAlertBorder.Visibility != Visibility.Visible)
+        {
+            BaudRateAlertBorder.Visibility = Visibility.Collapsed;
+            BaudRateAlertBorder.Opacity = 1.0;
+            return;
+        }
+
+        RunOpacityFade(
+            BaudRateAlertBorder,
+            from: BaudRateAlertBorder.Opacity,
+            to: 0.0,
+            PanelDismissMs,
+            EasingMode.EaseIn,
+            onCompleted: () =>
+            {
+                // A show that landed while this fade was in flight owns the banner now.
+                if (generation != _alertAnimationGeneration)
+                {
+                    return;
+                }
+
+                BaudRateAlertBorder.Visibility = Visibility.Collapsed;
+                BaudRateAlertBorder.Opacity = 1.0;
+            });
+    }
+
+    /// <summary>
+    /// Runs a one-shot opacity fade and lets the storyboard be collected when it ends.
+    /// </summary>
+    /// <remarks>
+    /// A fresh <see cref="Storyboard"/> per call instead of a reused field: these fire on user
+    /// actions (an appearance switch, a banner appearing), never on a hot path, and building one per
+    /// call is what allows the completion callback to be closed over without leaving a handler
+    /// subscribed to a shared instance for the life of the window. <c>FillBehavior.Stop</c> returns
+    /// the target to its base opacity when the animation ends, so no animated value stays held on the
+    /// composition tree — and <c>Opacity</c> is composition-backed, so no
+    /// <c>EnableDependentAnimation</c> is required or wanted here.
+    /// </remarks>
+    private static void RunOpacityFade(
+        DependencyObject target,
+        double from,
+        double to,
+        int durationMs,
+        EasingMode easing,
+        Action? onCompleted = null)
+    {
+        var animation = new DoubleAnimation
+        {
+            From = from,
+            To = to,
+            Duration = new Duration(TimeSpan.FromMilliseconds(durationMs)),
+            EasingFunction = new CubicEase { EasingMode = easing },
+            FillBehavior = FillBehavior.Stop
+        };
+        Storyboard.SetTarget(animation, target);
+        Storyboard.SetTargetProperty(animation, "Opacity");
+
+        var storyboard = new Storyboard();
+        storyboard.Children.Add(animation);
+        if (onCompleted is not null)
+        {
+            storyboard.Completed += (_, _) => onCompleted();
+        }
+
+        storyboard.Begin();
     }
     
     private async void AutoFixBaudRate_Click(object sender, RoutedEventArgs e)

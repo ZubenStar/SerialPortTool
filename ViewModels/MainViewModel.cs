@@ -257,6 +257,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly Services.IBaudRateDetectorService? _baudRateDetectorService;
     private readonly Services.IDataValidationService? _dataValidationService;
 
+    // How hard the receive path is currently being pushed. Written from each port's read thread,
+    // read here on the UI thread to decide whether the flush may skip its optional work — see
+    // IOutputPressureService and the 借鉴 Backlog in AGENTS.md.
+    private readonly IOutputPressureService _outputPressure;
+
+    private readonly INotificationService _notifications;
+
+    /// <summary>
+    /// Transient notifications, bound by the shell's bottom-right host.
+    /// </summary>
+    /// <remarks>
+    /// Surfaced through the ViewModel because <c>RootLayout.DataContext</c> already *is* the
+    /// ViewModel — the window has no reason to introduce a second binding root just for this stack.
+    /// </remarks>
+    public ReadOnlyObservableCollection<NotificationItem> Notifications => _notifications.Items;
+
     [ObservableProperty]
     private string _title = $"串口工具 - Multi-Port Serial Monitor {VersionInfo.VersionString}";
     
@@ -1250,12 +1266,33 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // keeping each UI flush short enough that the user's wheel/drag input stays responsive.
     private const int MaxUiLogEntriesPerFlush = 100;
     private const int FlushIntervalMs = 50;
+
+    // Adaptive cadence (v2.2.4). While IOutputPressureService reports a flood the flush runs less
+    // often and applies a proportionally larger batch.
+    //
+    // The two knobs must move together, and that is the whole point: the flush's dominant cost is the
+    // Reset it publishes (AddRange above 32 entries collapses into one), which discards every realized
+    // container and rebuilds the visible window — a cost bounded by the viewport, not by the batch
+    // size. Fewer flushes therefore means proportionally fewer rebuilds for the same total entries.
+    // Widening the interval *without* widening the budget would instead cut the drain rate from 2000
+    // to ~670 entries/s, and MaxQueuedLogEntries would then start dropping lines during exactly the
+    // flood the degradation exists to survive.
+    private const int DegradedFlushIntervalMs = 150;
+    private const int MaxUiLogEntriesPerFlushDegraded =
+        MaxUiLogEntriesPerFlush * (DegradedFlushIntervalMs / FlushIntervalMs);
+
     private const int ErrorStatusThrottleMs = 250;
     // Port stat counters don't need 20Hz UI updates; ~4Hz is visually identical and skips
     // most per-flush GetStatistics/UpdateStatistics work.
     private const int StatsRefreshIntervalMs = 250;
 
     private DispatcherQueueTimer? _flushTimer;
+
+    // The interval currently assigned to _flushTimer, so an unchanged cadence does not reassign it
+    // (Interval can only be assigned while the timer is stopped, and the getter is not a reliable
+    // comparison source). UI thread only.
+    private int _appliedFlushIntervalMs;
+
     private long _lastErrorStatusTicks;
     // Ports whose stats are due for a UI refresh. Only touched on the UI thread
     // (FlushPendingLogBatches), so no synchronization needed.
@@ -1360,6 +1397,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         IFileLoggerService fileLoggerService,
         ISettingsService settingsService,
         ILogger<MainViewModel> logger,
+        IOutputPressureService outputPressure,
+        INotificationService notifications,
         Services.IBaudRateDetectorService? baudRateDetectorService = null,
         Services.IDataValidationService? dataValidationService = null)
     {
@@ -1369,6 +1408,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _settingsService = settingsService;
         _logger = logger;
         _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
+        _outputPressure = outputPressure;
+        _notifications = notifications;
         _baudRateDetectorService = baudRateDetectorService;
         _dataValidationService = dataValidationService;
 
@@ -2807,6 +2848,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // text the user has just cleared, and the buffers stay allocated for the whole session.
             _lineAssemblers.Clear();
 
+            // The pressure verdict described a stream that is no longer on screen. Left armed it would
+            // keep the first flushes after the clear degraded for up to OutputPressureService.QuietMs.
+            _outputPressure.Reset();
+
             // Clear both AllLogs and DisplayLogs collections
             AllLogs.Clear();
             DisplayLogs.Clear();
@@ -3042,7 +3087,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 _logger.LogWarning("⚠️ Line count exceeds limit: Got {Count} lines, capping at {Max}, Port={Port}",
                     lines.Count, maxLines, portName);
             }
-            
+
+            // Report the accepted chunk to the pressure sampler. Runs on this port's read thread and
+            // is lock-free and allocation-free: it only counts, it decides nothing about the data.
+            // Lines (not bytes) drive the flood verdict because a line is what the UI pays for, and
+            // the un-terminated tail doubles as the long-line measure — ExtractCompleteLines leaves
+            // whatever has no terminator in Pending, which is exactly the "line that never ends" case.
+            _outputPressure.NoteIncoming(dataSize, maxLines, assembler.Pending.Length);
+
             // Pre-allocate to reduce reallocations
             var newLogs = new List<LogEntry>(maxLines > 1 ? maxLines : 1);
             
@@ -3198,22 +3250,56 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             _flushTimer = _dispatcherQueue.CreateTimer();
             _flushTimer.Interval = TimeSpan.FromMilliseconds(FlushIntervalMs);
+            _appliedFlushIntervalMs = FlushIntervalMs;
             _flushTimer.IsRepeating = false;
             _flushTimer.Tick += (_, _) => FlushPendingLogBatches();
         }
 
         if (!_flushTimer.IsRunning)
         {
+            // The cadence is re-decided for every armed tick rather than fixed at creation, because a
+            // flood is exactly when the flush rate matters most. The assignment sits inside the
+            // IsRunning guard: a DispatcherQueueTimer's Interval may only be changed while it is
+            // stopped, and the timer is non-repeating so a fired tick leaves it stopped.
+            var intervalMs = ResolveFlushIntervalMs();
+            if (intervalMs != _appliedFlushIntervalMs)
+            {
+                _flushTimer.Interval = TimeSpan.FromMilliseconds(intervalMs);
+                _appliedFlushIntervalMs = intervalMs;
+            }
+
             _flushTimer.Start();
         }
     }
 
+    /// <summary>
+    /// Picks the cadence the next flush tick is armed with: <see cref="FlushIntervalMs"/> normally,
+    /// <see cref="DegradedFlushIntervalMs"/> while the receive path is under output pressure.
+    /// </summary>
+    /// <remarks>
+    /// Called on the UI thread, once per armed tick. This is the cadence half of the pressure
+    /// mechanism — <see cref="IOutputPressureService"/> decides *whether* the flush may do less,
+    /// this decides *how often* it runs at all, and
+    /// <see cref="MaxUiLogEntriesPerFlushDegraded"/> keeps the drain rate unchanged so the two halves
+    /// stay consistent. The interval never drops below <see cref="FlushIntervalMs"/>: the low-rate
+    /// case is what this app normally runs in, and a line that appears later than 20 Hz reads as lag
+    /// rather than as smoothness.
+    /// </remarks>
+    private int ResolveFlushIntervalMs() =>
+        _outputPressure.Current.IsDegraded ? DegradedFlushIntervalMs : FlushIntervalMs;
+
     private void FlushPendingLogBatches()
     {
+        // Read the verdict once and feed both decisions from the same reading: the batch budget here
+        // and the optional-work gate further down. Reading it twice could straddle a window boundary
+        // and give this flush a degraded budget with a non-degraded gate.
+        var degraded = _outputPressure.Current.IsDegraded;
+        var entryBudget = degraded ? MaxUiLogEntriesPerFlushDegraded : MaxUiLogEntriesPerFlush;
+
         var processedLogCount = 0;
         var batchesToFlush = new List<PendingLogBatch>();
 
-        while (processedLogCount < MaxUiLogEntriesPerFlush &&
+        while (processedLogCount < entryBudget &&
                _pendingLogBatches.TryDequeue(out var batch))
         {
             batchesToFlush.Add(batch);
@@ -3235,9 +3321,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 ? null
                 : GetOrCreateSearchMatcher(searchTextSnapshot, IsRegexSearch, IsCaseSensitiveSearch);
 
-            var estimatedLogCount = batchesToFlush.Sum(batch => batch.Logs.Count);
-            var allLogsToAdd = new List<LogEntry>(estimatedLogCount);
-            var displayLogsToAdd = new List<LogEntry>(estimatedLogCount);
+            // processedLogCount already holds the exact number of dequeued entries: the previous
+            // batchesToFlush.Sum(batch => batch.Logs.Count) recomputed it with a LINQ delegate
+            // allocation on every single flush.
+            var allLogsToAdd = new List<LogEntry>(processedLogCount);
+            var displayLogsToAdd = new List<LogEntry>(processedLogCount);
 
             foreach (var pendingBatch in batchesToFlush)
             {
@@ -3293,9 +3381,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // Refresh port stats at most every StatsRefreshIntervalMs; the exception is the
             // final flush of a stream (queue drained), where we refresh so the counters
             // settle on their exact final values.
+            //
+            // This block is the flush's optional work, and it is the first thing to go under output
+            // pressure: it costs one GetStatistics call per touched port plus a PropertyChanged per
+            // bound counter, for numbers the next flush is about to overwrite anyway. While degraded
+            // only the stream-settled refresh runs — that is the one that leaves the counters on their
+            // exact final values — and because _lastStatsRefreshTick is deliberately not advanced
+            // while skipping, the normal refresh happens again on the first flush after the flood
+            // clears. Nothing here can lose data: _pendingStatsPorts only accumulates port names.
+            var streamSettled = _pendingLogBatches.IsEmpty;
             var nowTick = Environment.TickCount64;
             if (_pendingStatsPorts.Count > 0 &&
-                (nowTick - _lastStatsRefreshTick >= StatsRefreshIntervalMs || _pendingLogBatches.IsEmpty))
+                (streamSettled ||
+                 (nowTick - _lastStatsRefreshTick >= StatsRefreshIntervalMs && !degraded)))
             {
                 _lastStatsRefreshTick = nowTick;
                 foreach (var portName in _pendingStatsPorts)

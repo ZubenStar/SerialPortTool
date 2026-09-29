@@ -158,6 +158,8 @@ public partial class App : Application
         services.AddSingleton<ISettingsService, SettingsService>();
         services.AddSingleton<IUpdateService, UpdateService>();
         services.AddSingleton<IUpdateInstallerService, UpdateInstallerService>();
+        services.AddSingleton<IOutputPressureService, OutputPressureService>();
+        services.AddSingleton<INotificationService, NotificationService>();
 
         // Register ViewModels
         services.AddTransient<MainViewModel>();

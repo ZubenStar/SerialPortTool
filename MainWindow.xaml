@@ -828,13 +828,39 @@
                 <!-- IsPinnedToBottom is TwoWay: the view decides it from the scroll position, and the
                      ViewModel reads it to hold off trimming the head of the buffer while the user is
                      reading history. -->
-                <controls:LogListView Grid.Row="3"
-                                      x:Name="LogListView"
-                                      ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
-                                      IsPaused="{x:Bind ViewModel.IsPaused, Mode=OneWay}"
-                                      IsPinnedToBottom="{x:Bind ViewModel.IsLogPinnedToBottom, Mode=TwoWay}"
-                                      CopyCompleted="LogListView_CopyCompleted"
-                                      CopyFailed="LogListView_CopyFailed" />
+                <!-- The log surface and its empty state share one cell. The empty state is
+                     IsHitTestVisible=False deliberately: it floats over the ListView, and the list's
+                     wheel interception and selection handling must stay reachable underneath it. -->
+                <Grid Grid.Row="3">
+                    <controls:LogListView x:Name="LogListView"
+                                          ItemsSource="{x:Bind ViewModel.DisplayLogs, Mode=OneWay}"
+                                          IsPaused="{x:Bind ViewModel.IsPaused, Mode=OneWay}"
+                                          IsPinnedToBottom="{x:Bind ViewModel.IsLogPinnedToBottom, Mode=TwoWay}"
+                                          CopyCompleted="LogListView_CopyCompleted"
+                                          CopyFailed="LogListView_CopyFailed" />
+
+                    <!-- Uses {Binding}, not {x:Bind}: a compiled binding with a Converter cannot be
+                         used in the window's own element tree (a Window is not a FrameworkElement,
+                         so the generated code has no converter-lookup root). -->
+                    <Border Style="{StaticResource AppCardStyle}"
+                            MaxWidth="380"
+                            Margin="24"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            IsHitTestVisible="False"
+                            Visibility="{Binding HasOpenPorts, Converter={StaticResource InverseBoolToVisibilityConverter}}">
+                        <StackPanel Spacing="8">
+                            <FontIcon Glyph="&#xE8E5;"
+                                      FontSize="24"
+                                      Foreground="{ThemeResource AppTextTertiaryBrush}"
+                                      HorizontalAlignment="Center" />
+                            <TextBlock Text="尚未打开串口"
+                                       Style="{StaticResource AppEmptyStateTitleStyle}" />
+                            <TextBlock Style="{StaticResource AppEmptyStateBodyStyle}"
+                                       Text="从左侧「可用串口」中选择一个并打开，或点「全部打开」一次打开全部。多个串口可以同时监视，日志按端口颜色区分归属。" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
 
                 <!-- ========== Send ========== -->
                 <Border Grid.Row="4"
@@ -989,5 +1015,33 @@
                 </Border>
             </Grid>
         </Grid>
+
+        <!-- ===================== Notification host =====================
+             Bottom-right, over both rows. InfoBar rather than a bespoke popup: it already carries the
+             severity icon, the accent stripe, the close button and the themed surface through the
+             lightweight-styling keys in Themes/Tokens.xaml, so there is no second design to keep in
+             sync. The ItemsControl has no background of its own, so only the bars take hit-testing —
+             wheel and clicks pass through the empty space to the log list underneath. -->
+        <ItemsControl x:Name="NotificationHost"
+                      Grid.Row="0"
+                      Grid.RowSpan="2"
+                      ItemsSource="{Binding Notifications}"
+                      HorizontalAlignment="Right"
+                      VerticalAlignment="Bottom"
+                      Margin="0,0,20,20"
+                      MaxWidth="380">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <!-- Severity binds straight through: the model carries InfoBarSeverity, so no
+                         converter (and no per-item conversion) is involved. -->
+                    <InfoBar IsOpen="{Binding IsOpen, Mode=TwoWay}"
+                             IsClosable="True"
+                             Severity="{Binding Severity}"
+                             Title="{Binding Title}"
+                             Message="{Binding Message}"
+                             Margin="0,6,0,0" />
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
     </Grid>
 </Window>

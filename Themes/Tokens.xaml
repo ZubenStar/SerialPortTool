@@ -86,6 +86,13 @@
             <SolidColorBrush x:Key="AppSurfaceSunkenBrush" Color="#F7F8FA" />
             <SolidColorBrush x:Key="AppHairlineBrush" Color="#DFE2E6" />
 
+            <!-- Raised surface for cards/panels that must read as sitting above the working surface.
+                 Light mode has nothing above #FFFFFF, so there the step is carried by the border
+                 alone; dark mode lifts the tone instead. Both keys must exist in all three
+                 dictionaries — a missing key silently falls back to the framework default. -->
+            <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="AppCardBorderBrush" Color="#E1E5EA" />
+
             <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="#16181C" />
             <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="#5A626D" />
             <SolidColorBrush x:Key="AppTextTertiaryBrush" Color="#8A9099" />
@@ -298,6 +305,10 @@
             <SolidColorBrush x:Key="AppSurfaceSunkenBrush" Color="#12151A" />
             <SolidColorBrush x:Key="AppHairlineBrush" Color="#2A3038" />
 
+            <!-- Raised surface — one tonal step above AppSurfaceBrush (see the Light dictionary). -->
+            <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="#1C2027" />
+            <SolidColorBrush x:Key="AppCardBorderBrush" Color="#333B45" />
+
             <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="#E7EAEE" />
             <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="#8C95A0" />
             <SolidColorBrush x:Key="AppTextTertiaryBrush" Color="#6B747F" />
@@ -502,6 +513,8 @@
             <SolidColorBrush x:Key="AppSurfaceBrush" Color="{ThemeResource SystemColorWindowColor}" />
             <SolidColorBrush x:Key="AppSurfaceSunkenBrush" Color="{ThemeResource SystemColorWindowColor}" />
             <SolidColorBrush x:Key="AppHairlineBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+            <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="{ThemeResource SystemColorWindowColor}" />
+            <SolidColorBrush x:Key="AppCardBorderBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
 
             <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
             <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="{ThemeResource SystemColorWindowTextColor}" />

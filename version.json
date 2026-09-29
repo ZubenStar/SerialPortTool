@@ -1,7 +1,26 @@
 {
-    "version": "2.2.3",
+    "version": "2.2.4",
     "description": "SerialPortTool Version Configuration",
     "changelog": [
+        {
+            "date": "2026-09-29",
+            "version": "2.2.4",
+            "changes": [
+                "Started a round of improvements borrowed from a comparable project (Netcatty, an Electron/React terminal client): the borrowable items, the trade-off rules they must obey and an explicit \"not borrowing\" list are now archived in AGENTS.md, so later phases work from one written source instead of re-deriving them",
+                "The backlog is grouped into performance/smoothness, UI/motion, new features and engineering/testing, and every item names the mechanism it must not break - the wheel-scroll ownership, the pinned-to-bottom follow state, the single-Reset batch notifications and the display-buffer trim thresholds are all off limits",
+                "Fixed the log view competing with a data flood instead of surviving it: while a port delivers far more lines than the view can present at full detail, the per-port statistics and the combined traffic totals are no longer recomputed on every update, so the UI thread spends its budget applying the incoming lines and stays responsive to scrolling and typing - the counters settle on their exact final values as soon as the stream calms down",
+                "A flood is judged from the traffic itself (150 lines or 16 KB within 100 ms, or a line that has grown past 4096 characters without a terminator) and the verdict is held for 750 ms of quiet afterwards, so bursty traffic cannot make the view flip in and out of the mode",
+                "No data is dropped or delayed by this: received lines are still queued, filtered, trimmed and written to the log files exactly as before, and the display-buffer thresholds are unchanged",
+                "While a flood lasts, the log view is now refreshed in fewer, larger batches instead of many small ones: the number of full list rebuilds per second drops to about a third, which is where most of the per-frame layout work was going, while the number of lines shown per second is unchanged",
+                "The refresh rate returns to normal on its own within a second of the stream calming down, and the batch size is scaled together with the rate so the queue drains at exactly the same speed as before - a slower drain would have turned a flood into dropped lines",
+                "The log area no longer sits blank before anything is open: it shows a short hint explaining how to start (pick a port on the left, or press 全部打开) and that several ports can be monitored at once with a colour per port",
+                "Added a shared card/panel style to the theme (raised surface, hairline edge, card radius) so a new surface starts from one silhouette instead of re-inventing it, including in high-contrast mode where the two new tokens map onto the system colours",
+                "The appearance switch (跟随系统 / 浅色 / 深色) is now a short cross-fade instead of an instant repaint, and the baud-rate banner fades in and out instead of appearing and disappearing; both are opacity-only, so the UI thread pays nothing for them, and both are skipped entirely when Windows' animations are switched off",
+                "Starting the app still paints its first frame in the saved appearance with no fade: the transition only runs when the resolved light/dark actually changes while the window is already on screen",
+                "Added short notifications in the bottom-right corner: copying logs now confirms itself, and a refused clipboard - the failure a status-bar line used to lose, because an empty clipboard is the only evidence the user gets - stays on screen until it is dismissed",
+                "The notification stack shows at most four messages and never blocks the log behind it: only the messages themselves take clicks, so the wheel and selections still reach the log through the space around them"
+            ]
+        },
         {
             "date": "2026-09-28",
             "version": "2.2.3",

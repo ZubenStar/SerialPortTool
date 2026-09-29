@@ -277,4 +277,42 @@
         <Setter Property="Margin" Value="4,6" />
     </Style>
 
+    <!-- =============================== Card / panel skeleton =============================== -->
+    <!-- The shared "panel" silhouette: raised surface, hairline edge, card radius. A section is
+         labelled with AppSectionLabelStyle (Themes/Tokens.xaml); this is what an element that has to
+         read as floating above the working surface uses — today the log area's empty state, and the
+         starting point for any future panel so the silhouette does not get re-invented per surface.
+
+         Borders rather than shadows on purpose: ThemeShadow needs a Z translation plus a receiver
+         list, and it is a composition cost paid on every frame the element is alive. The tonal step
+         (AppCardBackgroundBrush) plus the hairline already carries the hierarchy on both palettes,
+         including high contrast, where both keys collapse onto the system colours. -->
+    <Style x:Key="AppCardStyle" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource AppCardBackgroundBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource AppCardBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource AppCornerRadiusCard}" />
+        <Setter Property="Padding" Value="24,20" />
+    </Style>
+
+    <!-- =============================== Empty state =============================== -->
+    <Style x:Key="AppEmptyStateTitleStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppUiFontFamily}" />
+        <Setter Property="FontSize" Value="{StaticResource AppFontSizeSubtitle}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{ThemeResource AppTextPrimaryBrush}" />
+        <Setter Property="HorizontalAlignment" Value="Center" />
+        <Setter Property="TextAlignment" Value="Center" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="AppEmptyStateBodyStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppUiFontFamily}" />
+        <Setter Property="FontSize" Value="{StaticResource AppFontSizeBody}" />
+        <Setter Property="Foreground" Value="{ThemeResource AppTextSecondaryBrush}" />
+        <Setter Property="HorizontalAlignment" Value="Center" />
+        <Setter Property="TextAlignment" Value="Center" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
 </ResourceDictionary>
