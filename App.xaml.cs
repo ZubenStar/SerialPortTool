@@ -162,6 +162,7 @@ public partial class App : Application
         services.AddSingleton<INotificationService, NotificationService>();
         services.AddSingleton<ISnippetService, SnippetService>();
         services.AddSingleton<IHighlightRuleService, HighlightRuleService>();
+        services.AddSingleton<ILogExportService, LogExportService>();
 
         // Register ViewModels
         services.AddTransient<MainViewModel>();

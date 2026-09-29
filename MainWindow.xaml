@@ -732,6 +732,14 @@
                                         ToolTipService.ToolTip="复制选中日志 (Ctrl+C)">
                                     <FontIcon Glyph="&#xE8C8;" FontSize="13" />
                                 </Button>
+                                <!-- Sits with select/copy rather than with 清空: all three are "get the
+                                     log out of here", and the export honours the selection the other
+                                     two operate on. -->
+                                <Button Style="{StaticResource AppToolbarIconButtonStyle}"
+                                        Click="ExportLogs_Click"
+                                        ToolTipService.ToolTip="导出日志到文件（有选中行时只导出选中行）">
+                                    <FontIcon Glyph="&#xE74E;" FontSize="13" />
+                                </Button>
                                 <Button Style="{StaticResource AppToolbarIconButtonStyle}"
                                         Command="{x:Bind ViewModel.ClearLogsCommand}"
                                         ToolTipService.ToolTip="清空所有日志记录">

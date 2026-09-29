@@ -25,7 +25,10 @@
                 "Saved commands are sent through the same code path as the send box, so hex parsing, error messages, the sent-line entry and the byte counters behave identically",
                 "Added keyword highlighting: define rules from the 高亮 menu beside the search box - plain text or a regular expression, optionally case-sensitive, with a colour taken from the same palette the port colours use - and the matching text is recoloured in the log so ERROR, TIMEOUT and friends stand out while scanning. Rules are saved with your settings and can be disabled or deleted one at a time",
                 "Highlighting is decoration, so it is the first thing to go under load: while a port is flooding the log it pauses and returns on its own within a second of the stream calming down. The log contents, the file output and the filters are unaffected",
-                "Highlighting paints the text element each row already has instead of adding anything to the row, so the list keeps its previous scrolling and virtualization behaviour, and a pattern that cannot work is rejected when you add it rather than silently doing nothing"
+                "Highlighting paints the text element each row already has instead of adding anything to the row, so the list keeps its previous scrolling and virtualization behaviour, and a pattern that cannot work is rejected when you add it rather than silently doing nothing",
+                "Added log export: the toolbar's export button saves what you are looking at to a text file - the whole filtered view, or just the rows you have selected when there is a selection - so it matches the screen line for line rather than dumping the raw byte stream",
+                "Exports carry a short commented header with the time, the scope (current view or selection), the row count, the search box contents and the encoding, and are written as UTF-8 without a BOM so they can be piped straight into grep or a parser",
+                "The export is taken as one snapshot before the file dialog opens, so the file always describes a single moment instead of whatever streamed in while you were choosing where to save it; the write happens off the UI thread, and a failure (a read-only folder, or a file open in another program) is reported in the status bar instead of ending the session"
             ]
         },
         {

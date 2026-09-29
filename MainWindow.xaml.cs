@@ -16,6 +16,8 @@ using SerialPortTool.ViewModels;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.Linq;
 using Windows.Storage.Pickers;
 using Windows.UI.ViewManagement;
 using WinRT.Interop;
@@ -1190,6 +1192,51 @@ public sealed partial class MainWindow : Window
         {
             System.Diagnostics.Debug.WriteLine($"Error opening log folder: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Exports the current view — or just the selection, when there is one — to a file the user picks.
+    /// </summary>
+    /// <remarks>
+    /// The snapshot is taken here, on the UI thread, before the first <c>await</c>. The bound display
+    /// buffer may only be enumerated on this thread, and taking it up front also means the file
+    /// describes one consistent moment instead of whatever happened to arrive while the picker was
+    /// open.
+    /// </remarks>
+    private async void ExportLogs_Click(object sender, RoutedEventArgs e)
+    {
+        var selection = LogListView.GetSelectedEntries();
+
+        // A selection means the user has already said which rows they want; exporting the whole view
+        // from under them at that point would be ignoring the answer they just gave.
+        IReadOnlyList<LogEntry> entries = selection.Count > 0
+            ? selection
+            : ViewModel.DisplayLogs.ToArray();
+        var scopeLabel = selection.Count > 0 ? "选中行" : "当前视图（含筛选与搜索）";
+
+        if (entries.Count == 0)
+        {
+            ViewModel.StatusMessage = "没有可导出的日志";
+            return;
+        }
+
+        var picker = new FileSavePicker
+        {
+            SuggestedStartLocation = PickerLocationId.DocumentsLibrary,
+            SuggestedFileName = $"serial-log-{DateTime.Now:yyyyMMdd-HHmmss}",
+        };
+        picker.FileTypeChoices.Add("文本文件", new List<string> { ".txt" });
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+
+        var file = await picker.PickSaveFileAsync();
+        if (file is null)
+        {
+            // Cancelled at the picker. Not a failure, and not worth a status message that would
+            // overwrite whatever the user was reading.
+            return;
+        }
+
+        await ViewModel.ExportLogsAsync(entries, file.Path, scopeLabel);
     }
 
     private void SelectAllLogs_Click(object sender, RoutedEventArgs e)

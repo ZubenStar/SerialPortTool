@@ -86,6 +86,29 @@ public sealed partial class LogListView : UserControl
     /// <summary>Raised when the clipboard refused the content. Argument is the failure message.</summary>
     public event EventHandler<string>? CopyFailed;
 
+    /// <summary>
+    /// The selected entries in display order, or an empty list when nothing is selected.
+    /// </summary>
+    /// <remarks>
+    /// Returns items rather than their text so a caller can act on them without re-parsing whatever the
+    /// clipboard got. Ordered by walking the source instead of reading <c>SelectedItems</c>: that
+    /// collection is in selection order, and an export that came out in the order the user happened to
+    /// click would be a surprising thing to hand someone. Must be called on the UI thread — it
+    /// enumerates the bound collection.
+    /// </remarks>
+    public IReadOnlyList<LogEntry> GetSelectedEntries()
+    {
+        if (InnerListView.SelectedItems.Count == 0 || ItemsSource is not IEnumerable source)
+        {
+            return Array.Empty<LogEntry>();
+        }
+
+        var selected = new HashSet<LogEntry>(InnerListView.SelectedItems.OfType<LogEntry>());
+        return selected.Count == 0
+            ? Array.Empty<LogEntry>()
+            : source.OfType<LogEntry>().Where(selected.Contains).ToArray();
+    }
+
     // ---------------------------------------------------------------------------------------
     // Keyword highlighting (v2.2.4).
     //

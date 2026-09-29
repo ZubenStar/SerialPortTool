@@ -273,6 +273,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // owns the brushes — see the Keyword highlighting region.
     private readonly IHighlightRuleService _highlightRuleService;
 
+    // Export writing. The file picker stays in the window (it needs the window handle); this ViewModel
+    // owns the call, the status message and the snapshot's scope label.
+    private readonly ILogExportService _logExportService;
+
     /// <summary>
     /// Last appearance handed to <see cref="ApplyEffectiveTheme"/>, so a rule edit made without an
     /// appearance change can still resolve its colours. Defaults to light, which is what the shell
@@ -1443,6 +1447,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         INotificationService notifications,
         ISnippetService snippetService,
         IHighlightRuleService highlightRuleService,
+        ILogExportService logExportService,
         Services.IBaudRateDetectorService? baudRateDetectorService = null,
         Services.IDataValidationService? dataValidationService = null)
     {
@@ -1456,6 +1461,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _notifications = notifications;
         _snippetService = snippetService;
         _highlightRuleService = highlightRuleService;
+        _logExportService = logExportService;
         _baudRateDetectorService = baudRateDetectorService;
         _dataValidationService = dataValidationService;
 
@@ -2400,6 +2406,57 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _logger.LogError(ex, "Failed to persist the highlight rules");
             StatusMessage = "高亮规则保存失败，请检查设置文件是否可写";
         }
+    }
+
+    #endregion
+
+    #region Log export
+
+    /// <summary>
+    /// Writes a snapshot of log entries to a file the user picked.
+    /// </summary>
+    /// <remarks>
+    /// The entries arrive already materialised because the display buffer may only be enumerated on the
+    /// UI thread while the write must not be; the window snapshots, this formats and persists. The scope
+    /// label is passed in rather than inferred so the header describes what the user actually chose to
+    /// export.
+    /// </remarks>
+    public async Task ExportLogsAsync(IReadOnlyList<LogEntry> entries, string filePath, string scopeLabel)
+    {
+        if (entries.Count == 0)
+        {
+            StatusMessage = "没有可导出的日志";
+            return;
+        }
+
+        // Say "working" before the await: a large buffer takes long enough that a silent window reads
+        // as a frozen one.
+        StatusMessage = $"正在导出 {entries.Count} 行…";
+
+        var result = await _logExportService.ExportAsync(
+            new LogExportRequest(entries, filePath, scopeLabel, BuildSearchSummary()));
+
+        StatusMessage = result.Succeeded
+            ? $"已导出 {result.LineCount} 行到 {Path.GetFileName(filePath)}"
+            : result.ErrorMessage!;
+    }
+
+    /// <summary>
+    /// The search box's contents for the export header, or empty when it is not filtering anything.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately scoped to the search box. The level and port filters are applied before entries
+    /// reach the display buffer, so anything more would be describing state this snapshot cannot see —
+    /// and a header that is confidently wrong is worse than a short one.
+    /// </remarks>
+    private string BuildSearchSummary()
+    {
+        if (string.IsNullOrWhiteSpace(SearchText))
+        {
+            return string.Empty;
+        }
+
+        return IsRegexSearch ? $"\"{SearchText}\"（正则）" : $"\"{SearchText}\"";
     }
 
     #endregion
