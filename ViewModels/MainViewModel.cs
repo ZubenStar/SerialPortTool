@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using SerialPortTool.Core.Enums;
 using SerialPortTool.Helpers;
@@ -263,6 +264,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly IOutputPressureService _outputPressure;
 
     private readonly INotificationService _notifications;
+
+    // Quick-send library persistence and payload expansion. The observable projection the flyout
+    // binds to lives on this ViewModel — see the Quick-send library region.
+    private readonly ISnippetService _snippetService;
 
     /// <summary>
     /// Transient notifications, bound by the shell's bottom-right host.
@@ -1418,6 +1423,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         ILogger<MainViewModel> logger,
         IOutputPressureService outputPressure,
         INotificationService notifications,
+        ISnippetService snippetService,
         Services.IBaudRateDetectorService? baudRateDetectorService = null,
         Services.IDataValidationService? dataValidationService = null)
     {
@@ -1429,6 +1435,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
         _outputPressure = outputPressure;
         _notifications = notifications;
+        _snippetService = snippetService;
         _baudRateDetectorService = baudRateDetectorService;
         _dataValidationService = dataValidationService;
 
@@ -1461,6 +1468,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
             if (t.IsFaulted)
                 _logger.LogError(t.Exception, "Failed to initialize MainViewModel");
         }, TaskScheduler.Default);
+
+        // The quick-send library is independent of the serial configuration InitializeAsync reads, so
+        // it loads on its own task instead of being appended to that chain. It is exception-safe by
+        // construction — see InitializeSnippetsAsync — which is what makes fire-and-forget safe here.
+        _ = InitializeSnippetsAsync();
     }
 
     private async Task InitializeAsync()
@@ -2049,12 +2061,195 @@ public partial class MainViewModel : ObservableObject, IDisposable
         return true;
     }
 
+    #region Quick-send library
+
+    /// <summary>Heading used for snippets that were saved without a group.</summary>
+    private const string UngroupedSnippetGroupName = "未分组";
+
+    /// <summary>Longest label accepted when one is derived from a payload instead of supplied.</summary>
+    private const int DerivedSnippetLabelMaxLength = 40;
+
+    /// <summary>
+    /// The library in storage order. Mutated only on the UI thread; <see cref="SnippetGroups"/> is the
+    /// grouped projection the flyout binds to.
+    /// </summary>
+    private readonly List<SendSnippet> _snippets = new();
+
+    /// <summary>
+    /// Quick-send library, grouped and ordered for display. Rebuilt wholesale after every change.
+    /// </summary>
+    public ObservableCollection<SnippetGroup> SnippetGroups { get; } = new();
+
+    /// <summary>Drives the quick-send flyout's empty state.</summary>
+    public bool HasSnippets => SnippetGroups.Count > 0;
+
+    /// <summary>
+    /// Loads the library on the constructor's behalf.
+    /// </summary>
+    /// <remarks>
+    /// Exception-safe by construction, because it is started fire-and-forget from the constructor and
+    /// an escaping exception there would be unobserved. The rebuild is marshalled explicitly:
+    /// <see cref="SnippetGroups"/> is bound to the UI, and this method is not guaranteed to resume on
+    /// the UI thread.
+    /// </remarks>
+    private async Task InitializeSnippetsAsync()
+    {
+        try
+        {
+            var loaded = await _snippetService.LoadAsync();
+
+            RunOnUiThread(() =>
+            {
+                _snippets.Clear();
+                _snippets.AddRange(loaded);
+                RebuildSnippetGroups();
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to initialise the quick-send library");
+        }
+    }
+
+    /// <summary>
+    /// Re-projects <see cref="_snippets"/> into the grouped, ordered view the flyout binds to.
+    /// </summary>
+    /// <remarks>
+    /// Rebuilt wholesale rather than patched incrementally. The library is a handful of rows edited by
+    /// hand, and a wholesale rebuild is what makes the headings correct for free: adding into a group,
+    /// removing a group's last member and renaming a group all become the same operation here.
+    /// </remarks>
+    private void RebuildSnippetGroups()
+    {
+        SnippetGroups.Clear();
+
+        var ordered = _snippets
+            .GroupBy(snippet => snippet.Group ?? string.Empty)
+            // Ungrouped first, then alphabetically: the ungrouped bucket is where an ad-hoc "save what
+            // is in the send box" lands, and it should be the easiest thing to reach.
+            .OrderBy(group => group.Key.Length == 0 ? 0 : 1)
+            .ThenBy(group => group.Key, StringComparer.CurrentCulture);
+
+        foreach (var group in ordered)
+        {
+            var items = group
+                .OrderBy(snippet => snippet.Sort)
+                .ThenBy(snippet => snippet.Label, StringComparer.CurrentCulture)
+                .ToList();
+
+            var name = group.Key.Length == 0 ? UngroupedSnippetGroupName : group.Key;
+            SnippetGroups.Add(new SnippetGroup(name, items));
+        }
+
+        OnPropertyChanged(nameof(HasSnippets));
+    }
+
+    /// <summary>Adds a snippet, persists the library and confirms the addition to the user.</summary>
+    public async Task AddSnippetAsync(SendSnippet snippet)
+    {
+        if (string.IsNullOrWhiteSpace(snippet.Content))
+        {
+            StatusMessage = "快捷指令内容不能为空";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(snippet.Id))
+        {
+            snippet.Id = Guid.NewGuid().ToString("N");
+        }
+
+        snippet.Group ??= string.Empty;
+        snippet.Label = string.IsNullOrWhiteSpace(snippet.Label)
+            ? DeriveSnippetLabel(snippet.Content)
+            : snippet.Label.Trim();
+
+        // Appended rather than inserted at a computed position: Sort only has to be monotonic, and
+        // reusing max+1 keeps a later re-order from silently colliding with an existing value.
+        snippet.Sort = _snippets.Count == 0 ? 0 : _snippets.Max(existing => existing.Sort) + 1;
+
+        _snippets.Add(snippet);
+        RebuildSnippetGroups();
+        await PersistSnippetsAsync();
+
+        _notifications.Notify($"已保存快捷指令「{snippet.Label}」", InfoBarSeverity.Success);
+    }
+
+    /// <summary>Removes a snippet and persists the library.</summary>
+    public async Task RemoveSnippetAsync(SendSnippet snippet)
+    {
+        if (!_snippets.Remove(snippet))
+        {
+            return;
+        }
+
+        RebuildSnippetGroups();
+        await PersistSnippetsAsync();
+    }
+
+    /// <summary>
+    /// Sends one saved command to every open port, expanding its payload first when it opted in.
+    /// </summary>
+    public async Task SendSnippetAsync(SendSnippet snippet)
+    {
+        var payload = snippet.UseVariables
+            ? _snippetService.ExpandVariables(snippet.Content, DateTimeOffset.Now)
+            : snippet.Content;
+
+        await SendPayloadAsync(payload, snippet.IsHex);
+    }
+
+    /// <summary>Collapses a payload into a one-line label, for a snippet saved without one.</summary>
+    private static string DeriveSnippetLabel(string content)
+    {
+        var flattened = content.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (flattened.Length == 0)
+        {
+            return "(未命名)";
+        }
+
+        return flattened.Length <= DerivedSnippetLabelMaxLength
+            ? flattened
+            : flattened[..DerivedSnippetLabelMaxLength] + "…";
+    }
+
+    private async Task PersistSnippetsAsync()
+    {
+        try
+        {
+            await _snippetService.SaveAsync(_snippets);
+        }
+        catch (Exception ex)
+        {
+            // The in-memory library stays correct, so the feature keeps working for this session and
+            // the next edit retries. Only durability failed, and saying so is better than silence.
+            _logger.LogError(ex, "Failed to persist the quick-send library");
+            StatusMessage = "快捷指令保存失败，请检查设置文件是否可写";
+        }
+    }
+
+    #endregion
+
     [RelayCommand(CanExecute = nameof(CanSend))]
     private async Task SendAsync()
     {
         if (string.IsNullOrEmpty(SendText))
             return;
 
+        await SendPayloadAsync(SendText, SendAsHex);
+    }
+
+    /// <summary>
+    /// Broadcasts one payload to every open port and reports the outcome through the status bar.
+    /// </summary>
+    /// <remarks>
+    /// Split out of <see cref="SendAsync"/> in v2.2.4 so the quick-send library travels exactly the
+    /// same path as the send box — same broadcast, same hex parsing and error text, same sent-log
+    /// entry, same statistics refresh. A second send implementation would inevitably drift from this
+    /// one. It is deliberately not gated on <c>SendCommand.IsRunning</c>: that guard belongs to the
+    /// command's <c>CanExecute</c>, and concurrent writes are serialised per port by the service.
+    /// </remarks>
+    private async Task SendPayloadAsync(string text, bool asHex)
+    {
         var targetPorts = OpenPorts
             .Select(port => port.PortName)
             .ToList();
@@ -2069,9 +2264,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
             string displayContent;
             byte[] data;
 
-            if (SendAsHex)
+            if (asHex)
             {
-                if (!TryParseHexInput(SendText, out var bytes, out var hexError))
+                if (!TryParseHexInput(text, out var bytes, out var hexError))
                 {
                     StatusMessage = hexError!;
                     return;
@@ -2082,8 +2277,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
             }
             else
             {
-                data = Encoding.UTF8.GetBytes(SendText);
-                displayContent = SendText;
+                data = Encoding.UTF8.GetBytes(text);
+                displayContent = text;
             }
 
             StatusMessage = targetPorts.Count == 1

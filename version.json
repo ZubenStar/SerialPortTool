@@ -19,7 +19,10 @@
                 "Starting the app still paints its first frame in the saved appearance with no fade: the transition only runs when the resolved light/dark actually changes while the window is already on screen",
                 "Added short notifications in the bottom-right corner: copying logs now confirms itself, and a refused clipboard - the failure a status-bar line used to lose, because an empty clipboard is the only evidence the user gets - stays on screen until it is dismissed",
                 "The notification stack shows at most four messages and never blocks the log behind it: only the messages themselves take clicks, so the wheel and selections still reach the log through the space around them",
-                "The port colour palette now has exactly one definition: the menu swatches are generated from it instead of being mirrored by hand in both the window markup and the theme file, which removes a whole class of 'the menu offers this colour while the log renders another' drift. No visible change."
+                "The port colour palette now has exactly one definition: the menu swatches are generated from it instead of being mirrored by hand in both the window markup and the theme file, which removes a whole class of 'the menu offers this colour while the log renders another' drift. No visible change.",
+                "Added a quick-send library: save what is in the send box as a named, grouped command and broadcast it to every open port in one click from the 快捷 menu beside 发送 - the library is stored with your settings, so it survives restarts and upgrades, and each entry can be deleted on its own",
+                "A saved command can opt into substitution: ${date}, ${time}, ${datetime}, ${epoch} and ${epochms} plus the usual CR/LF/TAB escapes are interpreted at send time, while anything unrecognised is sent exactly as typed - so a payload that really contains the text ${...} is never rewritten",
+                "Saved commands are sent through the same code path as the send box, so hex parsing, error messages, the sent-line entry and the byte counters behave identically"
             ]
         },
         {

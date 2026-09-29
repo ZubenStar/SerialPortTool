@@ -795,6 +795,119 @@ public sealed partial class MainWindow : Window
         await ViewModel.SendCommand.ExecuteAsync(null);
     }
 
+    #region Quick-send library
+
+    /// <summary>One-click send of a saved snippet, through the same path as the send box.</summary>
+    private async void SendSnippet_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: SendSnippet snippet })
+        {
+            return;
+        }
+
+        // Closed first: the send is asynchronous and its result (status bar / notification) would be
+        // hidden behind an open flyout.
+        QuickSendFlyout.Hide();
+        await ViewModel.SendSnippetAsync(snippet);
+    }
+
+    /// <summary>Deletes a snippet from the library.</summary>
+    /// <remarks>
+    /// The flyout deliberately stays open: removing one entry next to the others is ordinary editing,
+    /// and closing the menu on every delete would make tidying a library tedious.
+    /// </remarks>
+    private async void DeleteSnippet_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: SendSnippet snippet })
+        {
+            return;
+        }
+
+        await ViewModel.RemoveSnippetAsync(snippet);
+    }
+
+    /// <summary>
+    /// Saves the send box's current contents as a snippet, after asking for a name and a group.
+    /// </summary>
+    /// <remarks>
+    /// Built in code and shown through <see cref="CreateDialog"/>, following the About / update
+    /// dialog pattern: a <c>ContentDialog</c> lives in its own popup root, so it does not inherit the
+    /// window root's <c>ElementTheme</c> and would stay light in dark mode without that call.
+    /// </remarks>
+    private async void AddSnippet_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(ViewModel.SendText))
+        {
+            ViewModel.StatusMessage = "发送框为空：先在下方输入要保存的内容";
+            return;
+        }
+
+        const int labelPrefillMaxLength = 40;
+        var flattened = ViewModel.SendText.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        var labelPrefill = flattened.Length <= labelPrefillMaxLength
+            ? flattened
+            : flattened[..labelPrefillMaxLength] + "…";
+
+        var labelBox = new TextBox
+        {
+            Header = "名称",
+            PlaceholderText = "显示在快捷指令列表里",
+            Text = labelPrefill,
+        };
+        var groupBox = new TextBox
+        {
+            Header = "分组（可留空）",
+            PlaceholderText = "例如：AT 指令",
+        };
+        var contentBox = new TextBox
+        {
+            Header = "内容",
+            Text = ViewModel.SendText,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MaxHeight = 120,
+        };
+        var hexBox = new CheckBox
+        {
+            Content = "按十六进制发送",
+            IsChecked = ViewModel.SendAsHex,
+        };
+        var variablesBox = new CheckBox
+        {
+            Content = "解释 ${date} ${time} ${datetime} ${epoch} 与 \\r \\n \\t 转义",
+        };
+
+        var panel = new StackPanel { Spacing = 10, MinWidth = 320 };
+        panel.Children.Add(labelBox);
+        panel.Children.Add(groupBox);
+        panel.Children.Add(contentBox);
+        panel.Children.Add(hexBox);
+        panel.Children.Add(variablesBox);
+
+        var dialog = CreateDialog();
+        dialog.Title = "保存快捷指令";
+        dialog.Content = panel;
+        dialog.PrimaryButtonText = "保存";
+        dialog.CloseButtonText = "取消";
+        dialog.DefaultButton = ContentDialogButton.Primary;
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        await ViewModel.AddSnippetAsync(new SendSnippet
+        {
+            Label = labelBox.Text,
+            Group = groupBox.Text,
+            Content = contentBox.Text,
+            IsHex = hexBox.IsChecked == true,
+            UseVariables = variablesBox.IsChecked == true,
+        });
+    }
+
+    #endregion
+
     private async void SelectTuningBin_Click(object sender, RoutedEventArgs e)
     {
         try

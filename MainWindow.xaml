@@ -917,18 +917,103 @@
                                  VerticalAlignment="Center"
                                  MinHeight="{StaticResource AppControlHeightPrimary}" />
 
-                        <Button Grid.Column="2"
-                                Style="{StaticResource AccentButtonStyle}"
-                                MinHeight="{StaticResource AppControlHeightPrimary}"
-                                MinWidth="92"
-                                Margin="8,0,0,0"
-                                Click="SendButton_Click"
-                                ToolTipService.ToolTip="发送到全部已打开串口">
-                            <StackPanel Orientation="Horizontal" Spacing="7">
-                                <FontIcon Glyph="&#xE724;" FontSize="13" />
-                                <TextBlock Text="发送" />
-                            </StackPanel>
-                        </Button>
+                        <StackPanel Grid.Column="2"
+                                    Orientation="Horizontal"
+                                    Spacing="8"
+                                    Margin="8,0,0,0">
+                            <!-- Quick-send library. A Button carrying a Flyout opens it on click, which is
+                                 the whole interaction: pick a saved payload and it is broadcast to every
+                                 open port through the same path as the send box. -->
+                            <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                    MinHeight="{StaticResource AppControlHeightPrimary}"
+                                    Padding="12,0"
+                                    ToolTipService.ToolTip="常用指令：保存并一键发送">
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <FontIcon Glyph="&#xE950;" FontSize="13" />
+                                    <TextBlock Text="快捷" />
+                                </StackPanel>
+                                <Button.Flyout>
+                                    <Flyout x:Name="QuickSendFlyout" Placement="Top">
+                                        <StackPanel Width="340" Spacing="8">
+                                            <TextBlock Text="快捷指令"
+                                                       Style="{StaticResource AppSectionLabelStyle}" />
+
+                                            <!-- {Binding} rather than {x:Bind}: the visibility depends on a
+                                                 converter, exactly like the search-history flyout's empty
+                                                 state. -->
+                                            <TextBlock Text="还没有保存的指令。在发送框里输入内容后，点下面的按钮保存。"
+                                                       Style="{StaticResource AppEmptyStateBodyStyle}"
+                                                       Visibility="{Binding HasSnippets, Converter={StaticResource InverseBoolToVisibilityConverter}}" />
+
+                                            <ScrollViewer MaxHeight="280"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled">
+                                                <!-- Outer list uses {x:Bind} (the window is the binding root,
+                                                     same as the search-history list); the nested templates
+                                                     use {Binding} because their DataContext is the item. -->
+                                                <ItemsControl ItemsSource="{x:Bind ViewModel.SnippetGroups, Mode=OneWay}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <StackPanel Margin="0,0,0,6">
+                                                                <TextBlock Text="{Binding Name}"
+                                                                           Style="{StaticResource AppSectionLabelStyle}"
+                                                                           Margin="0,2,0,4" />
+                                                                <ItemsControl ItemsSource="{Binding Items}">
+                                                                    <ItemsControl.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <Grid Margin="0,1">
+                                                                                <Grid.ColumnDefinitions>
+                                                                                    <ColumnDefinition Width="*" />
+                                                                                    <ColumnDefinition Width="Auto" />
+                                                                                </Grid.ColumnDefinitions>
+                                                                                <Button Grid.Column="0"
+                                                                                        Style="{StaticResource AppHistoryItemButtonStyle}"
+                                                                                        HorizontalAlignment="Stretch"
+                                                                                        Content="{Binding Label}"
+                                                                                        Tag="{Binding}"
+                                                                                        Click="SendSnippet_Click"
+                                                                                        ToolTipService.ToolTip="{Binding Content}" />
+                                                                                <Button Grid.Column="1"
+                                                                                        Style="{StaticResource AppToolbarIconButtonStyle}"
+                                                                                        Content="&#xE74D;"
+                                                                                        FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                                                        FontSize="12"
+                                                                                        Tag="{Binding}"
+                                                                                        Click="DeleteSnippet_Click"
+                                                                                        ToolTipService.ToolTip="删除此快捷指令" />
+                                                                            </Grid>
+                                                                        </DataTemplate>
+                                                                    </ItemsControl.ItemTemplate>
+                                                                </ItemsControl>
+                                                            </StackPanel>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </ScrollViewer>
+
+                                            <Border Style="{StaticResource AppVerticalDividerStyle}" />
+
+                                            <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                                    HorizontalAlignment="Stretch"
+                                                    Content="保存发送框内容为快捷指令…"
+                                                    Click="AddSnippet_Click"
+                                                    ToolTipService.ToolTip="填写名称与分组后保存" />
+                                        </StackPanel>
+                                    </Flyout>
+                                </Button.Flyout>
+                            </Button>
+
+                            <Button Style="{StaticResource AccentButtonStyle}"
+                                    MinHeight="{StaticResource AppControlHeightPrimary}"
+                                    MinWidth="92"
+                                    Click="SendButton_Click"
+                                    ToolTipService.ToolTip="发送到全部已打开串口">
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <FontIcon Glyph="&#xE724;" FontSize="13" />
+                                    <TextBlock Text="发送" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
                     </Grid>
                 </Border>
 
