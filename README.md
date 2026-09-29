@@ -25,6 +25,7 @@ SerialPortTool 面向需要同时盯多个串口的调试与产线场景：多�
 - **Tuning / TOTA 推送（隐藏功能，默认关闭）**：需先在「工具 → 启用 Tuning 功能」中勾选（状态会记住），工具条才会出现 Tuning 面板；选择 `.bin` 载荷与自备的 JSON 协议描述文件后广播到所有已打开串口，支持监听文件变化自动重发。取消勾选会隐藏面板并停止自动监听，但已保存的 `.bin` / JSON 路径与监听偏好都会保留。
 - **数据发送**：文本 / 十六进制模式（十六进制支持空格 / `-` / `,` / `:` 等分隔符与每组可选的 `0x` 前缀），回车或点「发送」即可广播到全部已打开串口。
 - **快捷指令库**：把常用内容存成带**名称与分组**的指令，在发送框旁的「快捷」里一键广播到全部已打开串口。指令可标记为十六进制，也可开启变量解释（`${date}` / `${time}` / `${datetime}` / `${epoch}` / `${epochms}` 与 `\r` `\n` `\t` 转义；**未识别的写法原样发送**，不会吞掉你输入的字面内容）。库随 `settings.json` 一起保存，重启与升级都不会丢；每条可单独删除。
+- **命令面板（F2）**：按 **F2** 打开一个纯键盘的快速切换器，一次搜两样东西 —— **串口**（已打开的会带上它的标识色与收发量，可直接打开/关闭）和**快捷指令**（按名字、分组或**内容**都能搜到，回车即广播发送）。输入即筛选，`↑↓` 选择、`Enter` 执行、`Esc` 或点暗处关闭；再按一次 F2 也能收起。用功能键而不是 `Ctrl+K` 之类，是因为中文输入法下字母组合键经常被输入法或常驻工具吃掉。注意它不复制任何数据：指令与串口都直接取自界面上的同一份来源，所以在别处删掉的指令，重新打开面板就没了。
 - **关键字高亮**：在搜索框旁的「高亮」里添加规则（纯文本或正则、可选区分大小写、颜色取自与端口标识同一套色板），命中的文字会在日志里染上该颜色，方便一眼扫出 `ERROR` / `TIMEOUT` 之类。规则随 `settings.json` 保存，可逐条启用/停用/删除。高亮属于「装饰」：**数据洪水期间会自动暂停、洪峰过后自动恢复**，日志内容、落盘文件与筛选完全不受影响；添加时无法生效的正则会当场被拒绝，而不是默默什么都不做。
 - **导出日志**：工具栏的导出按钮把**屏幕上看到的内容**存成 `.txt`——有选中行时只导出选中行，没有选中时导出当前整个（已筛选/已搜索的）视图。文件正文与行内容逐字节一致，前面加一段 `#` 开头的头部，记下导出时间、范围、行数、搜索框内容与编码（UTF-8 无 BOM，方便直接 grep 或喂给脚本）。快照在打开选择器之前就取好，所以导出的永远是**同一个瞬间**的日志，而不是选择文件期间又涌进来的数据。注意这与「文件日志」是两件事：文件日志按原样记录全部到达的数据，导出记录的是你正在看的那一部分。
 - **日志落盘**：串口日志异步批量写盘；应用运行日志（Serilog）可在「工具 → 打开日志文件夹」直接定位，或随时按 `F9` 打开。
@@ -62,7 +63,7 @@ SerialPortTool/
 ├── Themes/Tokens.xaml               # 设计令牌：浅色 / 深色 / 高对比三套配色 + 字体间距圆角
 ├── Themes/Controls.xaml             # 按钮族样式与模板（唯一被重新模板化的控件）
 ├── Assets/Images/                   # logo.ico（16–256 多尺寸图标）、logo.png（1024 主图）
-├── Controls/                        # LogListView：唯一的自定义控件（虚拟化日志列表）
+├── Controls/                        # LogListView（虚拟化日志列表）、QuickCommandPalette（F2 命令面板）
 ├── Converters/                      # BoolToVisibility / InverseBoolToVisibility / HexColorToBrush
 ├── Core/Enums/                      # ConnectionState、FilterType、UpdateCheckStatus、AppThemePreference
 ├── Helpers/                         # VersionInfo、BuildInfo.g.cs（构建时生成）
@@ -70,6 +71,7 @@ SerialPortTool/
 │                                    # PortColorSlot / PortColorPalette、LogPressureSnapshot、
 │                                    # NotificationItem、SendSnippet / SnippetGroup、
 │                                    # HighlightRule / HighlightMatch、
+│                                    # PaletteEntry / PaletteEntryKind（命令面板结果行）、
 │                                    # UpdateReleaseInfo / UpdateCheckResult
 ├── Services/                        # 串口、波特率检测、数据校验、输出压力采样、通知、快捷指令库、关键字高亮、日志导出、日志过滤、文件日志、设置、Tuning 协议、更新与安装
 ├── ViewModels/                      # MainViewModel（含 RangeObservableCollection、PortViewModel、PortColorOption）

@@ -1159,6 +1159,14 @@ public sealed partial class MainWindow : Window
     {
         switch (e.Key)
         {
+            // F2 rather than Ctrl+K / Ctrl+Shift+P: letter combinations get taken by IMEs and resident
+            // tools in a Chinese-language session, and so did the KeyboardAccelerator route (see the note
+            // where this handler is registered). F9 below is the same choice for the same reason.
+            case Windows.System.VirtualKey.F2:
+                e.Handled = true;
+                ToggleCommandPalette();
+                break;
+
             case Windows.System.VirtualKey.F9:
                 e.Handled = true;
                 OpenLogFolder();
@@ -1237,6 +1245,52 @@ public sealed partial class MainWindow : Window
         }
 
         await ViewModel.ExportLogsAsync(entries, file.Path, scopeLabel);
+    }
+
+    /// <summary>
+    /// F2's entry point: opens the palette, or closes it when it is already up.
+    /// </summary>
+    /// <remarks>
+    /// A toggle rather than open-only, because the same key that summons a palette is the one users
+    /// press to get rid of it. The palette itself decides nothing here — it owns only its own visibility.
+    /// </remarks>
+    private void ToggleCommandPalette()
+    {
+        if (CommandPalette.IsOpen)
+        {
+            CommandPalette.Close();
+        }
+        else
+        {
+            CommandPalette.Open();
+        }
+    }
+
+    /// <summary>
+    /// Runs whatever the activated palette row meant.
+    /// </summary>
+    /// <remarks>
+    /// The palette has already closed itself by the time this runs, so a slow action (opening a port goes
+    /// through the whole connect path) cannot leave the overlay sitting on top of its own result. Ports go
+    /// through the very same commands the sidebar uses, which is what keeps the two in step — including
+    /// the confirmation prompt and the error reporting, neither of which is reimplemented here.
+    /// </remarks>
+    private async void CommandPalette_Activated(object? sender, PaletteEntry entry)
+    {
+        switch (entry.Kind)
+        {
+            case PaletteEntryKind.Snippet when entry.Snippet is { } snippet:
+                await ViewModel.SendSnippetAsync(snippet);
+                break;
+
+            case PaletteEntryKind.OpenPort:
+                ViewModel.ClosePortCommand.Execute(entry.PortName);
+                break;
+
+            case PaletteEntryKind.AvailablePort:
+                ViewModel.OpenPortCommand.Execute(entry.PortName);
+                break;
+        }
     }
 
     private void SelectAllLogs_Click(object sender, RoutedEventArgs e)

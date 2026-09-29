@@ -141,6 +141,39 @@ Added in v2.2.4 — the flush loop now drops its **optional** work under output 
 - **highlighting edits (v2.2.4)**: a regex that cannot usefully match (e.g. `a*`) must be rejected with a message instead of being stored. Unticking a rule must stop it painting immediately. Deleting the last rule must show the flyout's empty state and return the rows to plain port colours. Switching 浅色 ↔ 深色 must move both the flyout swatches and the painted text to the other palette's variant.
 - **export (v2.2.4)**: export with nothing selected — the file must open as UTF-8 text with the `#` header followed by one line per row, and the header's 行数 must match the log's own count. Then export with a few rows selected: the header must say 选中行, only those rows must be present, and they must appear in **display order**, not in the order they were clicked.
 - **export edge cases (v2.2.4)**: export with an empty log (or with a search matching nothing) — it must say 没有可导出的日志 and open no picker. Cancel the picker — no file, and the status bar must not be overwritten. Export a full ~2000-row buffer while a port is streaming: the window must stay responsive (the write is off the UI thread) and the result must be one consistent snapshot. Aim the picker at a file that is open in another program: the status bar must show 导出失败 plus the OS message, and the app must keep running.
+- **command palette (v2.2.4)**: F2 opens it with the caret already in the query box and the top row selected. Typing filters; `↑↓` moves the selection and keeps it scrolled into view; `Enter` runs the selected row; `Esc`, F2 again, and a click on the dimmed area all dismiss it. F2 must work while focus is inside the log's search box and inside the send box — that is the whole reason it is a function key.
+- **command palette actions (v2.2.4)**: a snippet row must broadcast exactly like the 快捷 flyout (same hex parsing, same errors, same sent-line entry), and a snippet must be findable by a fragment of its **payload**, not only its label. A port row must toggle through the sidebar's own path — so closing a port from the palette prompts exactly as the sidebar does. Activating anything must dismiss the overlay *before* the action runs; a palette left sitting over the result of its own action is the bug to watch for. Open the palette, then delete a snippet from the flyout, then reopen it: the deleted snippet must be gone (the palette rebuilds on open rather than caching).
+
+### Automated tests
+
+`tests/SerialPortTool.Tests` (xUnit) covers the **logic layer only** — no UI, no XAML, no window:
+
+```
+dotnet test tests/SerialPortTool.Tests/SerialPortTool.Tests.csproj -c Release
+```
+
+Covered today: `HighlightRuleService` (persistence round-trip, corrupt-JSON tolerance, validation of empty patterns / a regex matching the empty string / a broken regex, literal vs regex matching, case sensitivity, occurrence scanning, cross-rule ordering, overlap precedence, the per-line cap, the overlong-line skip, appearance-resolved colours, and generation bumping) and `LogExportService` (header contents, one line per entry, UTF-8 without BOM, empty input, failure reporting, cancellation, directory creation).
+
+Three rules govern this project; each was learned the hard way:
+
+1. **The app project is deliberately NOT referenced.** A project reference to a WinUI 3 app pulls in the WindowsAppSDK's `buildTransitive` Appx/Pri targets, whose tasks live in Visual Studio's MSBuild tooling (`Microsoft.Build.AppxPackage.dll`) and are *absent from the .NET SDK*. The referencing project then fails to **build** — `MSB4062`, before a single test runs — via `RemovePayloadDuplicates`, an **unguarded** target, so no property disables it. `AppxGeneratePriEnabled=false` silences `MrtCore.PriGen.targets:908` and merely reveals the next one; `EnableMsixTooling=false` (the advice usually given) affects neither. Verified on a machine with only the .NET SDK — under a full Visual Studio install the reference would work, which is exactly why this must not be how the suite is wired.
+2. **Sources under test are linked, not referenced** (`<Compile Include="..\..\Services\X.cs" Link="Linked\X.cs" />`). That is only possible because they are genuinely UI-free, and it turns that claim into a **build-time guarantee**: if a linked file ever grows a dependency on `Microsoft.UI.*`, this project stops compiling. Add a file to the list only if it is UI-free; anything touching `Microsoft.UI.Xaml.*` belongs in the app and must be covered by the manual checklist above.
+3. **The app's root-level project globs `**/*.cs`.** That swallows the test project's sources, so the app fails to compile on xunit types it never references, reporting every error against *its own* csproj plus a misleading downstream `MSB3073` from `XamlCompiler.exe`. `SerialPortTool.csproj` therefore carries an explicit `<Compile Remove="tests\**" />`. Anything added under `tests/` in future is covered by the same three lines.
+
+The suite has already paid for itself: writing `ExportAsync_WhenAlreadyCancelled_…` exposed that handing the token to `Task.Run` made a pre-cancelled token surface as an unhandled `TaskCanceledException` out of a method documented as never throwing — and the same pass added the delete-partial-file behaviour that stops a truncated export from silently looking like a complete log.
+
+### WinUI 3 避坑约定 (v2.2.4)
+
+Consolidated from the sections above — the four that have actually cost time here. Every one of them is a framework constraint, not a design choice, so the mitigation is a convention rather than a fix.
+
+| Pitfall | Symptom | Convention |
+| --- | --- | --- |
+| A `Window` is not a `FrameworkElement` | A compiled `{x:Bind}` with a `Converter` in the window's own tree has no converter-lookup root | Wrap the markup in a `UserControl` (`LogListView`, `QuickCommandPalette`), or fall back to `{Binding}` for converter-only cases (see `MainWindow.xaml`'s empty state and flyout empty states) |
+| The default wheel step is useless for ~20 px rows | "The wheel does nothing" — at a few dozen lines/s, and while paused | Take the wheel over: one `PointerWheelChanged` on the ScrollViewer's **content** (`handledEventsToo: false`, so it runs before the class handler and `Handled` suppresses the built-in step) plus a fallback on the ListView (`handledEventsToo: true`) for gestures that never reach the presenter. Detach in `Unloaded`, or a re-attach double-subscribes and every notch is applied twice |
+| Layout-affecting animation properties need `EnableDependentAnimation`; `Translation`/`Scale` cannot go in `VisualState.Setters` | The animation silently does nothing, or the first transition into the state throws | Animate `Opacity`/`Translation` (compositor-friendly) and keep the dependent ones out of visual states. Gate every animation on `UISettings.AnimationsEnabled` |
+| `KeyboardAccelerator` on the window did not fire, and letter combinations get eaten by IMEs | A shortcut that works everywhere else does nothing here | Route window-wide keys through `MainWindow.OnRootKeyDown` (registered `handledEventsToo: true`) and prefer **function keys** — F2 is the command palette, F9 the log folder |
+
+Two more that only bite when adding a second project or a second list: the root-level `**/*.cs` glob (above), and the fact that a `ListView` bound to a `RangeObservableCollection` must be updated with a **single `Reset`** — a multi-item notification throws an uncatchable exception in WinUI 3, which is why the log flush is built the way it is.
 - **notifications (v2.2.4)**: copy a selection and confirm a success bar appears bottom-right and removes itself after a few seconds. Then hold the clipboard open in another process (or copy repeatedly in a browser) and press Ctrl+C — an error bar must appear and **stay** until its ✕ is pressed; this is exactly the case a status-bar line used to lose. Post more than four in a row and confirm the oldest is dropped instead of the stack growing over the log, and that the wheel still reaches the log through the empty space around the bars. Close the last entry with its ✕ — the entry must disappear immediately and not come back.
 
 Added in v2.1.5 — the log list's wheel step (a ~20 px row made the framework's own step invisible; see the `LogListView` entry under Performance-Critical Components):
@@ -222,7 +255,10 @@ SerialPortTool/
 ├── Assets/Images/                   # logo.ico (multi-size 16–256), logo.png (1024 master)
 ├── Themes/Tokens.xaml               # Design tokens + WinUI lightweight-styling overrides (Light/Dark/HC)
 ├── Themes/Controls.xaml             # Button family styles/templates (the only re-templated controls)
-├── Controls/LogListView.xaml(.cs)   # The only custom UserControl (virtualized log list)
+├── Controls/LogListView.xaml(.cs)   # Virtualized log list: wheel takeover, pinned-to-bottom,
+│                                    # keyword highlighting
+├── Controls/QuickCommandPalette.xaml(.cs)
+│                                    # F2 command palette — projects snippets + ports, owns no data
 ├── Converters/                      # BoolToVisibility + InverseBoolToVisibility (one file),
 │                                    # HexColorToBrush — all registered in App.xaml
 ├── Core/Enums/                      # ConnectionState, FilterType, UpdateCheckStatus, AppThemePreference
@@ -233,6 +269,7 @@ SerialPortTool/
 │                                    # NotificationItem (notification stack),
 │                                    # SendSnippet / SnippetGroup (quick-send library),
 │                                    # HighlightRule / HighlightMatch (keyword highlighting),
+│                                    # PaletteEntry / PaletteEntryKind (command palette rows),
 │                                    # UpdateReleaseInfo / UpdateCheckResult
 ├── Services/                        # 14 interfaces + 14 implementations (see Service Layer)
 ├── ViewModels/MainViewModel.cs      # Single ViewModel (+ in-file RangeObservableCollection,
@@ -720,6 +757,7 @@ Only the ones that change how you should reason about the code — `version.json
 - **Per-port colours** (v1.7.0, extended v2.1.0 / v2.1.1) — each opened port gets a unique colour from a 10-colour slot palette, plus a configurable TX colour; both are persisted as slots and resolved per appearance. `LogEntry.ColorHex` holds the colour **resolved for the active appearance**, and the rendering path is always `HexColorToBrushConverter` (log rows in `LogListView.xaml`'s `DataTemplate`, the sidebar swatch, the channel legend). New `LogEntry` fields needing colour treatment must go through the same converter. Changing a port's colour re-colours the rows already on screen (`ApplyPortColorChange`), the same way an appearance switch does — only `IsReceived` rows are touched, because sent/tuning rows carry the TX colour.
 - **Single instance** (v2.1.1) — a second launch shows a message box and exits. See Important Constraints and the "do not regress" entry.
 - **Send box Enter** (v2.1.1) — Enter in the send box sends to every open port, which is what the placeholder text always claimed. The text box is single-line, so Enter has no other meaning.
+- **Command palette** (v2.2.4) — **F2** opens a keyboard-first switcher over the quick-send library and the serial ports: type to filter, `↑↓` to move, `Enter` to run, `Esc` / a tap on the backdrop to dismiss. Snippets (searched by label, group *and payload*) broadcast through the same `SendSnippetAsync` the flyout uses; ports toggle through the sidebar's own `OpenPortCommand` / `ClosePortCommand`, so the confirmation and error reporting are not reimplemented. Borrowed from Netcatty's `QuickSwitcher`, including the choice of a function key over `Ctrl+…` (see the note on `MainWindow.OnRootKeyDown`). Lives in `Controls/QuickCommandPalette.xaml(.cs)` and **owns no data** — it projects `AllSnippets` / `OpenPorts` / `AvailablePorts` and raises one `Activated` event for the window to interpret, because a palette-local copy of the library is the classic way a "search everything" surface ends up disagreeing with what it searches.
 - **Keyword highlighting** (v2.2.4) — rules (literal or regex, optional case sensitivity, one of the ten port-identity hues) paint the matched text in the log rows. Rules are managed from the 高亮 flyout beside the search box, persist under the single settings key `HighlightRules`, and are **suppressed entirely while the receive path is under output pressure** (see the `OutputPressureService` entry). Painted with `TextBlock.TextHighlighters`, which is a property of the row's existing text element — the row therefore keeps its two-element shape, and nothing was added to the virtualization path. Colours are slot hexes resolved per appearance, exactly like port colours.
 - **Quick-send library** (v2.2.4) — save the send box's contents as a named, grouped command, then send it to every open port in one click from the 快捷 flyout beside 发送. The library is a JSON array under the single settings key `QuickSendSnippets` (`ISnippetService`), so it survives upgrades with no migration. A snippet is sent through `MainViewModel.SendPayloadAsync` — the same broadcast / hex parsing / sent-log / statistics path the send box uses, extracted on purpose so the two cannot drift — and may opt into payload expansion: `${date}` `${time}` `${datetime}` `${epoch}` `${epochms}` plus the escapes `\r` `\n` `\t` `\0` `\\`, with unknown tokens left verbatim. Groups are *derived from* each snippet's `Group` field rather than stored, so the library cannot end up with an empty group or a dangling group reference. Deleting is per row and deliberately leaves the flyout open.
 - **Appearance switch** (v2.1.0) — 跟随系统 / 浅色 / 深色 from the 外观 menu, persisted as `AppTheme` and applied as `ElementTheme` on the window root. Required reading before touching anything visual: see "UI and Appearance".
@@ -812,8 +850,7 @@ Locally generated entries (TX, tuning summaries) enter the same queue through `A
 
 | # | 项 | 借鉴点 | 落点 | 风险 / 约束 |
 | --- | --- | --- | --- | --- |
-| **F1** | 命令面板 / 快速切换 | `components/QuickSwitcher.tsx` | 新增 `Controls/` 下的 UserControl（包一层 `UserControl` 才能用编译 `x:Bind`），支持串口与指令检索 | 快捷键走 `MainWindow.OnRootKeyDown` 这一个入口；优先用**功能键**（`Ctrl+Shift+字母` 常被 IME 与常驻工具占用）。指令检索直接复用 `MainViewModel.SnippetGroups` / `SendSnippetAsync`（已实现），不要再建第二个指令来源 |
-| **F2** | 多端口并排分屏（**先调研**，结论见下） | `domain/workspace.ts` 的分屏树 + `TerminalView` | 每面板独立筛选 / 钉底 / 裁剪策略的设计评估 | **结论：阻塞点在 ViewModel，不在 `LogListView`**（控件侧已是实例安全的，见下方调研结论）。不要按"多挂几个控件"来估工，也不要先动滚轮或贴底机制 |
+| **F1** | 多端口并排分屏（**先调研**，结论见下） | `domain/workspace.ts` 的分屏树 + `TerminalView` | 每面板独立筛选 / 钉底 / 裁剪策略的设计评估 | **结论：阻塞点在 ViewModel，不在 `LogListView`**（控件侧已是实例安全的，见下方调研结论）。不要按"多挂几个控件"来估工，也不要先动滚轮或贴底机制 |
 
 ### 分屏调研结论（v2.2.4，未改动主干代码）
 

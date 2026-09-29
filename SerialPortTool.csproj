@@ -61,6 +61,19 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- This project sits at the repository root, so the SDK's default globbing (Compile = **/*.cs)
+         swallows the test project's sources as well. The symptom is thoroughly misleading: the app
+         fails to compile on xunit types it never references, and every error is reported against
+         *this* csproj (plus an MSB3073 from XamlCompiler.exe, which is only a downstream casualty).
+
+         Excluded explicitly rather than moving the tests out of the folder they belong in. Anything
+         added under tests/ in future is covered by the same three lines. -->
+    <Compile Remove="tests\**" />
+    <Page Remove="tests\**" />
+    <None Remove="tests\**" />
+  </ItemGroup>
   
   <!-- Target to generate build timestamp at compile time -->
   <Target Name="GenerateBuildInfo" BeforeTargets="BeforeCompile">

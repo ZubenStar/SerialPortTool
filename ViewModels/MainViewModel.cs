@@ -2107,6 +2107,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public ObservableCollection<SnippetGroup> SnippetGroups { get; } = new();
 
+    /// <summary>
+    /// The library as a flat list, in storage order, for the command palette to search.
+    /// </summary>
+    /// <remarks>
+    /// The palette searches this rather than <see cref="SnippetGroups"/>: groups exist to give the flyout
+    /// headings, and flattening them back out to filter would be work for nothing. Both are projections of
+    /// the same <c>_snippets</c>, so neither can drift from the other.
+    /// </remarks>
+    public IReadOnlyList<SendSnippet> AllSnippets => _snippets;
+
     /// <summary>Drives the quick-send flyout's empty state.</summary>
     public bool HasSnippets => SnippetGroups.Count > 0;
 

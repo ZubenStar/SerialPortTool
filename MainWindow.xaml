@@ -1217,5 +1217,18 @@
                 </DataTemplate>
             </ItemsControl.ItemTemplate>
         </ItemsControl>
+        <!-- ============================= Command palette (F2) =============================
+             Last child of the root grid and spanning both rows (title bar + body), so it covers the whole
+             window without the shell reserving space for it: Collapsed until F2, no layout contribution
+             while hidden, and nothing underneath needed a scrim hook. F2 rather than an accelerator —
+             see the note on OnRootKeyDown above. -->
+        <controls:QuickCommandPalette x:Name="CommandPalette"
+                                      Grid.Row="0"
+                                      Grid.RowSpan="2"
+                                      Snippets="{x:Bind ViewModel.AllSnippets, Mode=OneWay}"
+                                      OpenPorts="{x:Bind ViewModel.OpenPorts, Mode=OneWay}"
+                                      AvailablePorts="{x:Bind ViewModel.AvailablePorts, Mode=OneWay}"
+                                      Activated="CommandPalette_Activated" />
+
     </Grid>
 </Window>

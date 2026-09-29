@@ -37,7 +37,12 @@ public sealed class LogExportService : ILogExportService
 
     /// <inheritdoc />
     public Task<LogExportResult> ExportAsync(LogExportRequest request, CancellationToken cancellationToken = default)
-        => Task.Run(() => Write(request, cancellationToken), cancellationToken);
+        // The token is deliberately NOT handed to Task.Run. Doing so made the method throw after all: a
+        // token that is already cancelled makes Task.Run return a cancelled task, and awaiting that
+        // raises TaskCanceledException — through a method whose entire contract is "never throws".
+        // Passing it into the body instead routes cancellation through the catch below, which reports it
+        // as a result like every other failure. (Found by ExportAsync_WhenAlreadyCancelled test.)
+        => Task.Run(() => Write(request, cancellationToken));
 
     private LogExportResult Write(LogExportRequest request, CancellationToken cancellationToken)
     {
@@ -95,6 +100,7 @@ public sealed class LogExportService : ILogExportService
                 request.FilePath,
                 linesWritten);
 
+            DeletePartialFile(request.FilePath);
             return new LogExportResult(linesWritten, 0, "导出已取消");
         }
         catch (Exception ex)
@@ -102,7 +108,32 @@ public sealed class LogExportService : ILogExportService
             // Includes the real case this has to survive: the target file is open in another program,
             // or the folder is read-only.
             _logger.LogError(ex, "Failed to export the log to {File}", request.FilePath);
+            DeletePartialFile(request.FilePath);
             return new LogExportResult(linesWritten, 0, $"导出失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Removes a half-written file after a cancellation or a failure.
+    /// </summary>
+    /// <remarks>
+    /// An export exists complete or not at all. A truncated file left behind after a reported failure is
+    /// how someone ends up analysing an incomplete log without knowing it — the worst possible outcome
+    /// for a tool whose whole job is telling you what the wire said. Best-effort: the delete can fail for
+    /// the very same reason the write did, and that must not turn a reported failure into a thrown one.
+    /// </remarks>
+    private void DeletePartialFile(string filePath)
+    {
+        try
+        {
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not remove the partial export at {File}", filePath);
         }
     }
 

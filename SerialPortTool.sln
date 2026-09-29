@@ -4,6 +4,8 @@ VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SerialPortTool", "SerialPortTool.csproj", "{7DAB09CB-7A53-A277-173D-DC13FD022734}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SerialPortTool.Tests", "tests\SerialPortTool.Tests\SerialPortTool.Tests.csproj", "{A3F1C6D2-8B4E-4F17-9C2A-5D6E7F8A9B0C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -14,6 +16,10 @@ Global
 		{7DAB09CB-7A53-A277-173D-DC13FD022734}.Debug|x64.Build.0 = Debug|x64
 		{7DAB09CB-7A53-A277-173D-DC13FD022734}.Release|x64.ActiveCfg = Release|x64
 		{7DAB09CB-7A53-A277-173D-DC13FD022734}.Release|x64.Build.0 = Release|x64
+		{A3F1C6D2-8B4E-4F17-9C2A-5D6E7F8A9B0C}.Debug|x64.ActiveCfg = Debug|x64
+		{A3F1C6D2-8B4E-4F17-9C2A-5D6E7F8A9B0C}.Debug|x64.Build.0 = Debug|x64
+		{A3F1C6D2-8B4E-4F17-9C2A-5D6E7F8A9B0C}.Release|x64.ActiveCfg = Release|x64
+		{A3F1C6D2-8B4E-4F17-9C2A-5D6E7F8A9B0C}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
