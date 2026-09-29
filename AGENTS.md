@@ -144,6 +144,8 @@ Added in v2.2.4 — the flush loop now drops its **optional** work under output 
 - **command palette (v2.2.4)**: F2 opens it with the caret already in the query box and the top row selected. Typing filters; `↑↓` moves the selection and keeps it scrolled into view; `Enter` runs the selected row; `Esc`, F2 again, and a click on the dimmed area all dismiss it. F2 must work while focus is inside the log's search box and inside the send box — that is the whole reason it is a function key.
 - **command palette focus and flyout cases (v2.2.4, VERIFIED)**: both were driven by a real UI Automation probe against the running app — launch it, focus the log search box, send a real `F2` — because a synthetic `KeyRoutedEventArgs` cannot answer either. Results: F2 **does** reach `OnRootKeyDown` while focus is inside the search box (the window's `List` controls go 3 → 4 as the palette appears, and back to 3 on a second F2), and it **also** works with a `Flyout` open — the 外观 menu flyout and the palette were both visible in the same frame. The worry that a popup tree might swallow the key was wrong, so no fallback registration is needed.
 
+This is now a repeatable script rather than a one-off: `powershell -ExecutionPolicy Bypass -File scripts\uia-smoke.ps1` re-runs all nine assertions, with screenshots under `obj\uia-smoke`. **Local only — it needs an interactive desktop and a foreground window, so it must not be wired into CI.** It asserts its own prerequisite and aborts if it cannot take the foreground, and that matters more than it sounds: a run during a locked session otherwise reports *app-level* failures — "F2 did not open the palette", "F2 did not work with a flyout open" — for a window that was never brought forward and a keyboard aimed at the lock screen. Exactly that happened while writing it, and it nearly led to "fixing" a focus bug in `QuickCommandPalette.Close()` that did not exist. `SetForegroundWindow`'s return value is checked, not discarded, for the same reason; the first version passed it to `[void]` and produced two runs of convincing garbage.
+
 ### Synthetic load: `--flood=<lines-per-second>` (developer only)
 
 A `--flood=20000` command-line switch starts a generator that pushes generated lines at the requested rate (clamped 100..200000, 20 ticks/s). It is not reachable from the UI, and it exists because output-pressure degradation and the frame-aligned flush are otherwise only exercisable by real hardware flooding a real port — which made them the two hardest things here to re-verify after a change, and therefore the two most likely to rot quietly.
@@ -308,7 +310,9 @@ SerialPortTool/
 ├── scripts/                         # bump-version, generate-buildinfo, update-manifest-version,
 │                                    # build-installer, prune-publish-output,
 │                                    # verify-theme-parity (runs as a BeforeBuild target — pure ASCII,
-│                                    # see the PowerShell traps below)
+│                                    # see the PowerShell traps below),
+│                                    # uia-smoke (drives the real app through UI Automation; the only
+│                                    # UI-level automated check, and LOCAL ONLY — never wire it into CI)
 ├── tests/SerialPortTool.Tests/      # xUnit logic-layer tests. Links the UI-free sources instead of
 │                                    # referencing the app — see "Automated tests" for why, and read
 │                                    # that section before adding a file to the Compile list
