@@ -202,9 +202,42 @@ public partial class App : Application
 
     private void CreateAndActivateMainWindow()
     {
-        _window = _services.GetRequiredService<MainWindow>();
+        var mainWindow = _services.GetRequiredService<MainWindow>();
+        _window = mainWindow;
         _window.Closed += OnWindowClosed;
         _window.Activate();
+
+        // Developer-only, and only after Activate: the generator drives the UI thread's flush loop, so
+        // there is nothing useful it could do before the window exists.
+        var floodRate = ReadFloodSwitch();
+        if (floodRate > 0 && mainWindow.ViewModel is { } viewModel)
+        {
+            viewModel.StartSyntheticFlood(floodRate);
+        }
+    }
+
+    /// <summary>
+    /// Reads the developer-only <c>--flood=&lt;lines-per-second&gt;</c> switch, or 0 when absent.
+    /// </summary>
+    /// <remarks>
+    /// Parsed from the process command line, not from <c>LaunchActivatedEventArgs.Arguments</c>: that
+    /// string is empty for an ordinary desktop launch of an unpackaged app, so a switch read from there
+    /// would silently never fire — the kind of feature that looks implemented and does nothing.
+    /// </remarks>
+    private static int ReadFloodSwitch()
+    {
+        const string prefix = "--flood=";
+
+        foreach (var argument in Environment.GetCommandLineArgs())
+        {
+            if (argument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(argument.AsSpan(prefix.Length), out var linesPerSecond))
+            {
+                return linesPerSecond;
+            }
+        }
+
+        return 0;
     }
 
     private async Task LoadInitialThemePreferenceAsync()

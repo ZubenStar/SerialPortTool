@@ -2575,6 +2575,180 @@ public partial class MainViewModel : ObservableObject, IDisposable
         await _serialPortService.SendTextAsync(portName, text, Encoding.UTF8);
     }
 
+    #region Synthetic load (developer only)
+
+    /// <summary>Ticks per second the generator runs at: 50 ms of work per tick, like a busy receive path.</summary>
+    private const int FloodTicksPerSecond = 20;
+
+    private const int MinFloodLinesPerSecond = 100;
+    private const int MaxFloodLinesPerSecond = 200000;
+
+    /// <summary>Rough bytes per generated line, for the pressure sampler.</summary>
+    private const int SyntheticLoadBytesPerLine = 48;
+
+    private DispatcherQueueTimer? _syntheticFloodTimer;
+
+    /// <summary>
+    /// Starts a developer-only synthetic load source: <c>--flood=&lt;lines-per-second&gt;</c> on the command
+    /// line. Not a product feature, not reachable from the UI, and inert unless the switch is passed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It exists because output-pressure degradation and the frame-aligned flush can otherwise only be
+    /// exercised by real hardware flooding a real port. That made them the two hardest things in this app
+    /// to re-verify after a change, and therefore the two most likely to rot quietly. With this switch the
+    /// degraded path can be entered on demand, with no serial port involved.
+    /// </para>
+    /// <para>
+    /// The generated lines go through the <b>real</b> pipeline: the same queue, the same pause gate, the
+    /// same <see cref="MaxQueuedLogEntries"/> backpressure, the same pressure sampling. A generator that
+    /// wrote into the display collections directly would prove nothing about the path it is meant to be
+    /// stressing, which is the only reason this lives here rather than in a test harness.
+    /// </para>
+    /// <para>Idempotent, so the switch cannot stack two generators onto one view.</para>
+    /// </remarks>
+    public void StartSyntheticFlood(int linesPerSecond)
+    {
+        if (_syntheticFloodTimer is not null)
+        {
+            return;
+        }
+
+        // A port must already be open, and that is an architectural precondition rather than a limit of
+        // this generator: FlushPendingLogBatches discards any batch whose port is not in _portsByName
+        // ("Ignoring queued data for closed port"), so with nothing open the flood would generate
+        // thousands of entries a second and display none of them. That is the one outcome worth
+        // refusing outright — a switch that appears to work and does nothing is worse than no switch.
+        if (OpenPorts.Count == 0)
+        {
+            _logger.LogWarning(
+                "SYNTHETIC LOAD REFUSED: no open port. The display path discards batches for ports that are not open.");
+
+            _notifications.Notify(
+                "合成负载需要先打开至少一个串口（显示路径会丢弃未打开端口的数据）",
+                InfoBarSeverity.Error);
+
+            return;
+        }
+
+        var rate = Math.Clamp(linesPerSecond, MinFloodLinesPerSecond, MaxFloodLinesPerSecond);
+        var linesPerTick = Math.Max(1, rate / FloodTicksPerSecond);
+
+        _syntheticFloodTimer = _dispatcherQueue.CreateTimer();
+        _syntheticFloodTimer.Interval = TimeSpan.FromMilliseconds(1000.0 / FloodTicksPerSecond);
+        _syntheticFloodTimer.IsRepeating = true;
+        _syntheticFloodTimer.Tick += (_, _) => PumpSyntheticFlood(linesPerTick);
+        _syntheticFloodTimer.Start();
+
+        // Loud on purpose: a build running at 20k lines/s must be impossible to mistake for a real one,
+        // both in the log and on screen.
+        _logger.LogWarning(
+            "SYNTHETIC LOAD ENABLED: {Rate} lines/s. Developer switch, not a feature. Port={Port}",
+            rate,
+            OpenPorts[0].PortName);
+
+        _notifications.Notify($"合成负载已开启（{rate} 行/s）— 开发者开关", InfoBarSeverity.Warning);
+    }
+
+    /// <summary>Queues one tick's worth of generated lines.</summary>
+    private void PumpSyntheticFlood(int linesPerTick)
+    {
+        // The port can be closed while the generator is running. Bail out rather than produce a tick of
+        // entries the flush is guaranteed to discard.
+        if (OpenPorts.Count == 0)
+        {
+            return;
+        }
+
+        // Rows claim the same port they are coloured by, so the per-port statistics branch is exercised
+        // too — that is part of what makes this a load source rather than just a log generator.
+        var portName = OpenPorts[0].PortName;
+        var colorHex = PortColorPalette.Resolve(PortColorPalette.DefaultRxHex, _appliedIsDark);
+
+        var logs = new List<LogEntry>(linesPerTick);
+        var now = DateTime.Now;
+
+        for (var i = 0; i < linesPerTick; i++)
+        {
+            logs.Add(new LogEntry
+            {
+                // One timestamp for the whole tick: a flood is what a chunk of bytes arriving at once
+                // actually looks like, and it keeps the per-line cost down to what is being measured.
+                Timestamp = now,
+                PortName = portName,
+                Content = BuildSyntheticLine(i),
+                IsReceived = true,
+                ColorHex = colorHex,
+            });
+        }
+
+        // Sampled the way the receive path samples a chunk, so the pressure service sees the same shape of
+        // input a real flood produces.
+        _outputPressure.NoteIncoming(linesPerTick * SyntheticLoadBytesPerLine, linesPerTick, 0);
+
+        EnqueueSyntheticBatch(portName, logs);
+    }
+
+    /// <summary>Content of one generated line.</summary>
+    /// <remarks>
+    /// Varied in length and wording, and it includes a token a highlight rule will match on purpose: a
+    /// flood of identical one-word lines would not exercise the per-line work (formatting, filtering,
+    /// matching) that real traffic does, which is most of what this is for.
+    /// </remarks>
+    private static string BuildSyntheticLine(int index) => (index % 7) switch
+    {
+        0 => $"SIM {index:D6} ERROR sensor timeout on channel {index % 3}",
+        1 => $"SIM {index:D6} ok rssi=-{40 + (index % 50)}dBm",
+        2 => $"SIM {index:D6} WARN buffer {index % 100}% full, draining",
+        3 => $"SIM {index:D6} payload {new string('x', 40 + (index % 60))}",
+        4 => $"SIM {index:D6} rx {index % 256} bytes crc=OK",
+        5 => $"SIM {index:D6} STATE {index % 5} elapsed {index % 1000}ms",
+        _ => $"SIM {index:D6} keepalive",
+    };
+
+    /// <summary>
+    /// Hands one generated batch to the same queue the receive path uses.
+    /// </summary>
+    /// <remarks>
+    /// DELIBERATELY A MIRROR of the enqueue in <c>OnDataReceived</c> — the pause gate, the
+    /// <see cref="MaxQueuedLogEntries"/> backpressure with its rollback, and the flush schedule — rather
+    /// than a refactor both call. The receive path is the hot path for every byte this app reads and sits
+    /// on the do-not-regress list; reshaping it so a developer-only generator can share fifteen lines would
+    /// trade real regression risk for a cosmetic win. The cost of this choice is that the two must be
+    /// changed together, and that is the smaller cost.
+    /// <para>
+    /// A drop is silent here, unlike the receive path, which logs a warning: this ticks 20 times a second
+    /// and would otherwise drown the log in its own backpressure. The dropped counter is the signal.
+    /// </para>
+    /// </remarks>
+    private void EnqueueSyntheticBatch(string portName, List<LogEntry> logs)
+    {
+        // Mirrored, not incidental: the real path drops UI entries while paused (the file log already has
+        // them), and "pause during a flood" is one of the behaviours this switch exists to let people test.
+        if (IsPaused)
+        {
+            return;
+        }
+
+        var queuedLogCount = Interlocked.Add(ref _queuedLogCount, logs.Count);
+        if (queuedLogCount > MaxQueuedLogEntries)
+        {
+            Interlocked.Add(ref _queuedLogCount, -logs.Count);
+            Interlocked.Increment(ref _totalDropped);
+            return;
+        }
+
+        _pendingLogBatches.Enqueue(new PendingLogBatch
+        {
+            PortName = portName,
+            Logs = logs,
+        });
+
+        SchedulePendingLogFlush();
+    }
+
+    #endregion
+
     /// <summary>
     /// Queues a locally generated (TX / tuning) entry for the next UI flush.
     /// </summary>
