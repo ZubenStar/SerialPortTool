@@ -277,6 +277,9 @@ SerialPortTool/
 ├── installer/SerialPortTool.iss     # Inno Setup script — per-user install, silent replace/restart on update
 ├── scripts/                         # bump-version, generate-buildinfo, update-manifest-version,
 │                                    # build-installer, prune-publish-output
+├── tests/SerialPortTool.Tests/      # xUnit logic-layer tests. Links the UI-free sources instead of
+│                                    # referencing the app — see "Automated tests" for why, and read
+│                                    # that section before adding a file to the Compile list
 └── .github/workflows/release.yml    # Tag-driven release pipeline
 ```
 
@@ -870,6 +873,40 @@ Locally generated entries (TX, tuning summaries) enter the same queue through `A
 **阻塞点 3：全局单例状态需要"活动面板"概念。** `SearchText`、`HighlightMatcher`，以及窗口工具栏的全选 / 复制 / 导出，目前都按名字指向唯一那个 `LogListView`。多面板后必须定义谁是活动面板（建议焦点驱动），并把这些入口改成路由到它。
 
 **建议：保持"先调研"状态，除非出现明确用户诉求（如"同时看两个端口的独立过滤视图"）。** 若要做，第一步是先设计 per-pane 的筛选 / 钉底 / 裁剪策略并作为独立架构变更排期；`LogListView` 侧预计只需补一个"活动面板"标记，**不需要**改滚轮或贴底机制。
+
+#### ItemsRepeater 替代 ListView 的 API 缺口（决定性问题）
+
+换控件换来的收益只有一项：**少一层 `ListViewItem` 容器**。代价如下表 —— 结论是**不值得换**，而这个结论不依赖测量。
+
+| `ListView` 现成能力 | `ItemsRepeater` 对应 | 代价 |
+| --- | --- | --- |
+| 选择：`SelectedItems` / `Extended` / `SelectAll()` / `CopySelection()` / `Selected` 视觉状态 | **无内置**。需接 `SelectionModel`，自绘选中态，自行实现 Ctrl / Shift / 全选语义 | **最大的一块**，且全是用户可见的键盘行为 |
+| `ItemContainerStyle` + 容器模板（内边距、命中测试） | 无容器概念，全部并进行模板 | 行模板从"2 元素"变为"2 元素 + 选中背景/内边距"，**直接冲击 do-not-regress 里的行成本约束** |
+| `ItemClick` / `IsItemClickEnabled` | 无 | 自行挂 `Tapped` |
+| 键盘 / 焦点模型（`IsTabStop`、方向键、`KeyDown`） | 项**不可聚焦** | 选中态与焦点全部自管 |
+| `ScrollViewer` 由模板提供 | 由本控件声明 | 略简化（`FindDescendant<ScrollViewer>` 变直接引用），但滚轮 primary 的注册位置要重新验证（`_wheelHost` 从 items presenter 变成 ScrollViewer 内容） |
+| `ScrollIntoView` + `ScrollViewerViewChanged` 的贴底判定 | `GetOrCreateElement(i).StartBringIntoView()` | "贴底"要重做：`StackLayout` 的高度是**估算**的，滚动条会随回收跳动，`FollowBottomSlackPx` 那套判定不能直接复用 |
+| 容器回收 | `StackLayout` 同样回收 | `DataContextChanged` 挂接仍成立，但遍历入口要改（`ItemsPanelRoot` → repeater 的可视子级） |
+| 多元素通知的行为 | **性质不同** | AGENTS 记录的"多元素 `Reset` 会崩"是 `ListView` 的性质，换控件后 flush 路径的单次 `Reset` 纪律**必须重新验证** |
+| `ItemContainerTransitions` | 无 | 0（本来就已禁用） |
+
+关键点在于：`ListViewItem` 的容器成本在本项目里**已经被压得很低** —— `MinHeight` / `Padding` / `Margin` 全 0、只保留 Normal / Selected 两个视觉状态、无过渡、自定义极简模板。把容器去掉，换来的是把上表右列**全部自己实现并各自重新验证**。
+
+#### 测量协议（若仍要量）
+
+1. **前置**：`dotnet clean`（先解决下面的编译问题）。在 `MainWindow.xaml` 的 `<Grid Grid.Row="3">` 里二选一互斥挂载 `LogListView` 或原型。
+2. **场景**：① 单口 20k 行/s 洪水时同时滚轮上/下；② 20 万行静态缓冲下持续滚轮。
+3. **指标**：帧率（用 `CompositionTarget.Rendering` 计数或 PresentMon，**任务管理器 CPU 不是指标**）、单次滚轮手势的 realize 耗时、20 万行下的内存峰值。
+4. **判据**：只有当原型在**至少一项**上取得可重复的 ≥20% 优势、且选择/键盘语义的重建成本可接受时才考虑；否则维持 `ListView`。
+5. **必须同时记录**：为让原型可用而补的选择 / 贴底 / 滚轮三件事**各写了多少行** —— 那才是这次替换的真实价格。
+
+#### 原型状态：未能落地，原因未查明
+
+按上表设计写入 `Controls/LogRepeaterView.xaml(.cs)` 后，`XamlCompiler.exe` 立即以退出码 1 失败且**没有任何诊断**（`MSB3073`，`Microsoft.UI.Xaml.Markup.Compiler.interop.targets:590`），`output.json` 保持为**上一次成功构建**的报告（所以里面不含新文件，看起来像凭空失败）。
+
+已排除：**内容**（body 缩到一个 `TextBlock` 后仍失败）、**陈旧中间状态**（`dotnet clean` 后仍失败）、**命名空间前缀**（`muxc:` 无效）。而**同一目录**下先前新增的 `QuickCommandPalette.xaml` 编译正常，所以也不是"任何新 XAML 文件"。
+
+为保持构建绿灯，原型已撤回。**不要从这次尝试里继承"已验证可行 / 不可行"的结论** —— 唯一确定的结论是：动手前得先把这个问题解决掉，它本身就是该 spike 的第一个工时项。
 
 #### 工程化 / 测试
 
