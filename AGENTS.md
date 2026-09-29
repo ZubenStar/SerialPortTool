@@ -144,6 +144,8 @@ Added in v2.2.4 — the flush loop now drops its **optional** work under output 
 - **command palette (v2.2.4)**: F2 opens it with the caret already in the query box and the top row selected. Typing filters; `↑↓` moves the selection and keeps it scrolled into view; `Enter` runs the selected row; `Esc`, F2 again, and a click on the dimmed area all dismiss it. F2 must work while focus is inside the log's search box and inside the send box — that is the whole reason it is a function key.
 - **command palette actions (v2.2.4)**: a snippet row must broadcast exactly like the 快捷 flyout (same hex parsing, same errors, same sent-line entry), and a snippet must be findable by a fragment of its **payload**, not only its label. A port row must toggle through the sidebar's own path — so closing a port from the palette prompts exactly as the sidebar does. Activating anything must dismiss the overlay *before* the action runs; a palette left sitting over the result of its own action is the bug to watch for. Open the palette, then delete a snippet from the flyout, then reopen it: the deleted snippet must be gone (the palette rebuilds on open rather than caching).
 
+- **appearance pass — all three themes (v2.2.4)**: with a port open and rows on screen, cycle 跟随系统 / 浅色 / 深色, then turn on Windows **高对比** mode. The build's theme-parity check already guarantees nothing *throws*; this row is about whether the new surfaces stay legible — the log surface, the empty-state card, the section labels, the notification stack, the 高亮 flyout swatches and the F2 palette. The check that matters most is that **highlighted keywords and the port channel bars stay distinguishable** against a high-contrast background, because those two carry meaning rather than decoration.
+
 ### Automated tests
 
 `tests/SerialPortTool.Tests` (xUnit) covers the **logic layer only** — no UI, no XAML, no window:
@@ -174,6 +176,23 @@ Consolidated from the sections above — the four that have actually cost time h
 | `KeyboardAccelerator` on the window did not fire, and letter combinations get eaten by IMEs | A shortcut that works everywhere else does nothing here | Route window-wide keys through `MainWindow.OnRootKeyDown` (registered `handledEventsToo: true`) and prefer **function keys** — F2 is the command palette, F9 the log folder |
 
 Two more that only bite when adding a second project or a second list: the root-level `**/*.cs` glob (above), and the fact that a `ListView` bound to a `RangeObservableCollection` must be updated with a **single `Reset`** — a multi-item notification throws an uncatchable exception in WinUI 3, which is why the log flush is built the way it is.
+
+#### Theme-key parity is enforced by the build
+
+The three dictionaries in `Themes/Tokens.xaml` must define the same keys, and that is no longer a convention anyone has to remember: `SerialPortTool.csproj` runs `scripts/verify-theme-parity.ps1` as a `BeforeBuild` target named `VerifyThemeParity`. A key present in Light/Dark but missing from HighContrast is a **runtime crash, not a compile error** — the XAML compiler never resolves `ThemeResource` keys — so it could previously ship and then fire only for users running high contrast.
+
+Measured when it was added: **156 keys in each of the three dictionaries, with all four direction-wise diffs empty**, and deleting one HighContrast key from a copy does fail the check. It also fails when it cannot locate the three dictionaries, deliberately — a guard that has stopped guarding is worse than none. `-p:SkipThemeParityCheck=true` bypasses it.
+
+What this does **not** cover: whether the high-contrast *appearance* is usable. Parity only guarantees nothing throws; the appearance row in the manual checklist is what answers the rest.
+
+Also worth knowing when adding to this family of checks: `<Exec>` failures surface as `MSB3073`, which is the same opaque shape the XAML compiler produces. The script's own output is printed above it, so the diagnostic is there — it just is not where MSBuild points.
+
+#### Two Windows PowerShell traps in this repo's build scripts
+
+Both were hit while writing `verify-theme-parity.ps1`, and both look like something else:
+
+1. **A `.ps1` with no UTF-8 BOM is decoded as ANSI by Windows PowerShell 5.1**, so a non-ASCII character in a *message* comes out as mojibake in the build log — an em dash rendered as `鈥?`. The build scripts here are therefore written in **pure ASCII**, not as a style preference but because it is the only way to be independent of how the file happens to be saved.
+2. **`$PSScriptRoot` is not reliably populated inside a `param()` block's default value** under `-File`. Defaulting `$TokensPath` to `Join-Path $PSScriptRoot '..\Themes\Tokens.xaml'` made the no-argument invocation die in `Join-Path` before doing anything at all. Resolve paths in the body instead.
 - **notifications (v2.2.4)**: copy a selection and confirm a success bar appears bottom-right and removes itself after a few seconds. Then hold the clipboard open in another process (or copy repeatedly in a browser) and press Ctrl+C — an error bar must appear and **stay** until its ✕ is pressed; this is exactly the case a status-bar line used to lose. Post more than four in a row and confirm the oldest is dropped instead of the stack growing over the log, and that the wheel still reaches the log through the empty space around the bars. Close the last entry with its ✕ — the entry must disappear immediately and not come back.
 
 Added in v2.1.5 — the log list's wheel step (a ~20 px row made the framework's own step invisible; see the `LogListView` entry under Performance-Critical Components):
@@ -276,7 +295,9 @@ SerialPortTool/
 │                                    # PortViewModel, PortColorOption)
 ├── installer/SerialPortTool.iss     # Inno Setup script — per-user install, silent replace/restart on update
 ├── scripts/                         # bump-version, generate-buildinfo, update-manifest-version,
-│                                    # build-installer, prune-publish-output
+│                                    # build-installer, prune-publish-output,
+│                                    # verify-theme-parity (runs as a BeforeBuild target — pure ASCII,
+│                                    # see the PowerShell traps below)
 ├── tests/SerialPortTool.Tests/      # xUnit logic-layer tests. Links the UI-free sources instead of
 │                                    # referencing the app — see "Automated tests" for why, and read
 │                                    # that section before adding a file to the Compile list

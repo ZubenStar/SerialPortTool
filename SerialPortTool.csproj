@@ -95,6 +95,22 @@
            Text="The 'version' value in version.json must be three numeric parts (e.g. 2.1.0); got '$(VersionFromJson)'." />
   </Target>
 
+  <!-- Fail the build when the three theme dictionaries in Themes/Tokens.xaml do not define the same keys.
+
+       A key missing from HighContrast is a RUNTIME crash, not a compile error: the XAML compiler does not
+       resolve ThemeResource keys, so this class of bug ships silently and then fires only for users
+       running high contrast. Same reasoning as ValidateVersion above - fail here, rather than on someone
+       else's machine and only on theirs. Verified by hand before wiring it in: 156 keys in each of the
+       three dictionaries today, and removing a single HighContrast key does fail the check.
+
+       The check lives in scripts/verify-theme-parity.ps1, which also fails when it cannot locate the three
+       dictionaries - so a refactor of Tokens.xaml surfaces as a broken guard rather than a silently
+       disabled one. Set SkipThemeParityCheck=true to bypass it (e.g. while mid-edit on Tokens.xaml and
+       re-building to get a XAML diagnostic). -->
+  <Target Name="VerifyThemeParity" BeforeTargets="BeforeBuild" Condition="'$(SkipThemeParityCheck)' != 'true'">
+    <Exec Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\scripts\verify-theme-parity.ps1&quot; -TokensPath &quot;$(MSBuildProjectDirectory)\Themes\Tokens.xaml&quot;" />
+  </Target>
+
   <!-- Target to update Package.appxmanifest version before build -->
   <Target Name="UpdateManifestVersion" BeforeTargets="BeforeBuild">
     <PropertyGroup>
