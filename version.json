@@ -18,7 +18,8 @@
                 "The appearance switch (跟随系统 / 浅色 / 深色) is now a short cross-fade instead of an instant repaint, and the baud-rate banner fades in and out instead of appearing and disappearing; both are opacity-only, so the UI thread pays nothing for them, and both are skipped entirely when Windows' animations are switched off",
                 "Starting the app still paints its first frame in the saved appearance with no fade: the transition only runs when the resolved light/dark actually changes while the window is already on screen",
                 "Added short notifications in the bottom-right corner: copying logs now confirms itself, and a refused clipboard - the failure a status-bar line used to lose, because an empty clipboard is the only evidence the user gets - stays on screen until it is dismissed",
-                "The notification stack shows at most four messages and never blocks the log behind it: only the messages themselves take clicks, so the wheel and selections still reach the log through the space around them"
+                "The notification stack shows at most four messages and never blocks the log behind it: only the messages themselves take clicks, so the wheel and selections still reach the log through the space around them",
+                "The port colour palette now has exactly one definition: the menu swatches are generated from it instead of being mirrored by hand in both the window markup and the theme file, which removes a whole class of 'the menu offers this colour while the log renders another' drift. No visible change."
             ]
         },
         {

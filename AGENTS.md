@@ -131,6 +131,7 @@ Added in v2.2.4 — the flush loop now drops its **optional** work under output 
 - **the cadence follows the verdict**: the app log's `✅ Merged UI flush completed: … Logs=…` trace lines are the cheapest way to see it. Under a flood the flush count must drop to roughly a third while `Logs=` grows correspondingly (≈300), so the entries/second — and therefore the queue depth and the drop warnings — stay where they were. If `⚠️ Dropping data update because queued logs exceed limit` starts appearing during a flood that previously ran clean, the interval was widened without widening `MaxUiLogEntriesPerFlushDegraded`.
 - **the cadence returns to normal**: stop the stream and keep watching. Within ~1 s (the 750 ms verdict expiry plus one tick) the flushes must be back at the 50 ms / ≤100 shape; a flush rate that stays degraded after the counters have settled means the verdict is stuck on.
 - **清空/搜索 does not strand the cadence**: 清空 mid-flood, or commit a new search mid-flood, and confirm the view resumes following at full detail rather than sitting in the degraded cadence.
+- **colour menu is generated (v2.2.4)**: open a port's colour menu and confirm all ten swatches are listed with their names, and that picking one still repaints that port's rows, its sidebar swatch and the channel legend together — the menu now comes from `PortColorPalette` rather than ten hand-written items, so a missing or misnamed entry means the palette binding broke. Then switch 浅色 ↔ 深色 and reopen the menu: the swatches must show the dark variants, which is the check that `PortColorOptions`' brushes are refreshed alongside `TxColorOptions`' in `ApplyEffectiveTheme`.
 - **notifications (v2.2.4)**: copy a selection and confirm a success bar appears bottom-right and removes itself after a few seconds. Then hold the clipboard open in another process (or copy repeatedly in a browser) and press Ctrl+C — an error bar must appear and **stay** until its ✕ is pressed; this is exactly the case a status-bar line used to lose. Post more than four in a row and confirm the oldest is dropped instead of the stack growing over the log, and that the wheel still reaches the log through the empty space around the bars. Close the last entry with its ✕ — the entry must disappear immediately and not come back.
 
 Added in v2.1.5 — the log list's wheel step (a ~20 px row made the framework's own step invisible; see the `LogListView` entry under Performance-Critical Components):
@@ -383,7 +384,7 @@ Both dictionaries are merged in `App.xaml` **after** `XamlControlsResources`. A 
 Two consequences worth remembering:
 
 - `PortViewModel.ColorHex` is the slot, `PortViewModel.DisplayColorHex` is what the swatch binds to. The same split exists on `MainViewModel` between `TxColorHex` (persisted) and the private `TxColorHexResolved` (rendered, and what is written into `LogEntry.ColorHex`).
-- The ten swatches of the port-colour `MenuFlyout` are static XAML, so the palette exists a second time as `AppPortColor1Brush`…`AppPortColor10Brush` in `Tokens.xaml`. **Change both together** — a mismatch is invisible in review and obvious on screen.
+- **The palette has exactly one home** (v2.2.4): `Models/PortColorSlot.cs`. It used to exist a second time as `AppPortColor1Brush`…`AppPortColor10Brush` in `Tokens.xaml`, because a `MenuFlyout` has no `ItemsSource` and the sidebar's swatches were written out by hand. Those thirty resource entries and the ten hand-written `MenuFlyoutItem`s are gone — `MainWindow.PortColorFlyout_Opening` builds the items from `MainViewModel.PortColorOptions`, which is the same `PortColorOption` the TX picker uses (slot + brush resolved for the active appearance), so the menu, the swatch, the legend and the log rows all follow one `Resolve(hex, isDark)`. Rebuilding ten items on every open is deliberate: it sits behind an explicit user action and it is what keeps the swatches correct after an appearance switch without a change hook. **Do not reintroduce a per-slot brush**, and keep each item's `Tag` on the slot hex — that is the value `PortColorMenuItem_Click` persists.
 
 ### Window shell
 
@@ -775,7 +776,7 @@ Locally generated entries (TX, tuning summaries) enter the same queue through `A
 | --- | --- |
 | **借鉴策略，不照搬代码** | 两边技术栈不同（WinUI 3 / C# vs Electron / TypeScript + Chromium）。只移植"为什么这么做"，落地写法必须符合本仓库既有模式（MVVM + `ServiceCollection` + 令牌字典）。 |
 | **降级绝不能丢数据** | 洪水下只降低**可选工作**的频率（匹配计数、统计刷新、关键字高亮、提交间隔）。`_pendingLogBatches` 中的条目、文件日志的内容、`MaxQueuedLogEntries` 的背压一律不变——只是晚一点提交。 |
-| **不碰 do-not-regress** | 动工前先读 "Reliability Mechanisms"。滚轮注册位置、贴底状态机与 Reset-only 抑制窗、`RangeObservableCollection` 的单次 `Reset`、七项裁剪阈值、`AppPortColorNBrush` ↔ `PortColorSlot` 同步都是硬约束。 |
+| **不碰 do-not-regress** | 动工前先读 "Reliability Mechanisms"。滚轮注册位置、贴底状态机与 Reset-only 抑制窗、`RangeObservableCollection` 的单次 `Reset`、七项裁剪阈值都是硬约束。色板同理：`Models/PortColorSlot.cs` 是唯一来源，不得再把它散落成一组 `AppPortColorNBrush`。 |
 | **动效只服务"状态变化可被感知"** | 主题切换、面板显隐、告警出现。**日志区不加任何逐行/逐项动画**——它与虚拟化、与滚轮接管直接冲突。全部动效受 `UISettings.AnimationsEnabled` 守卫。 |
 | **层次靠明度与发丝线，不靠重色** | 保持等宽数据面的高对比可读性。新增令牌必须在 Light / Dark / **HighContrast** 三字典同补（缺键会退回框架默认值，表现为"某个控件颜色不对"）。 |
 | **不引入新依赖** | 只用 BCL 与 WinUI 原生 API（`DispatcherQueueTimer`、`Stopwatch`、`Storyboard`、`InfoBar`、`ItemsControl`）。v1.8.5 的 `deliberately absent` 清单不得回填。 |
@@ -787,12 +788,6 @@ Locally generated entries (TX, tuning summaries) enter the same queue through `A
 | # | 项 | 借鉴点（Netcatty 证据） | 落点 | 风险 / 约束 |
 | --- | --- | --- | --- | --- |
 | **P1** | 搜索匹配下移到读取线程（**已评估 · 暂缓**） | 终端把高亮扫描放在写入路径并随压力降级，而不是堆在渲染线程 | `MainViewModel.OnDataReceived`（读取线程）先跑 `matcher.IsMatch` 决定是否进入显示集，UI 线程只做收集与提交 | **先测再决定**：按 "Testing → Performance baseline" 走一遍，只有第 2 步显示匹配占 `Duration` 主导、或真的收到"某个正则把界面卡住"的反馈才做。平均收益极小（2000 行/s 时约 2 ms/s），真正值得做的理由是最坏情况——回溯型正则会在 UI 线程上烧掉整个 100 ms 超时。若要做：`_cachedSearchMatcher` / `_cachedSearchMatcherKey` 是 **UI 线程独占、无同步**的两个普通字段，工作线程**不能**调用 `GetOrCreateSearchMatcher`，必须改用不可变快照 + 代际戳，并对戳过期的条目回退到 UI 线程匹配 |
-
-#### UI / 动效 / 设计系统
-
-| # | 项 | 借鉴点 | 落点 | 风险 / 约束 |
-| --- | --- | --- | --- | --- |
-| **U1** | 端口色板数据驱动 | Netcatty 的色板与主题由数据生成，只有一份事实来源 | `PortColorPalette.Slots` 作为唯一来源，用 `ItemsControl` 生成列表项菜单与 TX 下拉，删除 `MainWindow.xaml` 中那两份硬编码 | **持久化契约不变**：仍只写 light 槽位 hex（`PortColor_<port>` / `TxColorHex` / `RxColorHex`），旧 `settings.json` 无需迁移；`AppPortColorNBrush` 与 `PortColorSlot` 仍须同步。动效已经落地（见 "Window shell"），做这一项时不要再引入新的 `Storyboard` 写法，直接复用 `RunOpacityFade` |
 
 #### 新功能
 

@@ -1019,7 +1019,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
             entry.ColorHex = PortColorPalette.Resolve(entry.ColorHex, isDark);
         }
 
+        // Both swatch sets, not just the TX one: the sidebar's colour menu is built from
+        // PortColorOptions on open and must preview the colour that will actually be rendered.
         foreach (var option in TxColorOptions)
+        {
+            option.RefreshBrush(isDark);
+        }
+
+        foreach (var option in PortColorOptions)
         {
             option.RefreshBrush(isDark);
         }
@@ -1049,12 +1056,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>Swatch options for the TX colour picker; brushes follow the active appearance.</summary>
-    public ObservableCollection<PortColorOption> TxColorOptions { get; } = BuildTxColorOptions();
+    public ObservableCollection<PortColorOption> TxColorOptions { get; } = BuildOptions(PortColorPalette.TxOptions);
 
-    private static ObservableCollection<PortColorOption> BuildTxColorOptions()
+    /// <summary>
+    /// Swatch options for the port-colour menu, one per palette slot; brushes follow the active
+    /// appearance.
+    /// </summary>
+    /// <remarks>
+    /// The single source the sidebar's colour menu builds its items from
+    /// (<c>MainWindow.PortColorFlyout_Opening</c>). Before v2.2.4 the same ten swatches were also
+    /// declared in <c>MainWindow.xaml</c> with ten matching <c>AppPortColorNBrush</c> resources in
+    /// <c>Themes/Tokens.xaml</c>; both are gone, so the palette now lives in exactly one place.
+    /// </remarks>
+    public ObservableCollection<PortColorOption> PortColorOptions { get; } = BuildOptions(PortColorPalette.Slots);
+
+    private static ObservableCollection<PortColorOption> BuildOptions(IReadOnlyList<PortColorSlot> slots)
     {
         var options = new ObservableCollection<PortColorOption>();
-        foreach (var slot in PortColorPalette.TxOptions)
+        foreach (var slot in slots)
         {
             options.Add(new PortColorOption(slot));
         }

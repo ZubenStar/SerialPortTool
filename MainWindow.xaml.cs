@@ -988,6 +988,9 @@ public sealed partial class MainWindow : Window
         ViewModel.IsPaused = !ViewModel.IsPaused;
     }
 
+    /// <summary>Swatch glyph for the port-colour menu items (the same FillColorDroplet shape the XAML used).</summary>
+    private const string PortColorSwatchGlyph = "\uE91F";
+
     /// <summary>Set by <see cref="LogListView_CopyFailed"/> so the toolbar click does not overwrite it.</summary>
     private bool _clipboardCopyFailed;
 
@@ -1187,6 +1190,36 @@ public sealed partial class MainWindow : Window
         _colorTargetPort = (sender as MenuFlyout)?.Target is FrameworkElement target
             ? target.DataContext as ViewModels.PortViewModel
             : null;
+
+        if (sender is not MenuFlyout flyout)
+        {
+            return;
+        }
+
+        // Built from PortColorPalette on every open rather than declared in XAML or cached. A
+        // MenuFlyout has no ItemsSource, so the alternatives were ten hand-written items plus ten
+        // AppPortColorNBrush resources (a second copy of the palette, see Models/PortColorSlot.cs)
+        // or a cache that would need a change hook to follow an appearance switch. Ten items behind
+        // an explicit user action is not worth either.
+        flyout.Items.Clear();
+
+        foreach (var option in ViewModel.PortColorOptions)
+        {
+            var item = new MenuFlyoutItem
+            {
+                // Tag stays the persisted slot hex: the menu reports the slot back, never the
+                // resolved colour. PortColorMenuItem_Click and the settings file both depend on it.
+                Tag = option.Hex,
+                Text = option.Name,
+                Icon = new FontIcon
+                {
+                    Glyph = PortColorSwatchGlyph,
+                    Foreground = option.Brush,
+                },
+            };
+            item.Click += PortColorMenuItem_Click;
+            flyout.Items.Add(item);
+        }
     }
 
     private void PortColorMenuItem_Click(object sender, RoutedEventArgs e)

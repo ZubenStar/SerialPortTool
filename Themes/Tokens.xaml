@@ -132,18 +132,15 @@
             <SolidColorBrush x:Key="AppScrollThumbBrush" Color="#33000000" />
             <SolidColorBrush x:Key="AppScrollThumbHoverBrush" Color="#59000000" />
 
-            <!-- Port identity palette. The slot hexes are ALSO the values persisted in
-                 settings.json (see MainViewModel.PortColorSlots) — never renumber them. -->
-            <SolidColorBrush x:Key="AppPortColor1Brush" Color="#107C10" />
-            <SolidColorBrush x:Key="AppPortColor2Brush" Color="#0078D4" />
-            <SolidColorBrush x:Key="AppPortColor3Brush" Color="#E74856" />
-            <SolidColorBrush x:Key="AppPortColor4Brush" Color="#FF8C00" />
-            <SolidColorBrush x:Key="AppPortColor5Brush" Color="#881798" />
-            <SolidColorBrush x:Key="AppPortColor6Brush" Color="#00B7C3" />
-            <SolidColorBrush x:Key="AppPortColor7Brush" Color="#C239B3" />
-            <SolidColorBrush x:Key="AppPortColor8Brush" Color="#498205" />
-            <SolidColorBrush x:Key="AppPortColor9Brush" Color="#8764B8" />
-            <SolidColorBrush x:Key="AppPortColor10Brush" Color="#CA5010" />
+            <!-- Port identity palette: it lives in exactly ONE place now —
+                 Models/PortColorSlot.cs (PortColorPalette.Slots, which also carries the dark
+                 variants and the Chinese display names, and whose slot hexes are the values
+                 persisted in settings.json). The ten AppPortColorNBrush resources that used to
+                 mirror it here are gone (v2.2.4): the sidebar's colour menu builds its swatches from
+                 the palette in MainWindow.PortColorFlyout_Opening. Do not reintroduce a brush per
+                 slot — a second copy of a palette is invisible in review and obvious on screen the
+                 moment it drifts. -->
+
 
             <!-- ==== WinUI lightweight-styling overrides ==== -->
             <SolidColorBrush x:Key="ApplicationPageBackgroundThemeBrush" Color="#F2F3F5" />
@@ -348,18 +345,11 @@
             <SolidColorBrush x:Key="AppScrollThumbBrush" Color="#40E7EAEE" />
             <SolidColorBrush x:Key="AppScrollThumbHoverBrush" Color="#66E7EAEE" />
 
-            <!-- Port identity palette — dark variants are lifted/desaturated so all ten stay
-                 legible on #101317. Slot order and light values must match the Light dictionary. -->
-            <SolidColorBrush x:Key="AppPortColor1Brush" Color="#6CCB5F" />
-            <SolidColorBrush x:Key="AppPortColor2Brush" Color="#60CDFF" />
-            <SolidColorBrush x:Key="AppPortColor3Brush" Color="#FF7A86" />
-            <SolidColorBrush x:Key="AppPortColor4Brush" Color="#EF9A3D" />
-            <SolidColorBrush x:Key="AppPortColor5Brush" Color="#BE7BE8" />
-            <SolidColorBrush x:Key="AppPortColor6Brush" Color="#4FD6DE" />
-            <SolidColorBrush x:Key="AppPortColor7Brush" Color="#E87BDD" />
-            <SolidColorBrush x:Key="AppPortColor8Brush" Color="#B4D45E" />
-            <SolidColorBrush x:Key="AppPortColor9Brush" Color="#B49BDE" />
-            <SolidColorBrush x:Key="AppPortColor10Brush" Color="#E08050" />
+            <!-- Port identity palette: see the Light dictionary's note — it lives in
+                 Models/PortColorSlot.cs, not here. The dark variants of all ten slots (lifted and
+                 slightly desaturated so they stay legible on #101317) are carried there too, which
+                 is what makes a single Resolve(hex, isDark) call the only rendering path. -->
+
 
             <!-- ==== WinUI lightweight-styling overrides ==== -->
             <SolidColorBrush x:Key="ApplicationPageBackgroundThemeBrush" Color="#101317" />
@@ -555,17 +545,12 @@
             <SolidColorBrush x:Key="AppScrollThumbBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
             <SolidColorBrush x:Key="AppScrollThumbHoverBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
 
-            <!-- Port identity degrades to the system text colour: contrast wins over hue. -->
-            <SolidColorBrush x:Key="AppPortColor1Brush" Color="{ThemeResource SystemColorWindowTextColor}" />
-            <SolidColorBrush x:Key="AppPortColor2Brush" Color="{ThemeResource SystemColorWindowTextColor}" />
-            <SolidColorBrush x:Key="AppPortColor3Brush" Color="{ThemeResource SystemColorWindowTextColor}" />
-            <SolidColorBrush x:Key="AppPortColor4Brush" Color="{ThemeResource SystemColorWindowTextColor}" />
-            <SolidColorBrush x:Key="AppPortColor5Brush" Color="{ThemeResource SystemColorWindowTextColor}" />
-            <SolidColorBrush x:Key="AppPortColor6Brush" Color="{ThemeResource SystemColorWindowTextColor}" />
-            <SolidColorBrush x:Key="AppPortColor7Brush" Color="{ThemeResource SystemColorWindowTextColor}" />
-            <SolidColorBrush x:Key="AppPortColor8Brush" Color="{ThemeResource SystemColorWindowTextColor}" />
-            <SolidColorBrush x:Key="AppPortColor9Brush" Color="{ThemeResource SystemColorWindowTextColor}" />
-            <SolidColorBrush x:Key="AppPortColor10Brush" Color="{ThemeResource SystemColorWindowTextColor}" />
+            <!-- Port identity palette: see the Light dictionary's note — it lives in
+                 Models/PortColorSlot.cs, not here. Under high contrast the port colours deliberately
+                 stop carrying identity (contrast beats hue) and the row colour degrades to
+                 SystemColorWindowTextColor, which is now expressed by the palette's own resolution
+                 rather than by a per-slot brush in this dictionary. -->
+
 
             <SolidColorBrush x:Key="ApplicationPageBackgroundThemeBrush" Color="{ThemeResource SystemColorWindowColor}" />
             <SolidColorBrush x:Key="SolidBackgroundFillColorBaseBrush" Color="{ThemeResource SystemColorWindowColor}" />

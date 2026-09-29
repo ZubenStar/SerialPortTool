@@ -40,10 +40,14 @@ public sealed class PortColorSlot
 /// The port identity palette.
 /// </summary>
 /// <remarks>
-/// The same ten hue slots are duplicated as <c>AppPortColor1Brush</c>…<c>AppPortColor10Brush</c> in
-/// <c>Themes/Tokens.xaml</c>, because those brushes back the static swatches of the port-colour
-/// <c>MenuFlyout</c> (XAML cannot data-bind a flyout that is declared once per list item). Whenever a
-/// value changes here, change the matching brush in Tokens.xaml in the same edit.
+/// <b>This is the only copy of the palette.</b> Before v2.2.4 the same ten hue slots were also
+/// declared as <c>AppPortColor1Brush</c>…<c>AppPortColor10Brush</c> in <c>Themes/Tokens.xaml</c>,
+/// because a <c>MenuFlyout</c> has no <c>ItemsSource</c> and the sidebar's colour swatches were
+/// therefore written out by hand. Those resources are gone: <c>MainWindow.PortColorFlyout_Opening</c>
+/// now builds the menu items from these slots, so changing a value here reaches the colour menu, the
+/// sidebar swatch, the channel legend and the log rows with no second edit. Do not reintroduce a
+/// per-slot brush — a duplicated palette is invisible in review and obvious on screen the moment the
+/// two copies drift.
 /// </remarks>
 public static class PortColorPalette
 {

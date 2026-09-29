@@ -347,19 +347,15 @@
                                                     Height="14"
                                                     CornerRadius="3"
                                                     Background="{Binding DisplayColorHex, Converter={StaticResource HexColorToBrushConverter}}" />
+                                            <!-- Empty on purpose: a MenuFlyout has no ItemsSource,
+                                                 so the swatches are built from PortColorPalette in
+                                                 PortColorFlyout_Opening instead of being declared
+                                                 here. Ten hand-written items plus ten
+                                                 AppPortColorNBrush resources used to be a second copy
+                                                 of the palette that had to be edited in lockstep —
+                                                 that duplication is gone (v2.2.4). -->
                                             <DropDownButton.Flyout>
-                                                <MenuFlyout Placement="Bottom" Opening="PortColorFlyout_Opening">
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#107C10"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor1Brush}" /></MenuFlyoutItem.Icon>绿色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#0078D4"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor2Brush}" /></MenuFlyoutItem.Icon>蓝色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#E74856"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor3Brush}" /></MenuFlyoutItem.Icon>红色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#FF8C00"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor4Brush}" /></MenuFlyoutItem.Icon>橙色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#881798"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor5Brush}" /></MenuFlyoutItem.Icon>紫色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#00B7C3"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor6Brush}" /></MenuFlyoutItem.Icon>青色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#C239B3"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor7Brush}" /></MenuFlyoutItem.Icon>粉色</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#498205"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor8Brush}" /></MenuFlyoutItem.Icon>橄榄绿</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#8764B8"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor9Brush}" /></MenuFlyoutItem.Icon>淡紫</MenuFlyoutItem>
-                                                    <MenuFlyoutItem Click="PortColorMenuItem_Click" Tag="#CA5010"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE91F;" Foreground="{ThemeResource AppPortColor10Brush}" /></MenuFlyoutItem.Icon>棕橙</MenuFlyoutItem>
-                                                </MenuFlyout>
+                                                <MenuFlyout Placement="Bottom" Opening="PortColorFlyout_Opening" />
                                             </DropDownButton.Flyout>
                                         </DropDownButton>
 
