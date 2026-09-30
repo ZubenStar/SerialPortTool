@@ -12,6 +12,16 @@
     <WindowsPackageType>None</WindowsPackageType>
     <Nullable>enable</Nullable>
     <ApplicationIcon>Assets\Images\logo.ico</ApplicationIcon>
+    <!-- Declares PerMonitorV2 DPI awareness (plus supportedOS and asInvoker). THE Windows App SDK's
+         self-contained targets capture this property as their "user manifest" and run mt.exe over it
+         together with the WinRT activation manifest they generate, so the reg-free activation entries
+         the unpackaged build needs survive the merge. Setting this property is the ONLY supported way
+         to add the declaration - pointing it at obj\...\Manifests\app.manifest would delete the
+         activation entries and the app would not start.
+
+         Without it Windows treats the process as DPI-unaware and bitmap-scales the whole window at
+         any scaling above 100%, which makes every glyph in the app look soft. See app.manifest. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <!-- Read version from version.json at evaluation time (must be before version assignment).

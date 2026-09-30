@@ -47,18 +47,15 @@
     <Grid x:Name="Overlay" Visibility="Collapsed">
         <Grid x:Name="Scrim" Background="{StaticResource HistoryScrimBrush}" Tapped="Scrim_Tapped" />
 
-        <!-- Same depth treatment as the command palette: two surfaces that appear in the same place
-             for the same reason must not disagree about how far off the page they float. -->
-        <Border x:Name="HistoryCard"
-                Style="{StaticResource AppCardStyle}"
+        <!-- No shadow, for the same reason as the command palette: a shadow would push the text in
+             this card off the ClearType path. The scrim behind it carries the separation. -->
+        <Border Style="{StaticResource AppCardStyle}"
                 Width="560"
                 MaxHeight="440"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Top"
                 Margin="0,88,0,0"
-                Padding="0"
-                Shadow="{StaticResource AppOverlayShadow}"
-                Translation="0,0,32">
+                Padding="0">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />

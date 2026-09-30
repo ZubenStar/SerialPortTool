@@ -26,9 +26,31 @@
          never by introducing a third face. Data surfaces are always monospace so columns of
          numbers and port tags stay vertically aligned.
          ================================================================================== -->
-    <FontFamily x:Key="AppUiFontFamily">Segoe UI Variable Text, Segoe UI</FontFamily>
-    <!-- Cascadia Mono ships with Win11 / Windows Terminal; Consolas is the Win10 fallback. -->
-    <FontFamily x:Key="AppMonoFontFamily">Cascadia Mono, Consolas</FontFamily>
+    <!-- Latin first, then Simplified Chinese EXPLICITLY. Two decisions here are load-bearing
+         (v2.5.2), and both exist because the whole UI read as washed out next to a Chromium-rendered
+         client on a 125% display:
+
+         * "Segoe UI Variable Small" is the small optical-size instance of the same variable font
+           (Small / Text / Display). It is the one designed for the sizes this UI actually uses —
+           11–14 px — with thicker stems and a larger x-height. The previous value, "Segoe UI
+           Variable Text" (also WinUI's own default), is tuned for body copy around 14–20 px and
+           looks thin below that, which is exactly the "笔画发虚" that was reported.
+         * Microsoft YaHei UI is named explicitly. With no CJK family in the stack the Chinese glyphs
+           are resolved by DirectWrite's fallback, which lands on the non-UI 微软雅黑 — a heavier,
+           coarser design at small sizes. The reference client names the UI variant; so do we. Both
+           variants are listed so a trimmed-down system that lacks the UI one still has a determinate
+           fallback instead of an arbitrary one.
+
+         The chain must keep ending in plain "Segoe UI": Windows 10 (minimum supported platform 1809)
+         has no Segoe UI Variable at all and has to keep the typography it has today. -->
+    <FontFamily x:Key="AppUiFontFamily">Segoe UI Variable Small, Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI, Microsoft YaHei</FontFamily>
+    <!-- Cascadia Mono ships with Win11 / Windows Terminal; Consolas is the Win10 fallback.
+         Microsoft YaHei UI is appended for the same reason as above: the log is a monospace column,
+         and without an explicit CJK family a Chinese line falls to whatever DirectWrite picks — a
+         different design from the Latin runs in the very same line. It is not monospaced, so a
+         Chinese line is not guaranteed onto the same cell grid; that limitation is inherent to the
+         fonts Windows ships, and closing it would mean embedding a font (see AGENTS.md). -->
+    <FontFamily x:Key="AppMonoFontFamily">Cascadia Mono, Consolas, Microsoft YaHei UI</FontFamily>
 
     <x:Double x:Key="AppFontSizeCaption">11</x:Double>
     <x:Double x:Key="AppFontSizeBody">13</x:Double>
@@ -65,17 +87,21 @@
     <BrushTransition x:Key="AppHoverTransition" Duration="0:0:0.15" />
 
     <!-- ==================================================================================
-         Depth — the one shadow in the app, and it is deliberately NOT applied by any style.
+         Depth — there is deliberately no shadow resource in this app.
 
-         Only the surfaces that genuinely float over data reference it (and each one pairs it with
-         Translation="0,0,32" at the point of use, because a ThemeShadow with no Z offset draws
-         nothing): 命令面板、发送历史、日志空态卡. The section cards that live inside the rail get
-         their step from the tonal pair instead — a ThemeShadow is a composition cost for as long as
-         its element is alive, and a card that never moves off the working surface does not earn it.
-         Declared once because several elements share the same depth; a receiver defaults to the
-         elements behind it, which is exactly the intent here.
+         v2.5.2 shipped one (`AppOverlayShadow`, a ThemeShadow used by the command palette, the send
+         history panel and the log area's empty state) and took it back out in the same release. A
+         ThemeShadow draws nothing without a non-zero Z translation on the element that casts it, and
+         a non-zero Z is what promotes that element into a composited layer — where its text is
+         rasterised with grayscale antialiasing instead of ClearType. The reported symptom was
+         exactly "this text looks slightly blurry" inside those three surfaces.
+
+         So the rule is not "shadows are expensive"; it is "a shadow cannot be drawn under text in
+         this framework without softening that text". Depth is carried by tone and border instead
+         (AppCardBackgroundBrush over AppWindowBackgroundBrush, plus AppCardBorderBrush), and the
+         two overlays are separated from the log by their scrim. Do not reintroduce a shadow on any
+         surface that contains text.
          ================================================================================== -->
-    <ThemeShadow x:Key="AppOverlayShadow" />
 
     <x:Double x:Key="AppControlHeightCompact">28</x:Double>
     <x:Double x:Key="AppControlHeightForm">32</x:Double>

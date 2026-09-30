@@ -344,14 +344,14 @@
          labelled with AppSectionLabelStyle (Themes/Tokens.xaml); this is what an element that has to
          read as floating above the working surface uses.
 
-         Depth policy (v2.5.2): the cards that live in the configuration rail, the toolbar and the
-         send row express their step with the tonal pair (AppCardBackgroundBrush over the page's
-         AppWindowBackgroundBrush) plus a soft border — they are permanent residents, and a
-         ThemeShadow is a composition cost paid for as long as its element is alive. The surfaces
-         that genuinely float over the data (命令面板 / 发送历史 / 日志空态卡) add
-         Shadow="{StaticResource AppOverlayShadow}" + Translation="0,0,32" at the point of use,
-         which is where the depth actually means something. High contrast collapses both keys onto
-         the system colours. -->
+         Depth policy (v2.5.2): tone plus a soft border, never a shadow. A ThemeShadow needs a
+         non-zero Z translation to draw anything at all, and a non-zero Z promotes the element into a
+         composited layer whose text loses ClearType — v2.5.2 shipped a shadow on the three floating
+         surfaces and removed it again for exactly this reason (see the note in Themes/Tokens.xaml).
+         Every surface therefore uses the same device: AppCardBackgroundBrush over the page's
+         AppWindowBackgroundBrush, plus AppCardBorderBrush. The two overlays add a dimming scrim
+         instead of a shadow, and the rail's three cards are the page colour versus the card colour.
+         High contrast collapses both keys onto the system colours. -->
     <Style x:Key="AppCardStyle" TargetType="Border">
         <Setter Property="Background" Value="{ThemeResource AppCardBackgroundBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource AppCardBorderBrush}" />

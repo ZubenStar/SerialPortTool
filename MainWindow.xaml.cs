@@ -18,7 +18,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using Windows.Storage.Pickers;
+using Windows.UI.ViewManagement;
 using WinRT.Interop;
 
 namespace SerialPortTool;
@@ -132,10 +134,6 @@ public sealed partial class MainWindow : Window
         // readers is one setting that can disagree with itself. The "cannot be read" fallback and
         // its log line live there now.
         _animationsEnabled = MotionPreferences.AnimationsEnabled;
-
-        // The log area's empty-state card is the third floating surface; the other two strip their
-        // own depth in their constructors (the palette and the history panel).
-        MotionPreferences.StripDepthIfDisabled(LogEmptyStateCard);
 
         ViewModel.InitializeThemePreference(App.Current.InitialThemePreference);
         _themePreference = ViewModel.ThemePreference;
@@ -641,6 +639,72 @@ public sealed partial class MainWindow : Window
 
         return SidebarWidthFallback;
     }
+
+    /// <summary>
+    /// Records the numbers that decide whether text is rasterised at the physical pixel grid.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why this exists.</b> A WinUI 3 process whose manifest declares no DPI awareness is treated by
+    /// Windows as DPI-<i>unaware</i>: at any scaling above 100% the compositor bitmap-scales the whole
+    /// window, and every glyph — inside otherwise-opaque surfaces included — is resampled and reads as
+    /// "发虚". The app cannot detect that from the inside (an unaware process is simply told the monitor
+    /// is 96 DPI and everything looks self-consistent to it), so these values are logged and read by a
+    /// human instead. <c>app.manifest</c> declares <c>PerMonitorV2</c>; the Windows App SDK merges it
+    /// into the executable's manifest, so the expected pair on a 125% display is
+    /// <c>RasterizationScale=1.25, Dpi=120</c>. A <c>1 / 96</c> pair means the merge dropped the entry
+    /// — and, with it, the sharpness of every glyph in the app. See the 文字锐度 entry in AGENTS.md.
+    /// </para>
+    /// <para>
+    /// Runs on the first activation rather than in the constructor: <c>Content.XamlRoot</c> does not
+    /// exist until the content has been loaded. Failures are swallowed to a warning — a diagnostic must
+    /// never be the reason a window does not appear.
+    /// </para>
+    /// </remarks>
+    private void LogRenderingDiagnostics()
+    {
+        try
+        {
+            var hwnd = WindowNative.GetWindowHandle(this);
+            var windowDpi = GetDpiForWindow(hwnd);
+            var rasterizationScale = Content?.XamlRoot?.RasterizationScale ?? 0;
+            var size = AppWindow.Size;
+
+            double textScaleFactor = 1.0;
+            try
+            {
+                // The accessibility text scale (设置 → 辅助功能 → 文本大小) multiplies every XAML font
+                // size and is not something the app can see in its own markup; a value above 1 here
+                // explains "the text is the right family but the wrong weight" reports on its own.
+                textScaleFactor = new UISettings().TextScaleFactor;
+            }
+            catch (Exception ex)
+            {
+                Serilog.Log.Debug(ex, "Could not read the system text scale factor");
+            }
+
+            Serilog.Log.Information(
+                "Rendering: RasterizationScale={Scale:0.###}, Dpi={Dpi} ({DpiScale:0.###}x), " +
+                "window={PhysicalWidth}x{PhysicalHeight}px, root={DipWidth:0.#}x{DipHeight:0.#}dip, TextScaleFactor={TextScale:0.###}",
+                rasterizationScale,
+                windowDpi,
+                windowDpi / 96.0,
+                size.Width,
+                size.Height,
+                RootLayout.ActualWidth,
+                RootLayout.ActualHeight,
+                textScaleFactor);
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "Could not read the rendering diagnostics");
+        }
+    }
+
+    // GetDpiForWindow is Windows 10 1607+; the minimum supported platform is 1809, so the import
+    // always resolves on a supported machine. A refusal would surface as a caught exception above.
+    [DllImport("user32.dll", ExactSpelling = true)]
+    private static extern uint GetDpiForWindow(IntPtr hwnd);
 
     #endregion
 
@@ -1956,6 +2020,9 @@ public sealed partial class MainWindow : Window
 
         _silentUpdateCheckStarted = true;
         Activated -= OnFirstActivated;
+
+        // The window is on screen now, so XamlRoot exists and the DPI numbers are the real ones.
+        LogRenderingDiagnostics();
 
         StartRuntimeUpdateCheckTimer();
         _ = RunSilentUpdateCheckAsync(isStartup: true);

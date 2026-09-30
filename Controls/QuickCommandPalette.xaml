@@ -58,21 +58,18 @@
     <Grid x:Name="Overlay" Visibility="Collapsed">
         <Grid x:Name="Scrim" Background="{StaticResource PaletteScrimBrush}" Tapped="Scrim_Tapped" />
 
-        <!-- Shadow + Z translation at the point of use: this is one of the three surfaces that
-             genuinely floats over data, which is what the shared depth resource exists for (see
-             AppCardStyle's note in Themes/Controls.xaml). The radius and the fill still come from
-             AppCardStyle — only the depth is added here, because only here is there something behind
-             the card to cast onto. -->
-        <Border x:Name="PaletteCard"
-                Style="{StaticResource AppCardStyle}"
+        <!-- No shadow: the dimmed scrim behind the card is what makes it float, and a ThemeShadow
+             would cost the text inside it its ClearType rendering (a shadow needs a Z translation,
+             and a non-zero Z composites the subtree) — see AppCardStyle's note in
+             Themes/Controls.xaml. Separation from the log behind comes from the scrim and the card's
+             own border. -->
+        <Border Style="{StaticResource AppCardStyle}"
                 Width="560"
                 MaxHeight="440"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Top"
                 Margin="0,88,0,0"
-                Padding="0"
-                Shadow="{StaticResource AppOverlayShadow}"
-                Translation="0,0,32">
+                Padding="0">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />

@@ -67,10 +67,6 @@ public sealed partial class SendHistoryPanel : UserControl
     {
         InitializeComponent();
         ResultList.ItemsSource = _rows;
-
-        // Same guard as the command palette: two surfaces that float for the same reason must also
-        // disappear for the same reason. See MotionPreferences.
-        MotionPreferences.StripDepthIfDisabled(HistoryCard);
     }
 
     /// <summary>True while the overlay is up.</summary>

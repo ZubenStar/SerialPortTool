@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="SerialPortTool.app" />
+
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <!-- Declared rather than left to the default: an executable with no requestedExecutionLevel
+             is subject to the installer-detection heuristic, which can raise a UAC prompt purely
+             because of how the file is named. This app never needs elevation. -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and Windows 11. Without a supportedOS entry the OS applies its legacy
+           compatibility shims to the process, and version reporting answers as if the app were
+           running on an older Windows than it is. -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!-- THE reason this file exists.
+
+           Without a DPI-awareness declaration Windows treats the process as DPI *unaware*: at any
+           display scaling above 100% the compositor bitmap-scales the entire window, so every glyph
+           in the app is resampled and reads as soft — inside otherwise-opaque surfaces included.
+           PerMonitorV2 is what lets WinUI lay out and rasterise at the physical pixel grid, follow
+           the window to a monitor with a different scale factor, and report a real
+           XamlRoot.RasterizationScale.
+
+           SerialPortTool shipped without this file until v2.5.2, which is why the whole UI looked
+           softer than an Electron client at 125% scaling. Do not remove it, and do not "simplify"
+           it to dpiAware: PerMonitorV2 is the only mode WinUI supports properly.
+
+           The Windows App SDK merges this file with its own WinRT activation manifest (see
+           Microsoft.WindowsAppSDK.SelfContained.targets -> CreateWinRTRegistration, which runs
+           mt.exe over both), so the reg-free activation entries the unpackaged build depends on are
+           preserved. Applying this file must therefore go through the project's ApplicationManifest
+           property, never by editing the generated obj\...\Manifests\app.manifest. -->
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>
