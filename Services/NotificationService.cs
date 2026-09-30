@@ -139,13 +139,18 @@ public sealed class NotificationService : INotificationService
         var timer = queue.CreateTimer();
         timer.Interval = TimeSpan.FromMilliseconds(delayMs);
         timer.IsRepeating = false;
-        timer.Tick += (sender, _) =>
+
+        // A local function rather than a lambda, so the handler can unhook itself: the timer holds
+        // its own Tick subscription, and a stopped one-shot timer would otherwise keep the handler —
+        // and the notification it closes over — reachable until the dispatcher released the timer.
+        void OnTick(DispatcherQueueTimer sender, object args)
         {
-            // Stop and unhook before removing: a one-shot DispatcherQueueTimer holds its own
-            // Tick subscription, and the timer must not keep firing into a removed item.
+            sender.Tick -= OnTick;
             sender.Stop();
             Remove(item);
-        };
+        }
+
+        timer.Tick += OnTick;
         timer.Start();
     }
 

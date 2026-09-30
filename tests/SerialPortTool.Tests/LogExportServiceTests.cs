@@ -59,7 +59,7 @@ public sealed class LogExportServiceTests : IDisposable
         var result = await _service.ExportAsync(
             new LogExportRequest(entries, TargetFile, "当前视图（含筛选与搜索）", string.Empty));
 
-        Assert.True(result.Succeeded);
+        Assert.True(result.Succeeded, result.ErrorMessage);
         Assert.Equal(2, result.LineCount);
         Assert.True(result.ByteCount > 0);
 
@@ -120,7 +120,7 @@ public sealed class LogExportServiceTests : IDisposable
         var result = await _service.ExportAsync(
             new LogExportRequest(new List<LogEntry>(), TargetFile, "选中行", string.Empty));
 
-        Assert.True(result.Succeeded);
+        Assert.True(result.Succeeded, result.ErrorMessage);
         Assert.Equal(0, result.LineCount);
         Assert.Contains("行数: 0", await File.ReadAllTextAsync(TargetFile));
     }
@@ -165,7 +165,7 @@ public sealed class LogExportServiceTests : IDisposable
         var result = await _service.ExportAsync(
             new LogExportRequest(new List<LogEntry> { Entry("x") }, nested, "当前视图", string.Empty));
 
-        Assert.True(result.Succeeded);
+        Assert.True(result.Succeeded, result.ErrorMessage);
         Assert.True(File.Exists(nested));
     }
 }

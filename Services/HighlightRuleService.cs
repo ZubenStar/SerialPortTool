@@ -132,6 +132,13 @@ public sealed class HighlightRuleService : IHighlightRuleService
         {
             return $"正则无效：{ex.Message}";
         }
+        catch (RegexMatchTimeoutException)
+        {
+            // A pathological pattern can time out even against the empty string. Rejected as invalid
+            // rather than allowed to escape: this is the rule editor's validation step, and it is
+            // documented to return a message, not to throw.
+            return "该正则过于复杂，验证超时，请简化后重试";
+        }
 
         return null;
     }

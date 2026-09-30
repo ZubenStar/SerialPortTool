@@ -174,15 +174,18 @@ public sealed class UpdateService : IUpdateService
                 _logger.LogDebug("Update check: reusing the cached pending update {Version}", pending.LatestVersion);
                 return UpdateCheckResult.Available(pending);
             }
-
-            if (await IsSilentCheckThrottledAsync(cancellationToken).ConfigureAwait(false))
-            {
-                return UpdateCheckResult.Skipped();
-            }
         }
 
         try
         {
+            // 节流判定必须在 try 内：它观察取消令牌（内部有 ThrowIfCancellationRequested），而本方法
+            // 的契约是「返回结果对象，从不抛出」。放在外面时，一次取消会以 OperationCanceledException
+            // 的形式从方法里逃出去，而两个调用方都按「不抛」来对待它。
+            if (!manual && await IsSilentCheckThrottledAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return UpdateCheckResult.Skipped();
+            }
+
             using var response = await Http
                 .GetAsync(LatestReleaseApiUrl, HttpCompletionOption.ResponseContentRead, cancellationToken)
                 .ConfigureAwait(false);
@@ -239,6 +242,12 @@ public sealed class UpdateService : IUpdateService
             _logger.LogInformation("Update available: {Latest} (current {Current}), installer asset: {HasInstaller}",
                 info.LatestVersion, VersionInfo.Version, info.HasInstaller);
             return UpdateCheckResult.Available(info);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 调用方主动取消（关窗 / 退出）：这不是一次失败的检查，静默返回，也不写失败退避。
+            _logger.LogDebug("Update check was cancelled by the caller");
+            return UpdateCheckResult.Skipped();
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

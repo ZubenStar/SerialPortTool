@@ -77,17 +77,11 @@ public sealed class PortPresetService : IPortPresetService
     /// <inheritdoc />
     public Task SaveAsync(IReadOnlyList<PortPreset> presets)
     {
-        var list = new List<PortPreset>(presets.Count);
-
-        foreach (var preset in presets)
-        {
-            list.Add(new PortPreset
-            {
-                Id = preset.Id,
-                Name = Trim(preset.Name, PortPreset.MaxNameLength),
-                Profile = SerialPortConfigCodec.Sanitize(preset.Profile),
-            });
-        }
+        // Normalise the way out, exactly like the way in: every save rewrites the whole value, and an
+        // over-limit list written here would be silently truncated by the next load, i.e. presets
+        // would disappear between sessions with nothing in between to explain it. Repairing on save
+        // also means a hand-edited settings.json is fixed by the next save rather than only by a read.
+        var list = Normalize(presets);
 
         return _settings.SaveSettingAsync(LibrarySettingKey, JsonSerializer.Serialize(list, JsonOptions));
     }
@@ -133,6 +127,15 @@ public sealed class PortPresetService : IPortPresetService
         Profile = SerialPortConfigCodec.Sanitize(profile),
     };
 
+    /// <summary>
+    /// 规范化一组预设：丢弃 null 与空名条目、补齐 Id、钳制字段长度、截断到 <see cref="MaxPresets"/>。
+    /// </summary>
+    /// <remarks>
+    /// Returns fresh <see cref="PortPreset"/> instances instead of rewriting the input, because the two
+    /// callers disagree about ownership: <c>LoadAsync</c> owns the deserialized objects, while
+    /// <c>SaveAsync</c> receives the caller's live list and mutating it would edit state the UI is
+    /// still holding.
+    /// </remarks>
     private static IReadOnlyList<PortPreset> Normalize(IEnumerable<PortPreset> presets)
     {
         var result = new List<PortPreset>();
@@ -145,15 +148,12 @@ public sealed class PortPresetService : IPortPresetService
                 continue;
             }
 
-            if (string.IsNullOrWhiteSpace(preset.Id))
+            result.Add(new PortPreset
             {
-                preset.Id = Guid.NewGuid().ToString("N");
-            }
-
-            preset.Name = Trim(preset.Name, PortPreset.MaxNameLength);
-            preset.Profile = SerialPortConfigCodec.Sanitize(preset.Profile);
-
-            result.Add(preset);
+                Id = string.IsNullOrWhiteSpace(preset.Id) ? Guid.NewGuid().ToString("N") : preset.Id,
+                Name = Trim(preset.Name, PortPreset.MaxNameLength),
+                Profile = SerialPortConfigCodec.Sanitize(preset.Profile),
+            });
 
             if (result.Count >= MaxPresets)
             {

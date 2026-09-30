@@ -159,6 +159,15 @@
             <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="#FFFFFF" />
             <SolidColorBrush x:Key="AppCardBorderBrush" Color="#E4E8ED" />
 
+            <!-- The dim veil behind the command palette and the send-history panel. The one token
+                 that is deliberately identical in all three dictionaries: its job is to push what is
+                 behind it toward black, which is the same requirement in every palette, and it never
+                 carries text of its own — so it has nothing to gain from the system colours.
+                 Its consumers are the only two translucent surfaces in the app; before this token
+                 existed each carried its own copy of the same literal, which is exactly how two
+                 "press F2 / 历史" surfaces end up differing in dimness. -->
+            <SolidColorBrush x:Key="AppScrimBrush" Color="#730F1219" />
+
             <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="#16181C" />
             <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="#5A626D" />
             <SolidColorBrush x:Key="AppTextTertiaryBrush" Color="#8A9099" />
@@ -387,6 +396,9 @@
             <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="#1D222B" />
             <SolidColorBrush x:Key="AppCardBorderBrush" Color="#2C333F" />
 
+            <!-- Same value as Light on purpose — see the note there. -->
+            <SolidColorBrush x:Key="AppScrimBrush" Color="#730F1219" />
+
             <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="#E7EAEE" />
             <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="#8C95A0" />
             <SolidColorBrush x:Key="AppTextTertiaryBrush" Color="#6B747F" />
@@ -593,6 +605,10 @@
             <SolidColorBrush x:Key="AppHairlineBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
             <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="{ThemeResource SystemColorWindowColor}" />
             <SolidColorBrush x:Key="AppCardBorderBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+
+            <!-- Same value as Light/Dark: the scrim carries no text, so it is the one token that does
+                 not map onto the system colours. -->
+            <SolidColorBrush x:Key="AppScrimBrush" Color="#730F1219" />
 
             <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
             <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="{ThemeResource SystemColorWindowTextColor}" />

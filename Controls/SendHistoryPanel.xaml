@@ -10,11 +10,6 @@
          is not a FrameworkElement and has no converter-lookup root. Same reason QuickCommandPalette exists
          in this folder rather than being markup inline in MainWindow. -->
     <UserControl.Resources>
-        <!-- Duplicated from the palette rather than shared: both are the app's only translucent surface and
-             App.xaml deliberately holds only converters. Changing one without the other would make two
-             "press F2 / 历史" surfaces differ in dimness for no reason. -->
-        <SolidColorBrush x:Key="HistoryScrimBrush" Color="#730F1219" />
-
         <DataTemplate x:Key="SendHistoryRowTemplate" x:DataType="x:String">
             <Grid ColumnSpacing="8">
                 <Grid.ColumnDefinitions>
@@ -45,7 +40,7 @@
 
     <!-- Scrim and card are siblings, not nested, so a tap on the card never reaches the dismiss handler. -->
     <Grid x:Name="Overlay" Visibility="Collapsed">
-        <Grid x:Name="Scrim" Background="{StaticResource HistoryScrimBrush}" Tapped="Scrim_Tapped" />
+        <Grid x:Name="Scrim" Background="{ThemeResource AppScrimBrush}" Tapped="Scrim_Tapped" />
 
         <!-- No shadow, for the same reason as the command palette: a shadow would push the text in
              this card off the ClearType path. The scrim behind it carries the separation. -->
@@ -65,13 +60,15 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
+                <!-- Key handling lives on the overlay root (Overlay_KeyDown, registered in code with
+                     handledEventsToo) rather than here: once the user clicks a row the focus is on the
+                     ListView, which swallows ↑/↓ for its own navigation. -->
                 <TextBox x:Name="QueryBox"
                          Grid.Row="0"
                          Margin="12,12,12,8"
                          MinHeight="{StaticResource AppControlHeightPrimary}"
                          PlaceholderText="搜索之前发送过的内容…"
-                         TextChanged="QueryBox_TextChanged"
-                         KeyDown="QueryBox_KeyDown" />
+                         TextChanged="QueryBox_TextChanged" />
 
                 <Border Grid.Row="1" Style="{StaticResource AppVerticalDividerStyle}" />
 

@@ -234,9 +234,11 @@ public class SettingsService : ISettingsService, IAsyncDisposable
         {
             _flushTimer.Change(Timeout.Infinite, Timeout.Infinite);
         }
-        catch
+        catch (Exception ex)
         {
-            // Best-effort
+            // Best-effort: a second DisposeAsync (or an already-torn-down timer) must not fail the
+            // teardown, but the reason is still worth a Debug line.
+            _logger.LogDebug(ex, "Could not stop the settings flush timer during disposal");
         }
 
         // Flush BEFORE setting _disposed so the call goes through; FlushAsync's _disposed guard
@@ -249,9 +251,9 @@ public class SettingsService : ISettingsService, IAsyncDisposable
         {
             _flushTimer.Dispose();
         }
-        catch
+        catch (Exception ex)
         {
-            // Best-effort
+            _logger.LogDebug(ex, "Could not dispose the settings flush timer during disposal");
         }
 
         _fileLock.Dispose();

@@ -15,6 +15,10 @@ namespace SerialPortTool.Services;
 public class DataValidationService : IDataValidationService
 {
     private readonly ILogger<DataValidationService> _logger;
+
+    // One entry per port name validated in this session. Deliberately never removed: a port can be
+    // closed and reopened, and ResetValidationState zeroes the state rather than deleting it. The cost
+    // is a few counters per name ever seen, not per chunk.
     private readonly ConcurrentDictionary<string, PortValidationState> _portStates = new();
     
     // 验证配置常量
@@ -79,7 +83,7 @@ public class DataValidationService : IDataValidationService
             result.QualityScore = qualityScore;
 
             // 更新端口统计
-            UpdatePortStatistics(portState, qualityScore);
+            portState.RecordSample(qualityScore);
 
             // 根据质量评分决定处理方式
             if (qualityScore >= GoodQualityScore)
@@ -146,25 +150,14 @@ public class DataValidationService : IDataValidationService
 
     public Task<bool> ShouldTriggerBaudRateDetectionAsync(string portName)
     {
-        // Pure in-memory check — see ValidateDataAsync for why this must not Task.Run.
+        // Pure in-memory check — see ValidateDataAsync for why this must not Task.Run. This runs on
+        // every received chunk, so the check itself lives on PortValidationState under the same lock
+        // the sample recording takes, and returns a bool instead of materialising a statistics
+        // object (that allocation would land on the per-port read thread at chunk rate).
         if (!_portStates.TryGetValue(portName, out var portState))
             return Task.FromResult(false);
 
-        // 检查连续无效数据包数量
-        if (portState.ConsecutiveInvalidPackets >= MaxConsecutiveInvalidPackets)
-            return Task.FromResult(true);
-
-        // 检查平均质量评分
-        if (portState.TotalPackets >= MinPacketsForTrendAnalysis &&
-            portState.AverageQualityScore < MinQualityScore)
-            return Task.FromResult(true);
-
-        // 检查数据质量趋势
-        if (portState.Trend == DataQualityTrend.Deteriorating &&
-            portState.AverageQualityScore < MinQualityScore * 1.5)
-            return Task.FromResult(true);
-
-        return Task.FromResult(false);
+        return Task.FromResult(portState.ShouldTriggerBaudRateDetection());
     }
 
     public void ResetValidationState(string portName)
@@ -187,16 +180,9 @@ public class DataValidationService : IDataValidationService
             };
         }
 
-        return new DataQualityStatistics
-        {
-            TotalPackets = portState.TotalPackets,
-            ValidPackets = portState.ValidPackets,
-            InvalidPackets = portState.InvalidPackets,
-            AverageQualityScore = portState.AverageQualityScore,
-            ConsecutiveInvalidPackets = portState.ConsecutiveInvalidPackets,
-            LastUpdateTime = portState.LastUpdateTime,
-            Trend = portState.Trend
-        };
+        // Under the state's own lock: reading the fields one by one let a sample land between two
+        // reads and produce a combination that never existed.
+        return portState.Snapshot();
     }
 
     /// <summary>
@@ -421,32 +407,6 @@ public class DataValidationService : IDataValidationService
         return false;
     }
 
-    private void UpdatePortStatistics(PortValidationState portState, double qualityScore)
-    {
-        portState.TotalPackets++;
-        portState.LastUpdateTime = DateTime.Now;
-
-        if (qualityScore >= MinQualityScore)
-        {
-            portState.ValidPackets++;
-            portState.ConsecutiveInvalidPackets = 0;
-        }
-        else
-        {
-            portState.InvalidPackets++;
-            portState.ConsecutiveInvalidPackets++;
-        }
-
-        // 计算平均质量评分
-        portState.AverageQualityScore = (portState.AverageQualityScore * (portState.TotalPackets - 1) + qualityScore) / portState.TotalPackets;
-
-        // 更新趋势分析
-        if (portState.TotalPackets >= MinPacketsForTrendAnalysis)
-        {
-            portState.UpdateTrend();
-        }
-    }
-
     /// <summary>
     /// 端口验证状态
     /// </summary>
@@ -463,6 +423,92 @@ public class DataValidationService : IDataValidationService
         private readonly Queue<double> _recentScores = new();
         private readonly object _trendLock = new();
 
+        /// <summary>
+        /// 记录一次验证样本并更新统计与趋势。
+        /// </summary>
+        /// <remarks>
+        /// The counters live under the same lock as <see cref="Reset"/> and
+        /// <see cref="ShouldTriggerBaudRateDetection"/>. Without that, the read thread landing a
+        /// sample while <c>Reset</c> (UI thread, on port close) was zeroing the counters divided by
+        /// a zeroed packet count — the average became NaN/∞ and every trend reading built on it was
+        /// garbage. The per-port read thread is the only producer, so the lock is uncontended in
+        /// the steady state.
+        /// </remarks>
+        public void RecordSample(double qualityScore)
+        {
+            lock (_trendLock)
+            {
+                TotalPackets++;
+                LastUpdateTime = DateTime.Now;
+
+                if (qualityScore >= MinQualityScore)
+                {
+                    ValidPackets++;
+                    ConsecutiveInvalidPackets = 0;
+                }
+                else
+                {
+                    InvalidPackets++;
+                    ConsecutiveInvalidPackets++;
+                }
+
+                // 计算平均质量评分
+                AverageQualityScore = (AverageQualityScore * (TotalPackets - 1) + qualityScore) / TotalPackets;
+
+                // 更新趋势分析
+                if (TotalPackets >= MinPacketsForTrendAnalysis)
+                {
+                    UpdateTrendLocked();
+                }
+            }
+        }
+
+        /// <summary>
+        /// 是否需要触发波特率重新检测（锁内判断）。
+        /// </summary>
+        /// <remarks>
+        /// Called for every received chunk, so it returns a bool rather than a statistics object: the
+        /// object would be an allocation per chunk on the read thread.
+        /// </remarks>
+        public bool ShouldTriggerBaudRateDetection()
+        {
+            lock (_trendLock)
+            {
+                // 检查连续无效数据包数量
+                if (ConsecutiveInvalidPackets >= MaxConsecutiveInvalidPackets)
+                {
+                    return true;
+                }
+
+                // 检查平均质量评分
+                if (TotalPackets >= MinPacketsForTrendAnalysis && AverageQualityScore < MinQualityScore)
+                {
+                    return true;
+                }
+
+                // 检查数据质量趋势
+                return Trend == DataQualityTrend.Deteriorating && AverageQualityScore < MinQualityScore * 1.5;
+            }
+        }
+
+        /// <summary>锁内一次性读出全部统计字段，供统计视图使用（低频）。</summary>
+        public DataQualityStatistics Snapshot()
+        {
+            lock (_trendLock)
+            {
+                return new DataQualityStatistics
+                {
+                    TotalPackets = TotalPackets,
+                    ValidPackets = ValidPackets,
+                    InvalidPackets = InvalidPackets,
+                    AverageQualityScore = AverageQualityScore,
+                    ConsecutiveInvalidPackets = ConsecutiveInvalidPackets,
+                    LastUpdateTime = LastUpdateTime,
+                    Trend = Trend
+                };
+            }
+        }
+
         public void Reset()
         {
             lock (_trendLock)
@@ -478,33 +524,31 @@ public class DataValidationService : IDataValidationService
             }
         }
 
-        public void UpdateTrend()
+        /// <summary>调用者必须已持有 <see cref="_trendLock"/>。</summary>
+        private void UpdateTrendLocked()
         {
-            lock (_trendLock)
+            _recentScores.Enqueue(AverageQualityScore);
+            if (_recentScores.Count > 10)
             {
-                _recentScores.Enqueue(AverageQualityScore);
-                if (_recentScores.Count > 10)
+                _recentScores.Dequeue();
+            }
+
+            if (_recentScores.Count >= 5)
+            {
+                var recentAverage = _recentScores.Average();
+                var olderAverage = _recentScores.Take(_recentScores.Count / 2).Average();
+
+                if (recentAverage > olderAverage * 1.1)
                 {
-                    _recentScores.Dequeue();
+                    Trend = DataQualityTrend.Improving;
                 }
-
-                if (_recentScores.Count >= 5)
+                else if (recentAverage < olderAverage * 0.9)
                 {
-                    var recentAverage = _recentScores.Average();
-                    var olderAverage = _recentScores.Take(_recentScores.Count / 2).Average();
-
-                    if (recentAverage > olderAverage * 1.1)
-                    {
-                        Trend = DataQualityTrend.Improving;
-                    }
-                    else if (recentAverage < olderAverage * 0.9)
-                    {
-                        Trend = DataQualityTrend.Deteriorating;
-                    }
-                    else
-                    {
-                        Trend = DataQualityTrend.Stable;
-                    }
+                    Trend = DataQualityTrend.Deteriorating;
+                }
+                else
+                {
+                    Trend = DataQualityTrend.Stable;
                 }
             }
         }

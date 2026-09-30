@@ -17,8 +17,18 @@ namespace SerialPortTool.Services;
 public class FileLoggerService : IFileLoggerService, IDisposable
 {
     private readonly ILogger<FileLoggerService> _logger;
-    private readonly ConcurrentDictionary<string, LoggerInstance> _loggers = new();
+
+    // OrdinalIgnoreCase, matching SerialPortService._ports and MainViewModel._portsByName: COM names
+    // are case-insensitive at the OS level. With the default comparer a differently-cased spelling
+    // from a caller silently found no instance — writes were dropped and GetLogFilePath returned an
+    // empty string — while the port itself was clearly open and logging.
+    private readonly ConcurrentDictionary<string, LoggerInstance> _loggers =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private readonly string _logDirectory;
+
+    /// <summary>Set once, by <see cref="Dispose"/>. Guards new logger creation.</summary>
+    private volatile bool _disposed;
 
     // Serializes the check-and-create in StartLoggingAsync against itself and against
     // StopLoggingAsync. A ConcurrentDictionary alone cannot close that window: `ContainsKey` followed
@@ -45,9 +55,21 @@ public class FileLoggerService : IFileLoggerService, IDisposable
 
     public async Task StartLoggingAsync(string portName)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         await _lifecycleLock.WaitAsync();
         try
         {
+            // Checked again under the lock: a Dispose landing while this call waited would otherwise
+            // create a logger that nothing ever flushes or disposes.
+            if (_disposed)
+            {
+                return;
+            }
+
             if (_loggers.ContainsKey(portName))
             {
                 _logger.LogWarning("Logging already started for port {PortName}", portName);
@@ -88,6 +110,8 @@ public class FileLoggerService : IFileLoggerService, IDisposable
 
     public async Task WriteLogAsync(string portName, LogEntry entry)
     {
+        // A miss is the normal state after StopLoggingAsync / Dispose: the entry is dropped rather
+        // than handed to a logger that is being torn down.
         if (_loggers.TryGetValue(portName, out var loggerInstance))
         {
             await loggerInstance.WriteLogAsync(entry);
@@ -119,6 +143,8 @@ public class FileLoggerService : IFileLoggerService, IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
+
         foreach (var portName in _loggers.Keys.ToList())
         {
             if (!_loggers.TryRemove(portName, out var logger))
@@ -142,7 +168,13 @@ public class FileLoggerService : IFileLoggerService, IDisposable
         }
 
         _loggers.Clear();
-        _lifecycleLock.Dispose();
+
+        // _lifecycleLock is deliberately NOT disposed — the same trade PortInstance makes for its
+        // _writeLock. Disposing it here races a Start/Stop that already passed its _disposed check and
+        // is sitting in WaitAsync (or in its finally's Release), turning a routine shutdown into an
+        // ObjectDisposedException from a finally block. A SemaphoreSlim whose AvailableWaitHandle was
+        // never touched holds no unmanaged handle, so letting the GC take it with the service is
+        // correct and, unlike the disposal, cannot throw.
     }
 
     /// <summary>
@@ -202,6 +234,10 @@ public class FileLoggerService : IFileLoggerService, IDisposable
 
         public async Task WriteLogAsync(LogEntry entry)
         {
+            // Same guard as WriteLogs: a caller that captured this instance just before it was torn
+            // down must not enqueue into a queue nothing will ever drain.
+            if (_disposed) return;
+
             // 快速入队,避免阻塞
             _writeQueue.Enqueue(entry);
             var count = Interlocked.Increment(ref _queuedCount);

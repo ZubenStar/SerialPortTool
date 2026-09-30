@@ -95,6 +95,11 @@ public sealed partial class QuickCommandPalette : UserControl
         // Assigned once here rather than bound in XAML: the collection is a fixed instance for the
         // lifetime of the control, so a binding would only add a layer that can be got wrong.
         ResultList.ItemsSource = _results;
+
+        // handledEventsToo: this handler used to hang off QueryBox, so a click on a row moved the focus
+        // to the ListView — where ↑/↓ are consumed by selection navigation — and Esc / Enter / ↑ / ↓
+        // stopped working. The overlay root sees every key regardless of which descendant consumed it.
+        Overlay.AddHandler(KeyDownEvent, new KeyEventHandler(Overlay_KeyDown), handledEventsToo: true);
     }
 
     /// <summary>True while the overlay is up.</summary>
@@ -136,7 +141,7 @@ public sealed partial class QuickCommandPalette : UserControl
         }
     }
 
-    private void QueryBox_KeyDown(object sender, KeyRoutedEventArgs e)
+    private void Overlay_KeyDown(object sender, KeyRoutedEventArgs e)
     {
         switch (e.Key)
         {
@@ -150,8 +155,9 @@ public sealed partial class QuickCommandPalette : UserControl
                 ActivateSelected();
                 break;
 
-            // The caret lives in the box, so the list never sees these keys on its own; handling them
-            // here is what makes the palette navigable without touching the mouse.
+            // The caret normally lives in the box, so the list would never see these keys on its own;
+            // handling them at the overlay root is what makes the palette navigable without touching
+            // the mouse, even after a click has moved the focus onto the list.
             case VirtualKey.Down:
                 e.Handled = true;
                 MoveSelection(1);
@@ -174,16 +180,8 @@ public sealed partial class QuickCommandPalette : UserControl
 
     private void ActivateSelected()
     {
-        var index = ResultList.SelectedIndex;
-
-        // Enter with nothing selected means "the top row", which is what a user who typed a query and hit
-        // Enter expects. An empty result set has nothing to activate and simply does nothing.
-        if (index < 0 && _results.Count > 0)
-        {
-            index = 0;
-        }
-
-        if (index >= 0 && index < _results.Count)
+        var index = OverlayNavigation.ResolveActivationIndex(ResultList, _results.Count);
+        if (index >= 0)
         {
             Activate(_results[index]);
         }
@@ -198,19 +196,7 @@ public sealed partial class QuickCommandPalette : UserControl
     }
 
     private void MoveSelection(int delta)
-    {
-        if (_results.Count == 0)
-        {
-            return;
-        }
-
-        var next = ResultList.SelectedIndex < 0
-            ? 0
-            : Math.Clamp(ResultList.SelectedIndex + delta, 0, _results.Count - 1);
-
-        ResultList.SelectedIndex = next;
-        ResultList.ScrollIntoView(_results[next]);
-    }
+        => OverlayNavigation.MoveSelection(ResultList, _results.Count, delta);
 
     /// <summary>
     /// Rebuilds the result list for the current query.

@@ -1562,7 +1562,7 @@
                                 </Button.Flyout>
                             </Button>
 
-                            <!-- Send history panel (F8). Overlaid, and read-only over the same list the
+                            <!-- Send history panel (F8). Overlaid, and it draws from the same list the
                                  ↑/↓ keys recall from — it does not replace that recall. -->
                             <Button Style="{StaticResource AppToolbarIconButtonStyle}"
                                     MinHeight="{StaticResource AppControlHeightPrimary}"

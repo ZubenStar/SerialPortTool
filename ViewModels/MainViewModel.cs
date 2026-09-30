@@ -849,6 +849,46 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// 写入一项设置，失败时只记录日志，绝不抛出。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ISettingsService.SaveSettingAsync"/> 的异常路径会先记日志再重新抛出，而这些属性
+    /// setter 里的写入是 fire-and-forget（<c>_ = …</c>）：异常会变成未观察的 Task，只在 GC 时经
+    /// <c>TaskScheduler.UnobservedTaskException</c> 偶尔浮出来一次。统一在这里吞掉并记录，让
+    /// 「这次设置没有落盘」在日志里有一条明确、及时的记录。
+    /// </para>
+    /// <para>
+    /// 只用于 fire-and-forget 的调用点；需要知道写入结果的路径仍直接 await 服务，并自行处理异常。
+    /// 两个重载与 <see cref="ISettingsService"/> 的两个存储类型一一对应，调用点在编译期选定。
+    /// </para>
+    /// </remarks>
+    private async Task SafeSaveSettingAsync(string key, int value)
+    {
+        try
+        {
+            await _settingsService.SaveSettingAsync(key, value);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to persist setting {Key}", key);
+        }
+    }
+
+    /// <inheritdoc cref="SafeSaveSettingAsync(string, int)"/>
+    private async Task SafeSaveSettingAsync(string key, string value)
+    {
+        try
+        {
+            await _settingsService.SaveSettingAsync(key, value);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to persist setting {Key}", key);
+        }
+    }
+
+    /// <summary>
     /// Reads the persisted search mode / case-sensitivity flags. The write-back is suppressed so a
     /// startup read is not mistaken for a user toggle.
     /// </summary>
@@ -1136,7 +1176,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public void SavePortColor(string portName, string colorHex)
     {
-        _ = _settingsService.SaveSettingAsync($"PortColor_{portName}", colorHex);
+        _ = SafeSaveSettingAsync($"PortColor_{portName}", colorHex);
     }
 
     /// <summary>
@@ -1198,7 +1238,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     partial void OnLogFontSizeChanged(double value)
     {
-        _ = _settingsService.SaveSettingAsync(LogFontSizeSettingKey, (int)Math.Round(value));
+        _ = SafeSaveSettingAsync(LogFontSizeSettingKey, (int)Math.Round(value));
     }
 
     /// <summary>调整日志字号（Ctrl+滚轮 / Ctrl+加号、减号）。</summary>
@@ -1235,7 +1275,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         if (!_skipThemePersistence)
         {
-            _ = _settingsService.SaveSettingAsync(App.ThemeSettingKey, value.ToString());
+            _ = SafeSaveSettingAsync(App.ThemeSettingKey, value.ToString());
         }
     }
 
@@ -1355,7 +1395,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     partial void OnIsSidebarCollapsedChanged(bool value)
     {
-        _ = _settingsService.SaveSettingAsync(SidebarCollapsedSettingKey, value ? 1 : 0);
+        _ = SafeSaveSettingAsync(SidebarCollapsedSettingKey, value ? 1 : 0);
     }
 
     /// <summary>Settings key for <see cref="IsAdvancedParametersExpanded"/>.</summary>
@@ -1375,7 +1415,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     partial void OnIsAdvancedParametersExpandedChanged(bool value)
     {
-        _ = _settingsService.SaveSettingAsync(AdvancedParametersExpandedSettingKey, value ? 1 : 0);
+        _ = SafeSaveSettingAsync(AdvancedParametersExpandedSettingKey, value ? 1 : 0);
     }
 
     /// <summary>Number of currently open ports, maintained on the UI thread by the collection hook.</summary>
@@ -1439,12 +1479,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     partial void OnSendAsHexChanged(bool value)
     {
-        _ = _settingsService.SaveSettingAsync("SendAsHex", value ? 1 : 0);
+        _ = SafeSaveSettingAsync("SendAsHex", value ? 1 : 0);
     }
 
     partial void OnSendTextChanged(string value)
     {
-        _ = _settingsService.SaveSettingAsync("SendText", value);
+        _ = SafeSaveSettingAsync("SendText", value);
 
         // A real edit ends a recall walk; the writes the walk itself makes must not, or ↑ would reset the
         // walk the moment it moved.
@@ -1456,17 +1496,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     partial void OnSendTerminatorChanged(SendLineEnding value)
     {
-        _ = _settingsService.SaveSettingAsync("SendTerminator", (int)value);
+        _ = SafeSaveSettingAsync("SendTerminator", (int)value);
     }
 
     partial void OnSplitMultilineSendChanged(bool value)
     {
-        _ = _settingsService.SaveSettingAsync("SplitMultilineSend", value ? 1 : 0);
+        _ = SafeSaveSettingAsync("SplitMultilineSend", value ? 1 : 0);
     }
 
     partial void OnShowSentDataChanged(bool value)
     {
-        _ = _settingsService.SaveSettingAsync("ShowSentData", value ? 1 : 0);
+        _ = SafeSaveSettingAsync("ShowSentData", value ? 1 : 0);
     }
 
     // The line parameters are only persisted when a port is opened (see SaveLineParametersAsync); the
@@ -1617,17 +1657,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     partial void OnTxColorHexChanged(string value)
     {
-        _ = _settingsService.SaveSettingAsync("TxColorHex", value);
+        _ = SafeSaveSettingAsync("TxColorHex", value);
     }
 
     partial void OnRxColorHexChanged(string value)
     {
-        _ = _settingsService.SaveSettingAsync("RxColorHex", value);
+        _ = SafeSaveSettingAsync("RxColorHex", value);
     }
 
     partial void OnTuningBinFilePathChanged(string value)
     {
-        _ = _settingsService.SaveSettingAsync("TuningBinFilePath", value);
+        _ = SafeSaveSettingAsync("TuningBinFilePath", value);
         OnPropertyChanged(nameof(HasTuningBinFilePath));
         OnPropertyChanged(nameof(TuningBinDisplay));
         RefreshTuningAvailability();
@@ -1635,7 +1675,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     partial void OnTuningDescriptorFilePathChanged(string value)
     {
-        _ = _settingsService.SaveSettingAsync("TuningDescriptorFilePath", value);
+        _ = SafeSaveSettingAsync("TuningDescriptorFilePath", value);
         OnPropertyChanged(nameof(HasTuningDescriptorPath));
         OnPropertyChanged(nameof(TuningDescriptorDisplay));
         RefreshTuningAvailability();
@@ -1650,7 +1690,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         if (!_suppressTuningWatchPersistence)
         {
-            _ = _settingsService.SaveSettingAsync("TuningIsWatching", value ? 1 : 0);
+            _ = SafeSaveSettingAsync("TuningIsWatching", value ? 1 : 0);
         }
 
         OnPropertyChanged(nameof(TuningWatchButtonText));
@@ -1660,7 +1700,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         if (!_skipTuningEnabledPersistence)
         {
-            _ = _settingsService.SaveSettingAsync(TuningEnabledSettingKey, value ? 1 : 0);
+            _ = SafeSaveSettingAsync(TuningEnabledSettingKey, value ? 1 : 0);
         }
 
         // Recompute first: both branches below depend on an up-to-date CanUseTuning.
@@ -2050,7 +2090,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         OpenPorts.CollectionChanged += OnOpenPortsChanged;
 
         // The history panel's empty state and its "清空历史" affordance follow the collection.
-        RecentSearchTexts.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasRecentSearches));
+        // A named handler rather than a lambda, so Dispose can unsubscribe it.
+        RecentSearchTexts.CollectionChanged += OnRecentSearchTextsChanged;
 
         // Subscribe to events
         _serialPortService.DataReceived += OnDataReceived;
@@ -3282,7 +3323,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     private Task SaveRecentSendTextsAsync()
-        => _settingsService.SaveSettingAsync("RecentSendTexts", SendHistory.Serialize(_recentSendTexts));
+        => SafeSaveSettingAsync("RecentSendTexts", SendHistory.Serialize(_recentSendTexts));
 
     /// <summary>
     /// Records a payload in the send history, newest first.
@@ -3393,18 +3434,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     return;
                 }
 
-                // Encoded once per port, before any write starts: the encoding is read from live per-port
-                // state, and a second read after the first send would be a chance to disagree with the
-                // bytes already on the wire.
-                payloads = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
-                foreach (var portName in targetPorts)
-                {
-                    payloads[portName] = SerialEncodings
-                        .Resolve(_serialPortService.GetPortTextEncodingName(portName))
-                        .GetBytes(plan.Payload);
-                }
-
-                displayLines = CapSentLogLines(plan.DisplayLines);
+                payloads = EncodeTextForPorts(targetPorts, plan.Payload);
+                displayLines = plan.DisplayLines;
             }
 
             // The status line states a per-port size, matching the original wording. With per-port encodings
@@ -3422,20 +3453,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 + targetNote;
 
             var sendResults = await SendDataToPortsAsync(targetPorts, portName => payloads[portName]);
-            var successfulPorts = sendResults
-                .Where(result => result.IsSuccess)
-                .Select(result => result.PortName)
-                .ToList();
+            var successfulPorts = SelectSuccessfulPorts(sendResults);
             var failedResults = sendResults
                 .Where(result => !result.IsSuccess)
                 .ToList();
 
-            if (ShowSentData && successfulPorts.Count > 0)
-            {
-                AddSentLogs(successfulPorts, displayLines);
-            }
-
-            RefreshPortStatistics(targetPorts);
+            PublishSuccessfulSend(successfulPorts, targetPorts, displayLines);
 
             if (successfulPorts.Count > 0)
             {
@@ -3460,22 +3483,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            // The status bar is transient and this path swallows the exception, so without the log
+            // line a failed broadcast left no durable trace of why it failed.
+            _logger.LogError(ex, "Send failed");
             StatusMessage = $"发送失败: {ex.Message}";
         }
     }
 
     /// <summary>Nothing to send, or a send is already in flight.</summary>
     private bool CanSend() => !SendCommand.IsRunning && !string.IsNullOrEmpty(SendText);
-
-    public async Task SendDataAsync(string portName, byte[] data)
-    {
-        await _serialPortService.SendDataAsync(portName, data);
-    }
-
-    public async Task SendTextAsync(string portName, string text)
-    {
-        await _serialPortService.SendTextAsync(portName, text, Encoding.UTF8);
-    }
 
     #region Port identity, notes, presets, automation and history (v2.5.0)
 
@@ -3791,7 +3807,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        _ = _settingsService.SaveSettingAsync(SessionRestoreEnabledSettingKey, value ? 1 : 0);
+        _ = SafeSaveSettingAsync(SessionRestoreEnabledSettingKey, value ? 1 : 0);
     }
 
     /// <summary>记录「当前打开的串口都用哪些参数」，供下次启动恢复。</summary>
@@ -3801,7 +3817,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             // Recording while the switch is off would mean enabling it restores ports from a session the
             // user never asked to remember.
-            await _settingsService.SaveSettingAsync(SessionRestorePayloadSettingKey, string.Empty);
+            await SafeSaveSettingAsync(SessionRestorePayloadSettingKey, string.Empty);
             return;
         }
 
@@ -3811,7 +3827,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             map[pair.Key] = PortProfileMapper.FromConfig(pair.Value, SendTerminator);
         }
 
-        await _settingsService.SaveSettingAsync(
+        await SafeSaveSettingAsync(
             SessionRestorePayloadSettingKey,
             JsonSerializer.Serialize(map, ProfileJsonOptions));
     }
@@ -3965,7 +3981,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        _ = _settingsService.SaveSettingAsync(AutoInitEnabledSettingKey, value ? 1 : 0);
+        _ = SafeSaveSettingAsync(AutoInitEnabledSettingKey, value ? 1 : 0);
     }
 
     partial void OnAutoInitSequenceChanged(string value)
@@ -3975,7 +3991,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        _ = _settingsService.SaveSettingAsync(AutoInitScriptSettingKey, value ?? string.Empty);
+        _ = SafeSaveSettingAsync(AutoInitScriptSettingKey, value ?? string.Empty);
     }
 
     /// <summary>
@@ -4091,7 +4107,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         if (!_isLoadingSendSettings)
         {
-            _ = _settingsService.SaveSettingAsync(SendLineDelaySettingKey, SendLineDelayMs);
+            _ = SafeSaveSettingAsync(SendLineDelaySettingKey, SendLineDelayMs);
         }
     }
 
@@ -4189,37 +4205,58 @@ public partial class MainViewModel : ObservableObject, IDisposable
         string payload,
         IReadOnlyList<string> displayLines)
     {
-        var payloads = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
-        foreach (var portName in targetPorts)
+        var payloads = EncodeTextForPorts(targetPorts, payload);
+
+        var sendResults = await SendDataToPortsAsync(targetPorts, portName => payloads[portName]);
+        var successfulPorts = SelectSuccessfulPorts(sendResults);
+
+        PublishSuccessfulSend(successfulPorts, targetPorts, displayLines);
+
+        return successfulPorts.Count > 0;
+    }
+
+    /// <summary>
+    /// 把一段文本按<b>每个端口自己的编码</b>编成字节，一次算一条。
+    /// </summary>
+    /// <remarks>
+    /// Encoded once per port, before any write starts: the encoding is read from live per-port state,
+    /// and a second read after the first send would be a chance to disagree with the bytes already on
+    /// the wire.
+    /// </remarks>
+    private Dictionary<string, byte[]> EncodeTextForPorts(IReadOnlyList<string> portNames, string text)
+    {
+        var payloads = new Dictionary<string, byte[]>(portNames.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var portName in portNames)
         {
             payloads[portName] = SerialEncodings
                 .Resolve(_serialPortService.GetPortTextEncodingName(portName))
-                .GetBytes(payload);
+                .GetBytes(text);
         }
 
-        var sendResults = await SendDataToPortsAsync(targetPorts, portName => payloads[portName]);
-        var successfulPorts = sendResults
-            .Where(result => result.IsSuccess)
-            .Select(result => result.PortName)
-            .ToList();
+        return payloads;
+    }
 
+    /// <summary>成功发送到至少一个端口的那些端口名。</summary>
+    private static List<string> SelectSuccessfulPorts(IReadOnlyList<PortSendResult> sendResults)
+        => sendResults.Where(result => result.IsSuccess).Select(result => result.PortName).ToList();
+
+    /// <summary>一次成功发送之后的公共收尾：发送日志（每行每口一条，带上限）与统计刷新。</summary>
+    private void PublishSuccessfulSend(
+        IReadOnlyList<string> successfulPorts,
+        IReadOnlyList<string> targetPorts,
+        IReadOnlyList<string> displayLines)
+    {
         if (ShowSentData && successfulPorts.Count > 0)
         {
             AddSentLogs(successfulPorts, CapSentLogLines(displayLines));
         }
 
         RefreshPortStatistics(targetPorts);
-
-        return successfulPorts.Count > 0;
     }
 
     // =============================================================================================
     // F8 — searchable send history panel
     // =============================================================================================
-
-    /// <summary>发送历史面板是否打开。它叠加在既有的 ↑/↓ 召回之上，不替换它。</summary>
-    [ObservableProperty]
-    private bool _isSendHistoryPanelOpen;
 
     /// <summary>
     /// 面板显示的历史列表：与 ↑/↓ 召回<b>同一份</b>数据。
@@ -4232,13 +4269,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<string> SendHistoryEntries { get; } = new();
 
     /// <summary>History deferred until someone opens the panel, so the ↑/↓ recall has no competition.</summary>
-    public void OpenSendHistoryPanel()
-    {
-        RefreshSendHistoryEntries();
-        IsSendHistoryPanelOpen = true;
-    }
-
-    public void CloseSendHistoryPanel() => IsSendHistoryPanelOpen = false;
+    public void OpenSendHistoryPanel() => RefreshSendHistoryEntries();
 
     private void RefreshSendHistoryEntries()
     {
@@ -4259,7 +4290,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         ApplySendHistoryRecall(payload);
         ResetSendHistoryNavigation();
-        IsSendHistoryPanelOpen = false;
     }
 
     /// <summary>
@@ -4943,10 +4973,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             });
 
             var sendResults = await SendTuningToPortsAsync(targetPorts, buildResult, cancellationToken);
-            var successfulPorts = sendResults
-                .Where(result => result.IsSuccess)
-                .Select(result => result.PortName)
-                .ToList();
+            var successfulPorts = SelectSuccessfulPorts(sendResults);
             var failedResults = sendResults
                 .Where(result => !result.IsSuccess)
                 .ToList();
@@ -6261,6 +6288,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _baudRateDetections =
         new(StringComparer.OrdinalIgnoreCase);
 
+    // In-flight baud-rate switches, keyed by port name (the value is unused).
+    //
+    // A switch is close → 500 ms → reopen, and it has two callers: the scan itself when confidence is
+    // high, and the banner's 一键修正 button. Before this guard, a click landing inside the scan's own
+    // window (or a second click inside the first switch's) interleaved two close/reopen cycles on the
+    // same port — one of them then reported "reopen failed" while the port was in fact open.
+    private readonly ConcurrentDictionary<string, byte> _baudRateSwitches =
+        new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Stops the baud-rate scan running for <paramref name="portName"/>, if any.
     /// </summary>
@@ -6408,6 +6444,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     public async Task SwitchPortBaudRateAsync(string portName, int newBaudRate)
     {
+        // One switch per port at a time. The scan calls this at high confidence and the banner's
+        // 一键修正 button calls it as well; both are close → 500 ms → reopen, so two overlapping
+        // calls produce two interleaved cycles on the same port. The loser is ignored rather than
+        // queued: whoever asked first is already applying a switch, and a second one would only add
+        // port churn inside a window where the handle is being released.
+        if (!_baudRateSwitches.TryAdd(portName, 0))
+        {
+            _logger.LogInformation(
+                "A baud rate switch for {PortName} is already in progress; ignoring the duplicate request",
+                portName);
+            return;
+        }
+
         try
         {
             // 关闭当前端口（波特率检测流程中端口可能已被提前关闭，此时为无操作）
@@ -6423,6 +6472,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _logger.LogError(ex, "Error switching baud rate for {PortName}", portName);
             throw;
         }
+        finally
+        {
+            _baudRateSwitches.TryRemove(portName, out _);
+        }
     }
 
     private async Task ReopenPortWithBaudRateAsync(string portName, int baudRate)
@@ -6434,6 +6487,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             _logger.LogInformation(
                 "Not reopening {PortName}: the port is no longer open", portName);
+            return;
+        }
+
+        // A switch and a scan's own recovery path can both land here after one of them has already
+        // reopened the port. Opening it again is refused by SerialPortService ("already open") and
+        // then logged as a reopen failure, which reads like the switch broke while the port is in
+        // fact open and working.
+        if (_serialPortService.IsPortOpen(portName))
+        {
+            _logger.LogInformation(
+                "Not reopening {PortName}: it is already open", portName);
             return;
         }
 
@@ -6469,6 +6533,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
         return System.IO.Path.Combine(documentsPath, "SerialPortTool", "Logs");
     }
 
+    /// <summary>搜索历史集合变化时刷新「有历史可清空」的状态。</summary>
+    /// <remarks>
+    /// Named rather than an inline lambda: the subscription lives for the whole window and has to be
+    /// removable from <see cref="Dispose"/>.
+    /// </remarks>
+    private void OnRecentSearchTextsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+        => OnPropertyChanged(nameof(HasRecentSearches));
+
     private bool _disposed;
 
     /// <summary>
@@ -6491,9 +6563,26 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _filterDebounceTimer = null;
         if (_flushTimer != null)
         {
-            try { _flushTimer.Stop(); } catch { }
+            try { _flushTimer.Stop(); } catch (Exception ex) { _logger.LogDebug(ex, "Failed to stop the flush timer during shutdown"); }
             _flushTimer = null;
         }
+
+        // The event-aggregation window and the synthetic flood generator are lazily created
+        // DispatcherQueueTimers, and nothing else stops them. Left running, a pending aggregate tick
+        // (and the flood pump, under the developer switch) would keep enqueueing log rows after the
+        // window is gone — into a dispatcher that is tearing down.
+        if (_eventAggregateTimer != null)
+        {
+            try { _eventAggregateTimer.Stop(); } catch (Exception ex) { _logger.LogDebug(ex, "Failed to stop the event aggregate timer during shutdown"); }
+            _eventAggregateTimer = null;
+        }
+
+        if (_syntheticFloodTimer != null)
+        {
+            try { _syntheticFloodTimer.Stop(); } catch (Exception ex) { _logger.LogDebug(ex, "Failed to stop the synthetic flood timer during shutdown"); }
+            _syntheticFloodTimer = null;
+        }
+
         StopTuningWatch(persistState: false);
         _tuningSendLock.Dispose();
 
@@ -6503,6 +6592,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _settingsService.SettingsLoadFailed -= OnSettingsLoadFailed;
 
         OpenPorts.CollectionChanged -= OnOpenPortsChanged;
+        RecentSearchTexts.CollectionChanged -= OnRecentSearchTextsChanged;
 
         if (_serialPortService is SerialPortService serialPortServiceInstance)
         {

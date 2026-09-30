@@ -11,12 +11,6 @@
          window's own tree cannot (a Window is not a FrameworkElement, so a compiled binding has no
          converter-lookup root there). -->
     <UserControl.Resources>
-        <!-- Dim veil behind the card. A literal rather than a token, deliberately: this is the only
-             translucent surface in the app (every named brush in Tokens.xaml is opaque by design), and
-             alpha over the graphite background reads correctly on all three palettes — a light veil
-             would wash out the sunken log surface in dark mode. -->
-        <SolidColorBrush x:Key="PaletteScrimBrush" Color="#730F1219" />
-
         <DataTemplate x:Key="PaletteEntryTemplate" x:DataType="models:PaletteEntry">
             <Grid ColumnSpacing="8">
                 <Grid.ColumnDefinitions>
@@ -56,7 +50,7 @@
          the dismiss handler, which is why no Tapped handler needs to mark anything Handled — and why the
          result list keeps its own click handling intact. -->
     <Grid x:Name="Overlay" Visibility="Collapsed">
-        <Grid x:Name="Scrim" Background="{StaticResource PaletteScrimBrush}" Tapped="Scrim_Tapped" />
+        <Grid x:Name="Scrim" Background="{ThemeResource AppScrimBrush}" Tapped="Scrim_Tapped" />
 
         <!-- No shadow: the dimmed scrim behind the card is what makes it float, and a ThemeShadow
              would cost the text inside it its ClearType rendering (a shadow needs a Z translation,
@@ -79,13 +73,15 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
+                <!-- Key handling lives on the overlay root (Overlay_KeyDown, registered in code with
+                     handledEventsToo) rather than here: once the user clicks a row the focus is on the
+                     ListView, which swallows ↑/↓ for its own navigation. -->
                 <TextBox x:Name="QueryBox"
                          Grid.Row="0"
                          Margin="12,12,12,8"
                          MinHeight="{StaticResource AppControlHeightPrimary}"
                          PlaceholderText="搜索串口或快捷指令…"
-                         TextChanged="QueryBox_TextChanged"
-                         KeyDown="QueryBox_KeyDown" />
+                         TextChanged="QueryBox_TextChanged" />
 
                 <Border Grid.Row="1" Style="{StaticResource AppVerticalDividerStyle}" />
 

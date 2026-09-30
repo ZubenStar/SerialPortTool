@@ -166,4 +166,60 @@ public sealed class PortPresetServiceTests
         Assert.Equal(PortPreset.MaxNameLength, created.Name.Length);
         Assert.False(string.IsNullOrWhiteSpace(created.Id));
     }
+
+    // ---- 保存方向的规范化（v2.5.3）------------------------------------------------------------
+    //
+    // Load and save now share one Normalize. Before that, a save wrote whatever it was handed and the
+    // *next load* silently dropped the invalid entries — the preset disappeared between sessions with
+    // nothing in between to explain it.
+
+    [Fact]
+    public async Task Save_DropsUnnamedAndNullEntries()
+    {
+        var settings = new FakeSettingsService();
+        var service = CreateService(settings);
+
+        await service.SaveAsync(new List<PortPreset>
+        {
+            new() { Id = "a", Name = "   " },
+            null!,
+            new() { Id = "b", Name = "有效" },
+        });
+
+        var loaded = await service.LoadAsync();
+
+        Assert.Single(loaded);
+        Assert.Equal("有效", loaded[0].Name);
+    }
+
+    [Fact]
+    public async Task Save_TruncatesToTheCap()
+    {
+        var settings = new FakeSettingsService();
+        var service = CreateService(settings);
+
+        var tooMany = new List<PortPreset>();
+        for (var i = 0; i < PortPresetService.MaxPresets + 3; i++)
+        {
+            tooMany.Add(new PortPreset { Id = $"id{i}", Name = $"预设 {i}" });
+        }
+
+        await service.SaveAsync(tooMany);
+
+        Assert.Equal(PortPresetService.MaxPresets, (await service.LoadAsync()).Count);
+    }
+
+    [Fact]
+    public async Task Save_DoesNotRewriteTheCallersList()
+    {
+        // SaveAsync receives the ViewModel's live list: normalising in place would edit the ids and names
+        // the UI is still displaying, so Normalize returns fresh instances instead.
+        var settings = new FakeSettingsService();
+        var callerOwned = new List<PortPreset> { new() { Id = string.Empty, Name = "  未命名  " } };
+
+        await CreateService(settings).SaveAsync(callerOwned);
+
+        Assert.Empty(callerOwned[0].Id);
+        Assert.Equal("  未命名  ", callerOwned[0].Name);
+    }
 }

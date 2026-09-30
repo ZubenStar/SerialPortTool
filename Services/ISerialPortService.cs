@@ -68,11 +68,6 @@ public interface ISerialPortService
     Task SendDataAsync(string portName, byte[] data);
 
     /// <summary>
-    /// 发送文本数据
-    /// </summary>
-    Task SendTextAsync(string portName, string text, System.Text.Encoding? encoding = null);
-
-    /// <summary>
     /// 设置某个串口的文本编码：接收解码、数据校验与文本发送都用它。
     /// </summary>
     /// <remarks>

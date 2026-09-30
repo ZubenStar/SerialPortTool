@@ -305,34 +305,12 @@ public sealed partial class LogListView : UserControl
 
         foreach (var child in panel.Children)
         {
-            var text = FindRowTextBlock(child);
+            var text = FindDescendant<TextBlock>(child);
             if (text is not null)
             {
                 ApplyRowHighlight(text);
             }
         }
-    }
-
-    /// <summary>Returns the row's single TextBlock inside one realized container.</summary>
-    private static TextBlock? FindRowTextBlock(DependencyObject container)
-    {
-        var count = VisualTreeHelper.GetChildrenCount(container);
-        for (var i = 0; i < count; i++)
-        {
-            var child = VisualTreeHelper.GetChild(container, i);
-            if (child is TextBlock text)
-            {
-                return text;
-            }
-
-            var nested = FindRowTextBlock(child);
-            if (nested is not null)
-            {
-                return nested;
-            }
-        }
-
-        return null;
     }
 
     private readonly DispatcherQueueTimer? _autoScrollTimer;
@@ -511,19 +489,6 @@ public sealed partial class LogListView : UserControl
         _followBottomSlackPx = rowHeight * FollowBottomSlackRows;
     }
 
-    /// <summary>
-    /// 是否按住了 Ctrl。
-    /// </summary>
-    /// <remarks>
-    /// The same call the Ctrl+C / Ctrl+A path uses. A pointer event does carry its own modifier state, but this
-    /// app asks the question through <c>InputKeyboardSource</c> in the one other place that needs an answer, and
-    /// having one way to ask is worth more than saving a call here.
-    /// </remarks>
-    private static bool IsControlDown()
-        => Microsoft.UI.Input.InputKeyboardSource
-            .GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control)
-            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
-
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         HookWheelInterception();
@@ -580,7 +545,9 @@ public sealed partial class LogListView : UserControl
     {
         if (_innerScrollViewer != null)
         {
-            try { _innerScrollViewer.ViewChanged -= OnScrollViewChanged; } catch { }
+            // Best-effort: unhooking from an element that is already being torn down can throw, and
+            // that must not abort the rest of the release — but the reason is still recorded.
+            try { _innerScrollViewer.ViewChanged -= OnScrollViewChanged; } catch (Exception ex) { Serilog.Log.Debug(ex, "Failed to detach the log scroll handler"); }
         }
 
         // A pending gesture must not survive a template re-application: the new ScrollViewer starts
@@ -591,10 +558,10 @@ public sealed partial class LogListView : UserControl
         {
             if (_wheelHost != null)
             {
-                try { _wheelHost.RemoveHandler(PointerWheelChangedEvent, _wheelHandler); } catch { }
+                try { _wheelHost.RemoveHandler(PointerWheelChangedEvent, _wheelHandler); } catch (Exception ex) { Serilog.Log.Debug(ex, "Failed to detach the wheel handler from the items presenter"); }
             }
 
-            try { InnerListView.RemoveHandler(PointerWheelChangedEvent, _wheelHandler); } catch { }
+            try { InnerListView.RemoveHandler(PointerWheelChangedEvent, _wheelHandler); } catch (Exception ex) { Serilog.Log.Debug(ex, "Failed to detach the fallback wheel handler"); }
             _wheelHandler = null;
         }
 
@@ -653,7 +620,7 @@ public sealed partial class LogListView : UserControl
         // addition to this one — the "one notch scrolls twice" failure the registration notes above exist to
         // prevent. Handled is set for the Ctrl case too, because the fallback registration also reaches this
         // method and would otherwise zoom a second time.
-        if (IsControlDown())
+        if (InputModifiers.IsControlDown())
         {
             FontSizeZoomRequested?.Invoke(this, delta > 0 ? 1 : -1);
             e.Handled = true;
@@ -712,7 +679,7 @@ public sealed partial class LogListView : UserControl
 
         if (_wheelSmootherTimer != null)
         {
-            try { _wheelSmootherTimer.Stop(); } catch { }
+            try { _wheelSmootherTimer.Stop(); } catch (Exception ex) { Serilog.Log.Debug(ex, "Failed to stop the wheel smoother"); }
         }
 
         _wheelFrameClock.Reset();
@@ -905,6 +872,14 @@ public sealed partial class LogListView : UserControl
         EvaluatePinnedToBottom();
     }
 
+    /// <summary>
+    /// 深度优先查找第一个 <typeparamref name="T"/> 类型的后代元素。
+    /// </summary>
+    /// <remarks>
+    /// Used for both the list's template-provided <c>ScrollViewer</c> and the row's single
+    /// <c>TextBlock</c>. It replaced a second, hand-rolled copy of the same walk that existed only
+    /// because the two call sites happened to ask for different types.
+    /// </remarks>
     private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
     {
         var childCount = VisualTreeHelper.GetChildrenCount(root);
@@ -1062,16 +1037,18 @@ public sealed partial class LogListView : UserControl
             // (the auto-follow must stay out of the wheel pump's way).
             CommandScroll(maxOffset);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            // Best-effort: a failed scroll is not worth an error dialog, but "the log stopped
+            // following and nothing anywhere says why" is exactly what this line answers.
             _isAutoScrollPending = false;
+            Serilog.Log.Debug(ex, "Log auto-scroll failed");
         }
     }
 
     private void InnerListView_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        var ctrl = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control);
-        if (ctrl.HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down))
+        if (InputModifiers.IsControlDown())
         {
             if (e.Key == Windows.System.VirtualKey.C)
             {
@@ -1138,7 +1115,7 @@ public sealed partial class LogListView : UserControl
         }
         if (_autoScrollTimer != null)
         {
-            try { _autoScrollTimer.Stop(); } catch { }
+            try { _autoScrollTimer.Stop(); } catch (Exception ex) { Serilog.Log.Debug(ex, "Failed to stop the auto-scroll timer"); }
         }
     }
 }

@@ -304,8 +304,12 @@ public class LogFilterService : ILogFilterService
             _logger.LogWarning("Regex match timeout for pattern: {Pattern}", pattern);
             return false;
         }
-        catch
+        catch (Exception ex)
         {
+            // A single bad filter must not take the log view down, so this still reports "no match" —
+            // but silently returning false made a broken pattern look like a pattern that simply
+            // matched nothing, with nothing anywhere to tell the two apart.
+            _logger.LogWarning(ex, "Regex match failed for pattern: {Pattern}", pattern);
             return false;
         }
     }

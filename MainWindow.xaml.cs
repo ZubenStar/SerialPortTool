@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
+using SerialPortTool.Controls;
 using SerialPortTool.Core.Enums;
 using SerialPortTool.Helpers;
 using SerialPortTool.Models;
@@ -71,6 +72,21 @@ public sealed partial class MainWindow : Window
     /// cancelled by comparing against it, so it cannot collapse a banner that was just re-shown.
     /// </summary>
     private int _alertAnimationGeneration;
+
+    /// <summary>
+    /// Opacity fades that are still in flight — see <see cref="RunOpacityFade"/> for why they are
+    /// rooted here instead of being left to the GC.
+    /// </summary>
+    private readonly List<Storyboard> _runningFades = new();
+
+    /// <summary>
+    /// The delegate instance registered for the window-level key handler.
+    /// </summary>
+    /// <remarks>
+    /// A routed-event handler can only be removed with the exact instance it was added with, so it
+    /// cannot be created inline at the <c>AddHandler</c> call and then forgotten.
+    /// </remarks>
+    private readonly KeyEventHandler _rootKeyDownHandler;
 
     /// <summary>
     /// Darkness the current <see cref="MicaBackdrop"/> was created for; <c>null</c> when no material
@@ -146,14 +162,11 @@ public sealed partial class MainWindow : Window
         ApplySidebarWidth(_sidebarAppliedCollapsed ? 0 : GetSidebarWidth(), _sidebarAppliedCollapsed, animate: false);
 
         // ActualTheme may settle after RequestedTheme is assigned (and it changes again when the user
-        // flips Windows between light and dark while we are on "follow the system").
-        RootLayout.ActualThemeChanged += (_, _) => UpdateEffectiveTheme();
+        // flips Windows between light and dark while we are on "follow the system"). Named handlers
+        // rather than lambdas, so OnClosed can detach them.
+        RootLayout.ActualThemeChanged += OnActualThemeChanged;
 
-        _sidebarStoryboard.Completed += (_, _) =>
-        {
-            _sidebarStoryboard.Stop();
-            ApplySidebarWidth(_sidebarAnimationTarget, _sidebarAnimationTarget <= 0, animate: false);
-        };
+        _sidebarStoryboard.Completed += OnSidebarStoryboardCompleted;
 
         // NOTE: log-list auto-scroll, copy, multi-select, and keyboard shortcuts are now
         // self-contained inside the LogListView UserControl. We only handle the CopyCompleted
@@ -184,29 +197,69 @@ public sealed partial class MainWindow : Window
         // handledEventsToo: true is required - the search box and the send box mark their own
         // (unrelated) editing keys as handled, and that must not swallow this gesture.
         // ---------------------------------------------------------------------------------
+        // The delegate instance is kept in a field: a routed-event handler can only be removed with
+        // the exact instance it was added with, and OnClosed has to remove this one.
+        _rootKeyDownHandler = OnRootKeyDown;
         RootLayout.AddHandler(
             UIElement.KeyDownEvent,
-            new KeyEventHandler(OnRootKeyDown),
+            _rootKeyDownHandler,
             handledEventsToo: true);
 
         // 窗口首次激活后再启动静默更新检查（此时 Content.XamlRoot 才可用）
         Activated += OnFirstActivated;
 
-        // 运行期补查定时器随窗口关闭一并停止，避免窗口销毁后仍去弹对话框
-        Closed += (_, _) => StopRuntimeUpdateCheckTimer();
+        // 窗口关闭：停掉运行期定时器，并解除本窗口挂出的全部订阅。
+        Closed += OnClosed;
+    }
 
+    /// <summary>
+    /// 窗口关闭：停掉运行期检查定时器，并解除本窗口挂出的订阅。
+    /// </summary>
+    /// <remarks>
+    /// The window is a singleton for the process lifetime, so an un-detached handler here is not a
+    /// leak today. It is done anyway because the day a second window exists — or this one is closed
+    /// and re-created — every one of these would keep the old instance alive and keep firing into a
+    /// torn-down view.
+    /// </remarks>
+    private void OnClosed(object sender, WindowEventArgs args)
+    {
+        StopRuntimeUpdateCheckTimer();
+
+        Activated -= OnFirstActivated;
+        RootLayout.ActualThemeChanged -= OnActualThemeChanged;
+        RootLayout.RemoveHandler(UIElement.KeyDownEvent, _rootKeyDownHandler);
+        _sidebarStoryboard.Completed -= OnSidebarStoryboardCompleted;
+        AppWindow.Changed -= OnAppWindowChanged;
+        ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        ViewModel.BaudRateSuggested -= ViewModel_BaudRateSuggested;
+    }
+
+    private void OnActualThemeChanged(FrameworkElement sender, object args) => UpdateEffectiveTheme();
+
+    private void OnSidebarStoryboardCompleted(object? sender, object e)
+    {
+        _sidebarStoryboard.Stop();
+        ApplySidebarWidth(_sidebarAnimationTarget, _sidebarAnimationTarget <= 0, animate: false);
     }
 
     private void InitializeCustomBaudRateUI()
     {
         // Update UI based on UseCustomBaudRate setting after a short delay
         // to allow ViewModel initialization to complete
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            bool useCustom = ViewModel.UseCustomBaudRate;
-            BaudRateComboBox.Visibility = useCustom ? Visibility.Collapsed : Visibility.Visible;
-            CustomBaudRateTextBox.Visibility = useCustom ? Visibility.Visible : Visibility.Collapsed;
-        });
+        DispatcherQueue.TryEnqueue(() => ApplyCustomBaudRateVisibility(ViewModel.UseCustomBaudRate));
+    }
+
+    /// <summary>
+    /// 按「自定义波特率」是否启用，在波特率下拉框与自定义输入框之间切换显示。
+    /// </summary>
+    /// <remarks>
+    /// One implementation for both entry points (the startup read and the checkbox): they used to
+    /// carry the same two ternaries written out separately, which is how the pair drifts.
+    /// </remarks>
+    private void ApplyCustomBaudRateVisibility(bool useCustom)
+    {
+        BaudRateComboBox.Visibility = useCustom ? Visibility.Collapsed : Visibility.Visible;
+        CustomBaudRateTextBox.Visibility = useCustom ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -723,6 +776,54 @@ public sealed partial class MainWindow : Window
         RequestedTheme = RootLayout.RequestedTheme
     };
 
+    /// <summary>
+    /// 显示一个「主按钮 / 取消」式的确认对话框；返回 <c>true</c> 表示用户点了主按钮。
+    /// </summary>
+    /// <remarks>
+    /// Built on <see cref="CreateDialog"/> so every dialog keeps the window's appearance. Before this
+    /// existed the same five assignments (title / content / primary / close / default) were written
+    /// out at each call site with only the wording varying — five chances for one of them to drift.
+    /// <paramref name="defaultButton"/> is <c>Primary</c> except for destructive confirmations, which
+    /// put the default on 取消.
+    /// </remarks>
+    private async Task<bool> ShowConfirmDialogAsync(
+        string title,
+        object content,
+        string primaryText,
+        ContentDialogButton defaultButton = ContentDialogButton.Primary)
+    {
+        var dialog = CreateDialog();
+        dialog.Title = title;
+        dialog.Content = content;
+        dialog.PrimaryButtonText = primaryText;
+        dialog.CloseButtonText = "取消";
+        dialog.DefaultButton = defaultButton;
+
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+    }
+
+    /// <summary>
+    /// 构建一个已绑定到本窗口的文件打开选择器。
+    /// </summary>
+    /// <remarks>
+    /// <c>InitializeWithWindow</c> is what makes the picker usable from a desktop app at all: without
+    /// it the call throws because there is no CoreWindow to associate it with. Written once because
+    /// the two tuning pickers built the same object by hand, and a third copy would be the one that
+    /// forgets the window handle.
+    /// </remarks>
+    private FileOpenPicker CreateFileOpenPicker(params string[] extensions)
+    {
+        var picker = new FileOpenPicker();
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+
+        foreach (var extension in extensions)
+        {
+            picker.FileTypeFilter.Add(extension);
+        }
+
+        return picker;
+    }
+
     #endregion
 
     private async void About_Click(object sender, RoutedEventArgs e)
@@ -878,14 +979,7 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(tagsBox);
         panel.Children.Add(groupBox);
 
-        var dialog = CreateDialog();
-        dialog.Title = "端口备注";
-        dialog.Content = panel;
-        dialog.PrimaryButtonText = "保存";
-        dialog.CloseButtonText = "取消";
-        dialog.DefaultButton = ContentDialogButton.Primary;
-
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (!await ShowConfirmDialogAsync("端口备注", panel, "保存"))
         {
             return;
         }
@@ -924,14 +1018,7 @@ public sealed partial class MainWindow : Window
         var panel = new StackPanel { Spacing = 10, MinWidth = 320 };
         panel.Children.Add(nameBox);
 
-        var dialog = CreateDialog();
-        dialog.Title = "保存配置档案";
-        dialog.Content = panel;
-        dialog.PrimaryButtonText = "保存";
-        dialog.CloseButtonText = "取消";
-        dialog.DefaultButton = ContentDialogButton.Primary;
-
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (!await ShowConfirmDialogAsync("保存配置档案", panel, "保存"))
         {
             return;
         }
@@ -949,10 +1036,33 @@ public sealed partial class MainWindow : Window
         => ViewModel.UseSendHistoryEntry(payload);
 
     private async void HistoryPanel_EntryDeleted(object? sender, string payload)
-        => await ViewModel.RemoveSendHistoryEntryAsync(payload);
+    {
+        try
+        {
+            await ViewModel.RemoveSendHistoryEntryAsync(payload);
+        }
+        catch (Exception ex)
+        {
+            // An async void handler's exception reaches Application.UnhandledException, which logs
+            // and then tears the process down. Deleting one history entry is not worth that, and the
+            // failure is still reported rather than swallowed.
+            ViewModel.StatusMessage = $"删除发送历史失败: {ex.Message}";
+            Serilog.Log.Warning(ex, "Failed to remove a send history entry");
+        }
+    }
 
     private async void HistoryPanel_ClearRequested(object? sender, EventArgs e)
-        => await ViewModel.ClearSendHistoryAsync();
+    {
+        try
+        {
+            await ViewModel.ClearSendHistoryAsync();
+        }
+        catch (Exception ex)
+        {
+            ViewModel.StatusMessage = $"清空发送历史失败: {ex.Message}";
+            Serilog.Log.Warning(ex, "Failed to clear the send history");
+        }
+    }
 
     private async void PortListView_SelectionChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
     {
@@ -1130,14 +1240,7 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(hexBox);
         panel.Children.Add(variablesBox);
 
-        var dialog = CreateDialog();
-        dialog.Title = "保存快捷指令";
-        dialog.Content = panel;
-        dialog.PrimaryButtonText = "保存";
-        dialog.CloseButtonText = "取消";
-        dialog.DefaultButton = ContentDialogButton.Primary;
-
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (!await ShowConfirmDialogAsync("保存快捷指令", panel, "保存"))
         {
             return;
         }
@@ -1243,14 +1346,7 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(caseBox);
         panel.Children.Add(colorBox);
 
-        var dialog = CreateDialog();
-        dialog.Title = "添加高亮规则";
-        dialog.Content = panel;
-        dialog.PrimaryButtonText = "添加";
-        dialog.CloseButtonText = "取消";
-        dialog.DefaultButton = ContentDialogButton.Primary;
-
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (!await ShowConfirmDialogAsync("添加高亮规则", panel, "添加"))
         {
             return;
         }
@@ -1271,9 +1367,7 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var picker = new FileOpenPicker();
-            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
-            picker.FileTypeFilter.Add(".bin");
+            var picker = CreateFileOpenPicker(".bin");
 
             var file = await picker.PickSingleFileAsync();
             if (file != null)
@@ -1291,9 +1385,7 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var picker = new FileOpenPicker();
-            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
-            picker.FileTypeFilter.Add(".json");
+            var picker = CreateFileOpenPicker(".json");
 
             var file = await picker.PickSingleFileAsync();
             if (file != null)
@@ -1363,15 +1455,12 @@ public sealed partial class MainWindow : Window
 
     private async void ClearSearchHistory_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = CreateDialog();
-        dialog.Title = "清空搜索历史";
-        dialog.Content = "确定要清空所有搜索历史记录吗？";
-        dialog.PrimaryButtonText = "确定";
-        dialog.CloseButtonText = "取消";
-        dialog.DefaultButton = ContentDialogButton.Close;
-        
-        var result = await dialog.ShowAsync();
-        if (result == ContentDialogResult.Primary)
+        // Destructive, so the default button stays on 取消 — a stray Enter must not wipe the history.
+        if (await ShowConfirmDialogAsync(
+                "清空搜索历史",
+                "确定要清空所有搜索历史记录吗？",
+                "确定",
+                ContentDialogButton.Close))
         {
             ViewModel.ClearSearchHistoryCommand.Execute(null);
         }
@@ -1443,7 +1532,7 @@ public sealed partial class MainWindow : Window
     /// </remarks>
     private bool TryHandleLogFontSizeShortcut(Windows.System.VirtualKey key)
     {
-        if (!IsControlDown())
+        if (!InputModifiers.IsControlDown())
         {
             return false;
         }
@@ -1469,18 +1558,6 @@ public sealed partial class MainWindow : Window
                 return false;
         }
     }
-
-    /// <summary>
-    /// 是否按住了 Ctrl。
-    /// </summary>
-    /// <remarks>
-    /// Read explicitly, the way AGENTS.md prescribes for any window-level gesture that needs a modifier and the
-    /// way <c>LogListView</c> already does it for Ctrl+C / Ctrl+A.
-    /// </remarks>
-    private static bool IsControlDown()
-        => Microsoft.UI.Input.InputKeyboardSource
-            .GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control)
-            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
 
     /// <summary>
     /// Opens the log directory in the shell. Shared by 工具 → 打开日志文件夹 and F9.
@@ -1520,6 +1597,31 @@ public sealed partial class MainWindow : Window
     /// open.
     /// </remarks>
     private async void ExportLogs_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await ExportLogsAsync();
+        }
+        catch (Exception ex)
+        {
+            // FileSavePicker and InitializeWithWindow can throw (an invalid window handle, a policy
+            // that blocks the picker); an async void handler's exception reaches the XAML
+            // unhandled-exception handler and ends the process.
+            ViewModel.StatusMessage = $"导出失败: {ex.Message}";
+            Serilog.Log.Warning(ex, "Log export failed");
+        }
+    }
+
+    /// <summary>
+    /// Exports the current view — or just the selection, when there is one — to a file the user picks.
+    /// </summary>
+    /// <remarks>
+    /// The snapshot is taken first, on the UI thread, before the first <c>await</c>. The bound display
+    /// buffer may only be enumerated on this thread, and taking it up front also means the file
+    /// describes one consistent moment instead of whatever happened to arrive while the picker was
+    /// open.
+    /// </remarks>
+    private async Task ExportLogsAsync()
     {
         var selection = LogListView.GetSelectedEntries();
 
@@ -1585,19 +1687,29 @@ public sealed partial class MainWindow : Window
     /// </remarks>
     private async void CommandPalette_Activated(object? sender, PaletteEntry entry)
     {
-        switch (entry.Kind)
+        try
         {
-            case PaletteEntryKind.Snippet when entry.Snippet is { } snippet:
-                await ViewModel.SendSnippetAsync(snippet);
-                break;
+            switch (entry.Kind)
+            {
+                case PaletteEntryKind.Snippet when entry.Snippet is { } snippet:
+                    await ViewModel.SendSnippetAsync(snippet);
+                    break;
 
-            case PaletteEntryKind.OpenPort:
-                ViewModel.ClosePortCommand.Execute(entry.PortName);
-                break;
+                case PaletteEntryKind.OpenPort:
+                    ViewModel.ClosePortCommand.Execute(entry.PortName);
+                    break;
 
-            case PaletteEntryKind.AvailablePort:
-                ViewModel.OpenPortCommand.Execute(entry.PortName);
-                break;
+                case PaletteEntryKind.AvailablePort:
+                    ViewModel.OpenPortCommand.Execute(entry.PortName);
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Same shape as the other async void handlers here: a send through the palette throws on
+            // a port that vanished mid-flight, and letting it escape would end the process.
+            ViewModel.StatusMessage = $"执行失败: {ex.Message}";
+            Serilog.Log.Warning(ex, "Command palette action failed");
         }
     }
 
@@ -1657,9 +1769,7 @@ public sealed partial class MainWindow : Window
     {
         if (sender is CheckBox checkBox)
         {
-            bool isChecked = checkBox.IsChecked ?? false;
-            BaudRateComboBox.Visibility = isChecked ? Visibility.Collapsed : Visibility.Visible;
-            CustomBaudRateTextBox.Visibility = isChecked ? Visibility.Visible : Visibility.Collapsed;
+            ApplyCustomBaudRateVisibility(checkBox.IsChecked ?? false);
         }
     }
     
@@ -1744,9 +1854,10 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Runs a one-shot opacity fade and lets the storyboard be collected when it ends.
+    /// Runs a one-shot opacity fade while keeping the storyboard rooted for its duration.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A fresh <see cref="Storyboard"/> per call instead of a reused field: these fire on user
     /// actions (an appearance switch, a banner appearing), never on a hot path, and building one per
     /// call is what allows the completion callback to be closed over without leaving a handler
@@ -1754,8 +1865,16 @@ public sealed partial class MainWindow : Window
     /// the target to its base opacity when the animation ends, so no animated value stays held on the
     /// composition tree — and <c>Opacity</c> is composition-backed, so no
     /// <c>EnableDependentAnimation</c> is required or wanted here.
+    /// </para>
+    /// <para>
+    /// The storyboard is held in <see cref="_runningFades"/> until it completes. A storyboard that
+    /// nothing references can be collected mid-flight, and once that happens <c>Completed</c> never
+    /// fires: for the baud-rate banner that means a permanently half-transparent strip that the
+    /// dismiss handler never collapses, and for the theme cross-fade an opacity stuck below 1. The
+    /// handler removes it, so nothing accumulates.
+    /// </para>
     /// </remarks>
-    private static void RunOpacityFade(
+    private void RunOpacityFade(
         DependencyObject target,
         double from,
         double to,
@@ -1776,10 +1895,15 @@ public sealed partial class MainWindow : Window
 
         var storyboard = new Storyboard();
         storyboard.Children.Add(animation);
-        if (onCompleted is not null)
+
+        // Rooted while in flight; the completion handler below is the only place it is released.
+        _runningFades.Add(storyboard);
+
+        storyboard.Completed += (_, _) =>
         {
-            storyboard.Completed += (_, _) => onCompleted();
-        }
+            _runningFades.Remove(storyboard);
+            onCompleted?.Invoke();
+        };
 
         storyboard.Begin();
     }
@@ -2121,6 +2245,9 @@ public sealed partial class MainWindow : Window
     {
         if (_isUpdateDialogOpen)
         {
+            // A dialog is already up (an earlier manual check still in flight, or the update prompt).
+            // Saying so beats a menu item that appears to do nothing at all.
+            ViewModel.StatusMessage = "已有更新对话框打开，请先处理它";
             return;
         }
 
@@ -2172,6 +2299,15 @@ public sealed partial class MainWindow : Window
     {
         if (_isUpdateDialogOpen)
         {
+            // A dialog is already up — most likely this same update, prompted by the startup check a
+            // moment earlier. The silent path must not stack a second one, but the finding is still
+            // recorded so it is not dropped silently; the cached update makes the next check show it
+            // again with no request.
+            if (isSilent)
+            {
+                ViewModel.StatusMessage = $"发现新版本 v{info.LatestVersion}（处理完当前对话框后可从「帮助 → 检查更新」查看）";
+            }
+
             return;
         }
 
@@ -2290,9 +2426,28 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (!await DownloadInstallerWithProgressAsync(info))
+        bool downloaded;
+        try
         {
-            // 用户取消或下载失败（服务内部已记录日志）。
+            downloaded = await DownloadInstallerWithProgressAsync(info);
+        }
+        catch (Exception ex)
+        {
+            // Caught here rather than left to bubble. The manual check path would report it as
+            // "检查更新失败" (the check succeeded — the download did not) and the silent path would
+            // swallow it entirely; neither tells the user what actually went wrong.
+            Serilog.Log.Warning(ex, "Update download failed");
+            await ShowMessageDialogAsync(
+                "下载更新失败",
+                $"{ex.Message}\n\n你也可以手动前往发布页下载最新版本。",
+                secondaryText: "前往下载页",
+                secondaryAction: () => OpenReleasePage(info.ReleasePageUrl));
+            return;
+        }
+
+        if (!downloaded)
+        {
+            // 用户取消，或校验失败（后者在 DownloadInstallerWithProgressAsync 里已经报过）。
             return;
         }
 
@@ -2389,7 +2544,26 @@ public sealed partial class MainWindow : Window
         }
 
         var downloaded = await downloadTask;
-        return downloaded && !cancelledByUser;
+
+        if (cancelledByUser)
+        {
+            return false;
+        }
+
+        if (!downloaded)
+        {
+            // The service returns false without throwing only when the downloaded file failed
+            // verification (a partial download, or an error page saved as an .exe). Reported as a
+            // download failure — not a check failure — and not left as "nothing happened".
+            await ShowMessageDialogAsync(
+                "下载更新失败",
+                "安装包未通过校验，可能是网络中断或下载不完整。\n\n你也可以手动前往发布页下载最新版本。",
+                secondaryText: "前往下载页",
+                secondaryAction: () => OpenReleasePage(info.ReleasePageUrl));
+            return false;
+        }
+
+        return true;
     }
 
     private async Task HideDialogWhenDownloadCompletesAsync(ContentDialog dialog, Task<bool> downloadTask)

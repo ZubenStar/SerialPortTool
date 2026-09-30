@@ -39,7 +39,9 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
     /// Read from each port's own read thread (validation runs inline there, and the line assembler's
     /// factory resolves it), which is why this is a concurrent dictionary rather than state the UI thread
     /// owns — the same rule <c>MainViewModel._portsByName</c> follows. Entries are registered before a
-    /// port opens and removed when it closes, so the map cannot outgrow the set of open ports.
+    /// port opens and removed when it closes. A port that fails to open leaves its entry behind: that is
+    /// one string per port name ever attempted, overwritten by the next open, and removing it from the
+    /// failure paths would race a concurrent open that is already using it.
     /// </remarks>
     private readonly ConcurrentDictionary<string, string> _portTextEncodings =
         new(StringComparer.OrdinalIgnoreCase);
@@ -384,13 +386,6 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         }
     }
 
-    public async Task SendTextAsync(string portName, string text, Encoding? encoding = null)
-    {
-        encoding ??= Encoding.UTF8;
-        var data = encoding.GetBytes(text);
-        await SendDataAsync(portName, data);
-    }
-
     public void SetPortTextEncoding(string portName, string encodingName)
     {
         if (string.IsNullOrEmpty(portName))
@@ -456,19 +451,57 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         // Auto reconnect if enabled, with cooldown to prevent reconnect storm
         if (_ports.TryGetValue(e.PortName, out var port) && port.Config.AutoReconnect)
         {
-            var now = DateTime.UtcNow;
-            if (_lastReconnectAttempt.TryGetValue(e.PortName, out var lastAttempt) &&
-                now - lastAttempt < ReconnectCooldown)
+            if (!TryClaimReconnectSlot(e.PortName, DateTime.UtcNow))
             {
                 return; // Skip reconnect, still in cooldown
             }
-            _lastReconnectAttempt[e.PortName] = now;
 
             _ = Task.Run(async () =>
             {
                 await Task.Delay(port.Config.ReconnectInterval);
                 await TryReconnectAsync(e.PortName);
             });
+        }
+    }
+
+    /// <summary>
+    /// Claims the per-port reconnect slot when the cooldown has elapsed, atomically.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This used to be a <c>TryGetValue</c> followed by an indexer write, so two error callbacks
+    /// arriving together could both pass the cooldown check and each start a reconnect. The COM port
+    /// is OS-exclusive in the usual case, so the two reopens cannot both end up holding the port —
+    /// but the loser's close/open cycle still churns the handle while the winner is settling, and
+    /// reports state ("reconnected") that the next line contradicts.
+    /// </para>
+    /// <para>
+    /// A CAS loop rather than <c>AddOrUpdate</c>: that factory is allowed to run more than once per
+    /// call, so a caller could publish a timestamp and still lose the race.
+    /// </para>
+    /// </remarks>
+    private bool TryClaimReconnectSlot(string portName, DateTime now)
+    {
+        while (true)
+        {
+            if (_lastReconnectAttempt.TryGetValue(portName, out var lastAttempt))
+            {
+                if (now - lastAttempt < ReconnectCooldown)
+                {
+                    return false;
+                }
+
+                if (_lastReconnectAttempt.TryUpdate(portName, now, lastAttempt))
+                {
+                    return true;
+                }
+            }
+            else if (_lastReconnectAttempt.TryAdd(portName, now))
+            {
+                return true;
+            }
+
+            // Lost the race with a concurrent claim: re-read the slot and decide again.
         }
     }
 
@@ -797,12 +830,16 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
                     }
                     
                     // Publish only under the lifecycle lock, and only if no teardown was requested in
-                    // the meantime. A bare assignment here could land *after* ClosePortAsync had
-                    // already looked at _serialPort (and seen null), which left an open handle that
-                    // nothing tracked — the "ports leak until the app exits" bug.
+                    // the meantime and no concurrent open on this instance has already published a
+                    // handle. A bare assignment here could land *after* ClosePortAsync had already
+                    // looked at _serialPort (and seen null), which left an open handle that nothing
+                    // tracked — the "ports leak until the app exits" bug. The "already published"
+                    // half covers virtual serial drivers (which do allow a second open of the same
+                    // port) and any future caller that opens one instance twice: replacing the field
+                    // would drop the winner's handle without closing it.
                     lock (_lifecycleLock)
                     {
-                        if (!_teardownRequested)
+                        if (!_teardownRequested && _serialPort is null)
                         {
                             _serialPort = port;
                             Statistics.ConnectedAt = DateTime.Now;
@@ -812,7 +849,9 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
 
                     // Rejected: we own this handle now, so it is ours to release.
                     _logger.LogInformation(
-                        "Port {PortName} was closed while it was opening; discarding the new handle",
+                        _teardownRequested
+                            ? "Port {PortName} was closed while it was opening; discarding the new handle"
+                            : "Port {PortName} was opened twice concurrently; discarding the duplicate handle",
                         Config.PortName);
                     try
                     {
@@ -1319,8 +1358,18 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
                 // Stop any send that is still waiting on / inside the write lock.
                 BeginShutdown();
 
-                // Always give time for OS to fully release the handle, even if disposal threw
-                try { Thread.Sleep(100); } catch { }
+                // Always give time for OS to fully release the handle, even if disposal threw.
+                // Thread.Sleep only throws ThreadInterruptedException here (nothing interrupts this
+                // thread), but the catch stays so a teardown interrupted during shutdown still runs
+                // the rest of this finally block — and records why, instead of swallowing it.
+                try
+                {
+                    Thread.Sleep(100);
+                }
+                catch (ThreadInterruptedException ex)
+                {
+                    _logger.LogDebug(ex, "Handle-release delay for {PortName} was interrupted", Config.PortName);
+                }
 
                 // _writeLock and _writeCts are deliberately NOT disposed.
                 //
