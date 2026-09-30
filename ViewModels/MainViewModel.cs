@@ -1358,6 +1358,26 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _ = _settingsService.SaveSettingAsync(SidebarCollapsedSettingKey, value ? 1 : 0);
     }
 
+    /// <summary>Settings key for <see cref="IsAdvancedParametersExpanded"/>.</summary>
+    private const string AdvancedParametersExpandedSettingKey = "AdvancedParametersExpanded";
+
+    /// <summary>
+    /// Whether the sidebar's 「高级参数」 section — data bits / stop bits / parity / flow control /
+    /// encoding, plus the automation card — is expanded.
+    /// </summary>
+    /// <remarks>
+    /// Collapsed by default: those pickers are set once for a device and then left alone, while they used
+    /// to take up most of the rail's height. The header keeps carrying the current values through
+    /// <see cref="LineParametersSummary"/>, so a folded section cannot be mistaken for an unset one.
+    /// </remarks>
+    [ObservableProperty]
+    private bool _isAdvancedParametersExpanded;
+
+    partial void OnIsAdvancedParametersExpandedChanged(bool value)
+    {
+        _ = _settingsService.SaveSettingAsync(AdvancedParametersExpandedSettingKey, value ? 1 : 0);
+    }
+
     /// <summary>Number of currently open ports, maintained on the UI thread by the collection hook.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(OpenPortCountDisplay))]
@@ -1773,13 +1793,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private int _baudRate = 3000000; // Default to 3M
 
+    // The five line parameters below all feed LineParametersSummary, which is what the sidebar's folded
+    // 「高级参数」 header shows — so each one has to republish it. The toolkit attribute rather than a
+    // hand-written partial: the existing OnXxxChanged handlers belong to HintThatLineParametersApplyOnNextOpen.
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LineParametersSummary))]
     private int _dataBits = 8;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LineParametersSummary))]
     private System.IO.Ports.StopBits _stopBits = System.IO.Ports.StopBits.One;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LineParametersSummary))]
     private System.IO.Ports.Parity _parity = System.IO.Ports.Parity.None;
 
     /// <summary>
@@ -1790,6 +1816,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// defaults to — an unchanged install therefore sends exactly the bytes it always did.
     /// </remarks>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LineParametersSummary))]
     private System.IO.Ports.Handshake _handshake = System.IO.Ports.Handshake.None;
 
     public ObservableCollection<int> AvailableBaudRates { get; } = new()
@@ -1906,10 +1933,61 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// (<c>PortEncoding_&lt;port&gt;</c>), so re-opening one restores what it was last using.
     /// </summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LineParametersSummary))]
     private string _textEncodingName = SerialEncodings.Utf8Name;
 
     /// <summary>Encoding choices for the sidebar picker.</summary>
     public IReadOnlyList<string> AvailableTextEncodings { get; } = SerialEncodings.SupportedNames;
+
+    /// <summary>
+    /// The line parameters in the classic shorthand — <c>8-N-1</c> — for the sidebar's 「高级参数」 header.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Flow control and encoding are appended only when they deviate from the shipped defaults, so the
+    /// common case stays three characters wide while a non-default port cannot hide behind a summary that
+    /// reads exactly like an untouched one.
+    /// </para>
+    /// <para>
+    /// A read-only property rather than a converter: the value is a function of five properties at once,
+    /// and a converter is only ever told about the one it is bound to.
+    /// </para>
+    /// </remarks>
+    public string LineParametersSummary
+    {
+        get
+        {
+            var parity = Parity switch
+            {
+                System.IO.Ports.Parity.None => "N",
+                System.IO.Ports.Parity.Odd => "O",
+                System.IO.Ports.Parity.Even => "E",
+                System.IO.Ports.Parity.Mark => "M",
+                System.IO.Ports.Parity.Space => "S",
+                _ => "?",
+            };
+
+            var stopBits = StopBitsOptions.FirstOrDefault(option => option.Value == StopBits)?.Name ?? "1";
+            var summary = $"{DataBits}-{parity}-{stopBits}";
+
+            if (Handshake != System.IO.Ports.Handshake.None)
+            {
+                var handshake = HandshakeOptions.FirstOrDefault(option => option.Value == Handshake)?.Name
+                                ?? Handshake.ToString();
+                summary = $"{summary} · {handshake}";
+            }
+
+            // "UTF-8" is the default and is therefore left out; anything else is spelled out, because a
+            // GB18030 port showing Latin text where Chinese was expected is exactly the kind of thing a
+            // folded section must not hide.
+            if (!string.Equals(TextEncodingName, SerialEncodings.Utf8Name, StringComparison.OrdinalIgnoreCase))
+            {
+                summary = $"{summary} · {TextEncodingName}";
+            }
+
+            return summary;
+        }
+    }
 
     /// <summary>Settings key holding the encoding new ports start with.</summary>
     private const string SerialEncodingSettingKey = "SerialEncoding";
@@ -2066,6 +2144,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         TxColorHex = await _settingsService.LoadSettingAsync("TxColorHex", PortColorPalette.DefaultTxHex);
         RxColorHex = await _settingsService.LoadSettingAsync("RxColorHex", PortColorPalette.DefaultRxHex);
         IsSidebarCollapsed = await _settingsService.LoadSettingAsync(SidebarCollapsedSettingKey, 0) == 1;
+        IsAdvancedParametersExpanded =
+            await _settingsService.LoadSettingAsync(AdvancedParametersExpandedSettingKey, 0) == 1;
 
         // Clamped rather than trusted: a hand-edited settings.json naming 4 or 400 must not produce a log that
         // cannot be read or a row taller than the viewport. Through the same helper the setter uses, so the two

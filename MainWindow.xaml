@@ -243,12 +243,26 @@
             </Grid.ColumnDefinitions>
 
             <!-- ========== Configuration rail ========== -->
+            <!-- The rail scrolls as one column. It used to be a plain three-row Grid whose last row was
+                 `*`, which meant anything taller than the window was simply cut off — on a short window
+                 the 已打开串口 list, the very thing the rail exists for, became unreachable. Wrapping the
+                 Grid in a ScrollViewer fixes that: under the infinite height a ScrollViewer measures
+                 with, the `*` row resolves exactly like an Auto row, so the open-port list lays itself
+                 out at its natural height and the whole column scrolls. The trade is that the open-port
+                 list no longer stretches to fill the rail — which is what it has to give up for the list
+                 to stay reachable.
+
+                 SidebarHost itself must stay where it is: MainWindow.ApplySidebarWidth animates
+                 `SidebarHost.Width` and toggles its Visibility to fold the rail, so moving the x:Name onto
+                 the ScrollViewer would animate the wrong element. -->
             <Border x:Name="SidebarHost"
                     Grid.Column="0"
                     Width="{StaticResource AppSidebarWidth}"
                     Background="{ThemeResource AppSurfaceBrush}"
                     BorderBrush="{ThemeResource AppHairlineBrush}"
                     BorderThickness="0,0,1,0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
                 <Grid Padding="14,14,14,12">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -317,102 +331,165 @@
                                       Unchecked="CustomBaudRateCheckBox_Changed" />
                         </StackPanel>
 
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="数据位" Style="{StaticResource AppCaptionTextStyle}" />
-                            <ComboBox ItemsSource="{x:Bind ViewModel.AvailableDataBits}"
-                                      SelectedItem="{x:Bind ViewModel.DataBits, Mode=TwoWay}"
-                                      HorizontalAlignment="Stretch" />
-                        </StackPanel>
+                        <!-- ================= Advanced parameters (folded by default) =================
+                             Data bits / stop bits / parity / flow control / encoding are chosen once for a
+                             device and then left alone, yet five stacked pickers plus the automation card
+                             used to own most of the rail's height. They now sit behind one header row, in
+                             the shape the reference client uses: the collapsed header is not a blank
+                             "there are more settings somewhere" strip, it carries the current values as
+                             the classic shorthand (8-N-1, see MainViewModel.LineParametersSummary), so a
+                             folded section reads as a status line rather than as something hidden.
 
-                        <!-- The three pickers below (plus 数据位 and 波特率 above) are "what the next open
-                             uses": SerialPort applies them when the handle is opened, and applying them
-                             to a live port would mean an implicit close/reopen, which is the race the
-                             reliability rules forbid. Changing one while a port is open therefore only
-                             raises a status-bar hint (MainViewModel.HintThatLineParametersApplyOnNextOpen).
+                             A ToggleButton over a plain Show/Hide panel rather than an Expander: the
+                             Expander's stock header brings its own background/border lightweight-styling
+                             keys, which would be a second control silhouette in a rail whose whole point
+                             is one token set (Themes/Tokens.xaml). AppToolbarToggleButtonStyle already
+                             is the "quiet until active" affordance this needs — and its checked state is
+                             the accent, so "there is no data bits picker visible" always has a visible
+                             reason. -->
+                        <ToggleButton x:Name="AdvancedParametersToggle"
+                                      Style="{StaticResource AppToolbarToggleButtonStyle}"
+                                      HorizontalAlignment="Stretch"
+                                      HorizontalContentAlignment="Stretch"
+                                      MinHeight="{StaticResource AppControlHeightForm}"
+                                      Padding="8,0"
+                                      IsChecked="{Binding IsAdvancedParametersExpanded, Mode=TwoWay}"
+                                      ToolTipService.ToolTip="数据位 / 停止位 / 校验位 / 流控 / 编码与自动化设置。摘要显示的是「下次打开串口」将采用的线路参数；流控与编码只在与默认值不同时才列出。">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0"
+                                            Orientation="Horizontal"
+                                            Spacing="8"
+                                            VerticalAlignment="Center">
+                                    <TextBlock Text="高级参数"
+                                               Style="{StaticResource AppSectionLabelStyle}"
+                                               VerticalAlignment="Center" />
+                                    <TextBlock Text="{x:Bind ViewModel.LineParametersSummary, Mode=OneWay}"
+                                               Style="{StaticResource AppCaptionTextStyle}"
+                                               FontFamily="{StaticResource AppMonoFontFamily}"
+                                               VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+
+                                <!-- Two glyphs and the two existing converters, the same shape the sidebar
+                                     toggle in the title bar uses: one of the two is always collapsed. -->
+                                <Grid Grid.Column="1" VerticalAlignment="Center">
+                                    <FontIcon Glyph="&#xE70D;"
+                                              FontSize="11"
+                                              Visibility="{Binding IsAdvancedParametersExpanded, Converter={StaticResource InverseBoolToVisibilityConverter}}" />
+                                    <FontIcon Glyph="&#xE70E;"
+                                              FontSize="11"
+                                              Visibility="{Binding IsAdvancedParametersExpanded, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                </Grid>
+                            </Grid>
+                        </ToggleButton>
+
+                        <!-- The 波特率 picker above and the five below are "what the next open uses":
+                             SerialPort applies them when the handle is opened, and applying them to a live
+                             port would mean an implicit close/reopen, which is the race the reliability
+                             rules forbid. Changing one while a port is open therefore only raises a
+                             status-bar hint (MainViewModel.HintThatLineParametersApplyOnNextOpen).
 
                              SelectedValue uses {Binding}, not {x:Bind}: the enum is boxed into
                              ComboBox.SelectedValue (object) and the reflection binding converts it back,
                              the same reason the search toggles use {Binding} for their bool? target. -->
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="停止位" Style="{StaticResource AppCaptionTextStyle}" />
-                            <ComboBox ItemsSource="{x:Bind ViewModel.StopBitsOptions}"
-                                      SelectedValuePath="Value"
-                                      SelectedValue="{Binding StopBits, Mode=TwoWay}"
-                                      HorizontalAlignment="Stretch">
-                                <ComboBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding Name}" />
-                                    </DataTemplate>
-                                </ComboBox.ItemTemplate>
-                            </ComboBox>
-                        </StackPanel>
-
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="校验位" Style="{StaticResource AppCaptionTextStyle}" />
-                            <ComboBox ItemsSource="{x:Bind ViewModel.ParityOptions}"
-                                      SelectedValuePath="Value"
-                                      SelectedValue="{Binding Parity, Mode=TwoWay}"
-                                      HorizontalAlignment="Stretch">
-                                <ComboBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding Name}" />
-                                    </DataTemplate>
-                                </ComboBox.ItemTemplate>
-                            </ComboBox>
-                        </StackPanel>
-
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="流控" Style="{StaticResource AppCaptionTextStyle}" />
-                            <ComboBox ItemsSource="{x:Bind ViewModel.HandshakeOptions}"
-                                      SelectedValuePath="Value"
-                                      SelectedValue="{Binding Handshake, Mode=TwoWay}"
-                                      HorizontalAlignment="Stretch">
-                                <ComboBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding Name}" />
-                                    </DataTemplate>
-                                </ComboBox.ItemTemplate>
-                            </ComboBox>
-                        </StackPanel>
-
-                        <!-- Unlike the three pickers above, the encoding is NOT "next open only": it is a
-                             decode concern, so a change is pushed to every open port immediately (and each
-                             port remembers its own value). Different devices on different ports genuinely
-                             use different character sets, so the per-port value is what a re-open restores
-                             and this control is the default for ports that have none yet. -->
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="编码" Style="{StaticResource AppCaptionTextStyle}" />
-                            <ComboBox ItemsSource="{x:Bind ViewModel.AvailableTextEncodings}"
-                                      SelectedItem="{x:Bind ViewModel.TextEncodingName, Mode=TwoWay}"
-                                      HorizontalAlignment="Stretch"
-                                      ToolTipService.ToolTip="接收数据的解码方式（也用于文本发送）。对已打开的串口立即生效；每个串口会记住自己的选择。" />
-                        </StackPanel>
-
-                        <!-- Automation. Both switches are off by default and stay that way until asked:
-                             restoring ports writes to whatever is plugged in now, and an init sequence
-                             writes commands to a device nobody opened. Economy of surprise says opt in. -->
-                        <Border Style="{StaticResource AppCardStyle}" Padding="10">
-                            <StackPanel Spacing="8">
-                                <TextBlock Text="自动化" Style="{StaticResource AppSectionLabelStyle}" />
-
-                                <CheckBox Content="启动时恢复上次打开的串口"
-                                          IsChecked="{x:Bind ViewModel.RestoreLastPortsOnStartup, Mode=TwoWay}"
-                                          ToolTipService.ToolTip="下次启动时按上次记住的参数重新打开这些串口。串口已拔掉会自动跳过；默认关闭。" />
-
-                                <CheckBox Content="打开后自动发送初始化序列"
-                                          IsChecked="{x:Bind ViewModel.AutoInitSequenceEnabled, Mode=TwoWay}"
-                                          ToolTipService.ToolTip="端口打开成功后自动发送下面的内容。每次打开只发一次，自动重连不会重发；默认关闭。" />
-
-                                <TextBox Text="{x:Bind ViewModel.AutoInitSequence, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                         PlaceholderText="例如：AT+RESET&#xA;AT+INFO"
-                                         AcceptsReturn="True"
-                                         TextWrapping="Wrap"
-                                         MaxHeight="88"
-                                         IsEnabled="{x:Bind ViewModel.AutoInitSequenceEnabled, Mode=OneWay}"
-                                         InputScope="Text"
-                                         ToolTipService.ToolTip="多行内容将逐行发送；支持 ${date} ${time} 等变量与 \\r \\n 转义" />
+                        <StackPanel Spacing="10"
+                                    Visibility="{Binding IsAdvancedParametersExpanded, Converter={StaticResource BoolToVisibilityConverter}}">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="数据位" Style="{StaticResource AppCaptionTextStyle}" />
+                                <ComboBox ItemsSource="{x:Bind ViewModel.AvailableDataBits}"
+                                          SelectedItem="{x:Bind ViewModel.DataBits, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch" />
                             </StackPanel>
-                        </Border>
+
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="停止位" Style="{StaticResource AppCaptionTextStyle}" />
+                                <ComboBox ItemsSource="{x:Bind ViewModel.StopBitsOptions}"
+                                          SelectedValuePath="Value"
+                                          SelectedValue="{Binding StopBits, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Name}" />
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </StackPanel>
+
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="校验位" Style="{StaticResource AppCaptionTextStyle}" />
+                                <ComboBox ItemsSource="{x:Bind ViewModel.ParityOptions}"
+                                          SelectedValuePath="Value"
+                                          SelectedValue="{Binding Parity, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Name}" />
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </StackPanel>
+
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="流控" Style="{StaticResource AppCaptionTextStyle}" />
+                                <ComboBox ItemsSource="{x:Bind ViewModel.HandshakeOptions}"
+                                          SelectedValuePath="Value"
+                                          SelectedValue="{Binding Handshake, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Name}" />
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </StackPanel>
+
+                            <!-- Unlike the other line parameters, the encoding is NOT "next open only": it
+                                 is a decode concern, so a change is pushed to every open port immediately
+                                 (and each port remembers its own value). Different devices on different
+                                 ports genuinely use different character sets, so the per-port value is what
+                                 a re-open restores and this control is the default for ports that have none
+                                 yet. -->
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="编码" Style="{StaticResource AppCaptionTextStyle}" />
+                                <ComboBox ItemsSource="{x:Bind ViewModel.AvailableTextEncodings}"
+                                          SelectedItem="{x:Bind ViewModel.TextEncodingName, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch"
+                                          ToolTipService.ToolTip="接收数据的解码方式（也用于文本发送）。对已打开的串口立即生效；每个串口会记住自己的选择。" />
+                            </StackPanel>
+
+                            <!-- Automation. Both switches are off by default and stay that way until asked:
+                                 restoring ports writes to whatever is plugged in now, and an init sequence
+                                 writes commands to a device nobody opened. Economy of surprise says opt in.
+                                 It rides with the advanced parameters because it shares their nature —
+                                 configured once, then never looked at. -->
+                            <Border Style="{StaticResource AppCardStyle}" Padding="10">
+                                <StackPanel Spacing="8">
+                                    <TextBlock Text="自动化" Style="{StaticResource AppSectionLabelStyle}" />
+
+                                    <CheckBox Content="启动时恢复上次打开的串口"
+                                              IsChecked="{x:Bind ViewModel.RestoreLastPortsOnStartup, Mode=TwoWay}"
+                                              ToolTipService.ToolTip="下次启动时按上次记住的参数重新打开这些串口。串口已拔掉会自动跳过；默认关闭。" />
+
+                                    <CheckBox Content="打开后自动发送初始化序列"
+                                              IsChecked="{x:Bind ViewModel.AutoInitSequenceEnabled, Mode=TwoWay}"
+                                              ToolTipService.ToolTip="端口打开成功后自动发送下面的内容。每次打开只发一次，自动重连不会重发；默认关闭。" />
+
+                                    <TextBox Text="{x:Bind ViewModel.AutoInitSequence, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             PlaceholderText="例如：AT+RESET&#xA;AT+INFO"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             MaxHeight="88"
+                                             IsEnabled="{x:Bind ViewModel.AutoInitSequenceEnabled, Mode=OneWay}"
+                                             InputScope="Text"
+                                             ToolTipService.ToolTip="多行内容将逐行发送；支持 ${date} ${time} 等变量与 \\r \\n 转义" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
                     </StackPanel>
 
                     <!-- Available ports -->
@@ -577,6 +654,7 @@
                         </ListView>
                     </Grid>
                 </Grid>
+                </ScrollViewer>
             </Border>
 
             <!-- ========== Working surface ========== -->
@@ -1154,135 +1232,139 @@
                         Padding="12,9">
                     <Grid>
                         <Grid.ColumnDefinitions>
+                            <!-- Only the box is `*` — the same rule the search row above follows, so a
+                                 narrow window shrinks the box and never pushes a button off the edge. The
+                                 options that used to occupy this row as one ~900 px strip of checkboxes
+                                 and combo boxes are exactly why the box used to collapse to zero width and
+                                 发送 used to be clipped out of the window. -->
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
-                        <StackPanel Grid.Column="0"
-                                    Orientation="Horizontal"
-                                    Spacing="12"
-                                    VerticalAlignment="Center"
-                                    Margin="0,0,12,0">
-                            <CheckBox Content="十六进制发送"
-                                      IsChecked="{x:Bind ViewModel.SendAsHex, Mode=TwoWay}" />
-                            <CheckBox Content="显示发送数据"
-                                      IsChecked="{x:Bind ViewModel.ShowSentData, Mode=TwoWay}" />
-                            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                                <TextBlock Text="TX"
-                                           Style="{StaticResource AppCaptionTextStyle}"
-                                           FontFamily="{StaticResource AppMonoFontFamily}"
-                                           VerticalAlignment="Center"
-                                           ToolTipService.ToolTip="发送行的颜色。接收行颜色在左侧已打开串口列表中设置。" />
-                                <ComboBox x:Name="TxColorComboBox"
-                                          ItemsSource="{x:Bind ViewModel.TxColorOptions}"
-                                          SelectedValuePath="Hex"
-                                          SelectedValue="{x:Bind ViewModel.TxColorHex, Mode=TwoWay}"
-                                          MinHeight="{StaticResource AppControlHeightCompact}"
-                                          MinWidth="92">
-                                    <ComboBox.ItemTemplate>
-                                        <DataTemplate>
-                                            <StackPanel Orientation="Horizontal" Spacing="7">
-                                                <Rectangle Width="13"
-                                                           Height="13"
-                                                           RadiusX="3"
-                                                           RadiusY="3"
-                                                           Fill="{Binding Brush}"
-                                                           VerticalAlignment="Center" />
-                                                <TextBlock Text="{Binding Name}" FontSize="12" VerticalAlignment="Center" />
+                        <!-- Send options, folded into a flyout. Every switch behind this button is set once
+                             and then left alone, yet together they decided how much room the send box got.
+                             The button stays on the row so a non-default state is always one click away —
+                             and the flyout scrolls, because 行间隔 lives at its bottom and a short window
+                             must still be able to reach it. -->
+                        <Button Grid.Column="0"
+                                Style="{StaticResource AppToolbarButtonStyle}"
+                                MinHeight="{StaticResource AppControlHeightPrimary}"
+                                Padding="11,0"
+                                Margin="0,0,8,0"
+                                ToolTipService.ToolTip="发送选项：十六进制、发送回显、TX 颜色、行尾符、多行拆分与行间隔">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <FontIcon Glyph="&#xE713;" FontSize="13" />
+                                <TextBlock Text="发送设置" />
+                            </StackPanel>
+                            <Button.Flyout>
+                                <Flyout x:Name="SendSettingsFlyout" Placement="Top">
+                                    <ScrollViewer MaxHeight="420"
+                                                  VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollBarVisibility="Disabled">
+                                        <StackPanel Width="300" Spacing="10">
+                                            <TextBlock Text="发送选项" Style="{StaticResource AppSectionLabelStyle}" />
+
+                                            <CheckBox Content="十六进制发送"
+                                                      IsChecked="{x:Bind ViewModel.SendAsHex, Mode=TwoWay}" />
+                                            <CheckBox Content="显示发送数据"
+                                                      IsChecked="{x:Bind ViewModel.ShowSentData, Mode=TwoWay}" />
+
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Text="TX 颜色"
+                                                           Style="{StaticResource AppCaptionTextStyle}"
+                                                           FontFamily="{StaticResource AppMonoFontFamily}"
+                                                           ToolTipService.ToolTip="发送行的颜色。接收行颜色在左侧已打开串口列表中设置。" />
+                                                <ComboBox x:Name="TxColorComboBox"
+                                                          ItemsSource="{x:Bind ViewModel.TxColorOptions}"
+                                                          SelectedValuePath="Hex"
+                                                          SelectedValue="{x:Bind ViewModel.TxColorHex, Mode=TwoWay}"
+                                                          HorizontalAlignment="Stretch">
+                                                    <ComboBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                                                <Rectangle Width="13"
+                                                                           Height="13"
+                                                                           RadiusX="3"
+                                                                           RadiusY="3"
+                                                                           Fill="{Binding Brush}"
+                                                                           VerticalAlignment="Center" />
+                                                                <TextBlock Text="{Binding Name}" FontSize="12" VerticalAlignment="Center" />
+                                                            </StackPanel>
+                                                        </DataTemplate>
+                                                    </ComboBox.ItemTemplate>
+                                                </ComboBox>
                                             </StackPanel>
-                                        </DataTemplate>
-                                    </ComboBox.ItemTemplate>
-                                </ComboBox>
-                            </StackPanel>
 
-                            <!-- The send box is single-line, so a device that expects \r could previously
-                                 only be driven through a snippet carrying an escape. 无 is the default and
-                                 keeps the byte stream identical to what it was before this existed. -->
-                            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                                <TextBlock Text="行尾"
-                                           Style="{StaticResource AppCaptionTextStyle}"
-                                           VerticalAlignment="Center" />
-                                <ComboBox ItemsSource="{x:Bind ViewModel.SendTerminatorOptions}"
-                                          SelectedValuePath="Value"
-                                          SelectedValue="{Binding SendTerminator, Mode=TwoWay}"
-                                          MinHeight="{StaticResource AppControlHeightCompact}"
-                                          MinWidth="106"
-                                          ToolTipService.ToolTip="发送文本时自动追加的行尾符。默认「无」，即发送框里的内容原样发出；串口设备通常需要 CR。">
-                                    <ComboBox.ItemTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding Name}" />
-                                        </DataTemplate>
-                                    </ComboBox.ItemTemplate>
-                                </ComboBox>
-                            </StackPanel>
+                                            <!-- The send box is single-line, so a device that expects \r could
+                                                 previously only be driven through a snippet carrying an escape.
+                                                 无 is the default and keeps the byte stream identical to
+                                                 what it was before this existed. -->
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Text="行尾"
+                                                           Style="{StaticResource AppCaptionTextStyle}" />
+                                                <ComboBox ItemsSource="{x:Bind ViewModel.SendTerminatorOptions}"
+                                                          SelectedValuePath="Value"
+                                                          SelectedValue="{Binding SendTerminator, Mode=TwoWay}"
+                                                          HorizontalAlignment="Stretch"
+                                                          ToolTipService.ToolTip="发送文本时自动追加的行尾符。默认「无」，即发送框里的内容原样发出；串口设备通常需要 CR。">
+                                                    <ComboBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Name}" />
+                                                        </DataTemplate>
+                                                    </ComboBox.ItemTemplate>
+                                                </ComboBox>
 
-                            <!-- Only meaningful once a terminator is selected, hence the gate: with 无
-                                 the split would be a no-op, and a switch that does nothing is worse than
-                                 a greyed-out one. -->
-                            <CheckBox Content="多行拆分"
-                                      IsChecked="{x:Bind ViewModel.SplitMultilineSend, Mode=TwoWay}"
-                                      IsEnabled="{x:Bind ViewModel.CanSplitMultilineSend, Mode=OneWay}"
-                                      ToolTipService.ToolTip="勾选并选中行尾符后，输入里的换行会逐行发送（每行各带一个行尾符）；不勾选则整段内容末尾只加一个行尾符" />
+                                                <!-- Only meaningful once a terminator is selected, hence the
+                                                     gate: with 无 the split would be a no-op, and a switch that
+                                                     does nothing is worse than a greyed-out one. -->
+                                                <CheckBox Content="多行拆分"
+                                                          Margin="0,4,0,0"
+                                                          IsChecked="{x:Bind ViewModel.SplitMultilineSend, Mode=TwoWay}"
+                                                          IsEnabled="{x:Bind ViewModel.CanSplitMultilineSend, Mode=OneWay}"
+                                                          ToolTipService.ToolTip="勾选并选中行尾符后，输入里的换行会逐行发送（每行各带一个行尾符）；不勾选则整段内容末尾只加一个行尾符" />
 
-                            <!-- Line interval (F7). Zero is the default and means one write, byte-for-byte
-                                 what this app has always sent; anything above it inserts that many ms
-                                 between lines. Text rather than NumberBox so a half-typed value is left
-                                 alone instead of being rewritten under the caret. -->
-                            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                                <TextBlock Text="行间隔"
-                                           Style="{StaticResource AppCaptionTextStyle}"
-                                           VerticalAlignment="Center" />
-                                <TextBox Text="{x:Bind ViewModel.SendLineDelayText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                         MinWidth="{StaticResource AppControlHeightCompact}"
-                                         Width="72"
-                                         MinHeight="{StaticResource AppControlHeightCompact}"
-                                         InputScope="Number"
-                                         IsEnabled="{x:Bind ViewModel.CanSplitMultilineSend, Mode=OneWay}"
-                                         ToolTipService.ToolTip="多行发送时行与行之间等待的毫秒数。0 = 整段一次发出（默认，字节与改动前完全一致）；仅在选择行尾符并勾选多行拆分后生效">
-                                    <TextBox.Resources>
-                                        <Thickness x:Key="TextControlBorderThemeThickness">1</Thickness>
-                                    </TextBox.Resources>
-                                </TextBox>
-                                <TextBlock Text="ms"
-                                           Style="{StaticResource AppCaptionTextStyle}"
-                                           VerticalAlignment="Center" />
-                            </StackPanel>
+                                                <!-- Line interval (F7). Zero is the default and means one
+                                                     write, byte-for-byte what this app has always sent; anything
+                                                     above it inserts that many ms between lines. Text rather
+                                                     than NumberBox so a half-typed value is left alone instead
+                                                     of being rewritten under the caret. -->
+                                                <StackPanel Orientation="Horizontal"
+                                                            Spacing="6"
+                                                            Margin="0,4,0,0"
+                                                            VerticalAlignment="Center">
+                                                    <TextBlock Text="行间隔"
+                                                               Style="{StaticResource AppCaptionTextStyle}"
+                                                               VerticalAlignment="Center" />
+                                                    <TextBox Text="{x:Bind ViewModel.SendLineDelayText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                             MinWidth="{StaticResource AppControlHeightCompact}"
+                                                             Width="72"
+                                                             MinHeight="{StaticResource AppControlHeightCompact}"
+                                                             InputScope="Number"
+                                                             IsEnabled="{x:Bind ViewModel.CanSplitMultilineSend, Mode=OneWay}"
+                                                             ToolTipService.ToolTip="多行发送时行与行之间等待的毫秒数。0 = 整段一次发出（默认，字节与改动前完全一致）；仅在选择行尾符并勾选多行拆分后生效">
+                                                        <TextBox.Resources>
+                                                            <Thickness x:Key="TextControlBorderThemeThickness">1</Thickness>
+                                                        </TextBox.Resources>
+                                                    </TextBox>
+                                                    <TextBlock Text="ms"
+                                                               Style="{StaticResource AppCaptionTextStyle}"
+                                                               VerticalAlignment="Center" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                </Flyout>
+                            </Button.Flyout>
+                        </Button>
 
-                            <!-- Send history panel (F8). Overlaid, and read-only over the same list the ↑/↓
-                                 keys recall from — it does not replace that recall. -->
-                            <Button Style="{StaticResource AppToolbarButtonStyle}"
-                                    MinHeight="{StaticResource AppControlHeightCompact}"
-                                    Padding="9,0"
-                                    Click="OpenSendHistory_Click"
-                                    ToolTipService.ToolTip="查看、搜索并挑选之前发送过的内容（也可用 ↑/↓ 逐条召回）">
-                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                    <FontIcon Glyph="&#xE81C;" FontSize="13" />
-                                    <TextBlock Text="发送历史" />
-                                </StackPanel>
-                            </Button>
-
-                            <!-- 发送目标。文字始终可见，因为这个功能最容易出的错就是"以为在广播、其实只发
-                                 了一个口"。菜单项在 SendTargetFlyout_Opening 里动态构建——MenuFlyout 没有
-                                 ItemsSource，与端口颜色菜单同一个形状。 -->
-                            <Button Style="{StaticResource AppToolbarButtonStyle}"
-                                    MinHeight="{StaticResource AppControlHeightCompact}"
-                                    Padding="9,0"
-                                    ToolTipService.ToolTip="选择本次发送的目标串口。默认「全部」；Tuning 推送不受此设置影响，仍广播到所有已打开串口。">
-                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                    <FontIcon Glyph="&#xE8E5;" FontSize="13" />
-                                    <TextBlock Text="{x:Bind ViewModel.SendTargetDisplay, Mode=OneWay}" />
-                                </StackPanel>
-                                <Button.Flyout>
-                                    <MenuFlyout x:Name="SendTargetFlyout"
-                                                Placement="Top"
-                                                Opening="SendTargetFlyout_Opening" />
-                                </Button.Flyout>
-                            </Button>
-                        </StackPanel>
-
+                        <!-- MinWidth rather than a fixed width: the box absorbs every width change the
+                             row has to give (it is the `*` column) and this is the floor below which it
+                             stops being an input field. Everything to its left and right is Auto, so the
+                             floor is reached by the buttons staying put — not by pushing them out. -->
                         <TextBox x:Name="SendTextBox"
                                  Grid.Column="1"
+                                 MinWidth="140"
                                  Text="{x:Bind ViewModel.SendText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                  PlaceholderText="输入要发送的数据，回车发送…"
                                  KeyDown="SendTextBox_KeyDown"
@@ -1291,19 +1373,20 @@
 
                         <StackPanel Grid.Column="2"
                                     Orientation="Horizontal"
-                                    Spacing="8"
+                                    Spacing="6"
                                     Margin="8,0,0,0">
                             <!-- Quick-send library. A Button carrying a Flyout opens it on click, which is
                                  the whole interaction: pick a saved payload and it is broadcast to every
-                                 open port through the same path as the send box. -->
-                            <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                 open port through the same path as the send box.
+
+                                 Icon-only since the settings moved out of this row: the icon cluster is the
+                                 shape the log toolbar already uses, and it buys the send box back the width
+                                 the words used to cost. The tooltip is the label. -->
+                            <Button Style="{StaticResource AppToolbarIconButtonStyle}"
                                     MinHeight="{StaticResource AppControlHeightPrimary}"
-                                    Padding="12,0"
-                                    ToolTipService.ToolTip="常用指令：保存并一键发送">
-                                <StackPanel Orientation="Horizontal" Spacing="7">
-                                    <FontIcon Glyph="&#xE950;" FontSize="13" />
-                                    <TextBlock Text="快捷" />
-                                </StackPanel>
+                                    Padding="8"
+                                    ToolTipService.ToolTip="快捷指令：保存常用内容并一键发送">
+                                <FontIcon Glyph="&#xE950;" FontSize="14" />
                                 <Button.Flyout>
                                     <Flyout x:Name="QuickSendFlyout" Placement="Top">
                                         <StackPanel Width="340" Spacing="8">
@@ -1372,6 +1455,34 @@
                                                     ToolTipService.ToolTip="填写名称与分组后保存" />
                                         </StackPanel>
                                     </Flyout>
+                                </Button.Flyout>
+                            </Button>
+
+                            <!-- Send history panel (F8). Overlaid, and read-only over the same list the
+                                 ↑/↓ keys recall from — it does not replace that recall. -->
+                            <Button Style="{StaticResource AppToolbarIconButtonStyle}"
+                                    MinHeight="{StaticResource AppControlHeightPrimary}"
+                                    Padding="8"
+                                    Click="OpenSendHistory_Click"
+                                    ToolTipService.ToolTip="发送历史：查看、搜索并挑选之前发送过的内容（也可用 ↑/↓ 逐条召回）">
+                                <FontIcon Glyph="&#xE81C;" FontSize="13" />
+                            </Button>
+
+                            <!-- 发送目标。文字始终可见，因为这个功能最容易出的错就是"以为在广播、其实只发
+                                了一个口"。菜单项在 SendTargetFlyout_Opening 里动态构建——MenuFlyout 没有
+                                ItemsSource，与端口颜色菜单同一个形状。 -->
+                            <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                    MinHeight="{StaticResource AppControlHeightPrimary}"
+                                    Padding="9,0"
+                                    ToolTipService.ToolTip="选择本次发送的目标串口。默认「全部」；Tuning 推送不受此设置影响，仍广播到所有已打开串口。">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE8E5;" FontSize="13" />
+                                    <TextBlock Text="{x:Bind ViewModel.SendTargetDisplay, Mode=OneWay}" />
+                                </StackPanel>
+                                <Button.Flyout>
+                                    <MenuFlyout x:Name="SendTargetFlyout"
+                                                Placement="Top"
+                                                Opening="SendTargetFlyout_Opening" />
                                 </Button.Flyout>
                             </Button>
 
