@@ -65,7 +65,14 @@
                             <ControlTemplate TargetType="ListViewItem">
                                 <!-- Minimal template: only Normal/Selected states. PointerOver removed because
                                      wheel-scrolling parades items under a stationary cursor, triggering rapid
-                                     state changes and per-item layout invalidation. -->
+                                     state changes and per-item layout invalidation.
+
+                                     The selection highlight stays a square-edged wash. The rest of the app
+                                     moved to rounded surfaces (ControlCornerRadius 6 / AppCornerRadiusCard 10),
+                                     and this template deliberately opts out of that: it does not bind
+                                     CornerRadius at all, so the global radius never reaches a log row. A
+                                     rounded highlight on a 20 px row inside a virtualizing list reads as an
+                                     artefact, and the row must keep its two-element shape. -->
                                 <Grid x:Name="Root"
                                       Background="Transparent"
                                       Padding="4,0">

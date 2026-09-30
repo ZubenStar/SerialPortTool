@@ -95,6 +95,11 @@ public sealed partial class QuickCommandPalette : UserControl
         // Assigned once here rather than bound in XAML: the collection is a fixed instance for the
         // lifetime of the control, so a binding would only add a layer that can be got wrong.
         ResultList.ItemsSource = _results;
+
+        // The card's depth is markup, so it has to be taken back here when Windows' animations are
+        // switched off. The main window is resolved after App.OnLaunched has read the preference,
+        // which is what makes it readable at this point in the lifetime.
+        MotionPreferences.StripDepthIfDisabled(PaletteCard);
     }
 
     /// <summary>True while the overlay is up.</summary>

@@ -196,6 +196,9 @@ public partial class App : Application
         // thread throws, so the guard below is what keeps this async method safe.
         var dispatcher = DispatcherQueue.GetForCurrentThread();
 
+        // Before the window is resolved, so before any template is instantiated. See the remarks.
+        ApplyMotionPreference();
+
         await LoadInitialThemePreferenceAsync();
 
         if (dispatcher is not null && !dispatcher.HasThreadAccess)
@@ -209,6 +212,41 @@ public partial class App : Application
         }
 
         CreateAndActivateMainWindow();
+    }
+
+    /// <summary>
+    /// Switches the hover/press colour transition off when Windows' animations are switched off.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The transition is one <c>BrushTransition</c> resource (<c>AppHoverTransition</c>) shared by
+    /// every button-family template in <c>Themes/Controls.xaml</c>, and <c>Duration</c> is its only
+    /// knob — so zeroing this single instance is the whole guard, with no second copy of the
+    /// templates. It has to run <b>before</b> the first element exists: the reference is taken when
+    /// a template is instantiated, and mutating the object afterwards would still reach the
+    /// templates (they hold the same object) but the timing makes the intent unambiguous.
+    /// </para>
+    /// <para>
+    /// Every other animation in this app — the sidebar width, the appearance crossfade, the
+    /// baud-rate banner's reveal and dismiss — is a code-built <c>Storyboard</c> and reads the
+    /// preference directly. This is the one that cannot, because it lives in markup.
+    /// </para>
+    /// </remarks>
+    private void ApplyMotionPreference()
+    {
+        if (MotionPreferences.AnimationsEnabled)
+        {
+            return;
+        }
+
+        // Microsoft.UI.Xaml.BrushTransition (not ...Media) in the Windows App SDK — the type moved
+        // out of the Media namespace when the XAML stack was lifted out of UWP.
+        if (Resources.TryGetValue("AppHoverTransition", out var resource) &&
+            resource is BrushTransition transition)
+        {
+            transition.Duration = TimeSpan.Zero;
+            Log.Information("System animations are disabled; the hover/press transition is switched off");
+        }
     }
 
     private void CreateAndActivateMainWindow()

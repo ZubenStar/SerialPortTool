@@ -13,7 +13,7 @@
         <!-- Duplicated from the palette rather than shared: both are the app's only translucent surface and
              App.xaml deliberately holds only converters. Changing one without the other would make two
              "press F2 / 历史" surfaces differ in dimness for no reason. -->
-        <SolidColorBrush x:Key="HistoryScrimBrush" Color="#73101317" />
+        <SolidColorBrush x:Key="HistoryScrimBrush" Color="#730F1219" />
 
         <DataTemplate x:Key="SendHistoryRowTemplate" x:DataType="x:String">
             <Grid ColumnSpacing="8">
@@ -47,13 +47,18 @@
     <Grid x:Name="Overlay" Visibility="Collapsed">
         <Grid x:Name="Scrim" Background="{StaticResource HistoryScrimBrush}" Tapped="Scrim_Tapped" />
 
-        <Border Style="{StaticResource AppCardStyle}"
+        <!-- Same depth treatment as the command palette: two surfaces that appear in the same place
+             for the same reason must not disagree about how far off the page they float. -->
+        <Border x:Name="HistoryCard"
+                Style="{StaticResource AppCardStyle}"
                 Width="560"
                 MaxHeight="440"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Top"
                 Margin="0,88,0,0"
-                Padding="0">
+                Padding="0"
+                Shadow="{StaticResource AppOverlayShadow}"
+                Translation="0,0,32">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />

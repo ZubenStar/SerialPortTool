@@ -19,7 +19,6 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Linq;
 using Windows.Storage.Pickers;
-using Windows.UI.ViewManagement;
 using WinRT.Interop;
 
 namespace SerialPortTool;
@@ -127,17 +126,16 @@ public sealed partial class MainWindow : Window
         // this window was resolved), and before SetupTitleBar so the caption buttons get coloured on
         // the same pass.
         // ---------------------------------------------------------------------------------
-        // UISettings is a system API and can be refused on locked-down or unusual configurations;
-        // assuming animations are enabled is a far better outcome than failing to start.
-        try
-        {
-            _animationsEnabled = new UISettings().AnimationsEnabled;
-        }
-        catch (Exception ex)
-        {
-            _animationsEnabled = true;
-            Serilog.Log.Warning(ex, "Could not read the system animation preference; assuming animations are enabled");
-        }
+        // Read through MotionPreferences rather than straight from UISettings (v2.5.2): the same
+        // answer also decides whether App.OnLaunched zeroes the shared hover/press transition and
+        // whether the floating surfaces keep their depth, and one setting with three independent
+        // readers is one setting that can disagree with itself. The "cannot be read" fallback and
+        // its log line live there now.
+        _animationsEnabled = MotionPreferences.AnimationsEnabled;
+
+        // The log area's empty-state card is the third floating surface; the other two strip their
+        // own depth in their constructors (the palette and the history panel).
+        MotionPreferences.StripDepthIfDisabled(LogEmptyStateCard);
 
         ViewModel.InitializeThemePreference(App.Current.InitialThemePreference);
         _themePreference = ViewModel.ThemePreference;

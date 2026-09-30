@@ -1390,6 +1390,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>Drives the collapse of the channel legend strip when there is nothing to legend.</summary>
     public bool HasOpenPorts => OpenPortCount > 0;
 
+    /// <summary>
+    /// Number of ports the last scan found, republished for the rail's 可用串口 card header.
+    /// </summary>
+    /// <remarks>
+    /// A plain int rather than binding straight to <c>AvailablePorts.Count</c>: the header has to be
+    /// able to say "0" honestly (a scan that found nothing is a different answer from a scan that has
+    /// not run yet, and both look identical in an empty list). It is written in exactly one place —
+    /// the end of <c>ScanPortsAsync</c>, which is the only code that mutates the collection.
+    /// </remarks>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(AvailablePortCountDisplay))]
+    private int _availablePortCount;
+
+    /// <summary>Scan-result count for the 可用串口 card header.</summary>
+    public string AvailablePortCountDisplay => AvailablePortCount == 0 ? "未扫描到" : $"{AvailablePortCount} 个";
+
     /// <summary>Combined RX/TX totals across every open port, refreshed on the throttled stats tick.</summary>
     [ObservableProperty]
     private string _totalTrafficDisplay = "↓ 0 B  ↑ 0 B";
@@ -2250,6 +2266,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
                 AvailablePorts.Add(item);
             }
+
+            // Published for the 可用串口 card header. Set here rather than in a collection hook
+            // because this method is the only writer of AvailablePorts.
+            AvailablePortCount = AvailablePorts.Count;
 
             StatusMessage = $"Found {AvailablePorts.Count} available ports";
             _logger.LogInformation("Port scan completed, found {Count} ports", AvailablePorts.Count);

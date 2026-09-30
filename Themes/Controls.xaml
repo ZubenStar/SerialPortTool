@@ -11,8 +11,21 @@
         template carries real behaviour (ComboBox with IsEditable, ScrollBar, ListViewItem) is
         deliberately avoided — see the note at the top of Tokens.xaml.
 
-        What is left here is the button family, where the stock template has no notion of the
-        compact instrument silhouettes we want (a quiet icon button, a 1px press sink).
+        What is left here is the button family (a quiet icon button, a 1px press sink) plus the
+        card/chip silhouettes.
+
+        Two rules apply to every template below (v2.5.2):
+
+        * BackgroundTransition="{StaticResource AppHoverTransition}" — the one shared transitions
+          object Tokens.xaml defines, so a hover or a press fades instead of snapping. It is a
+          resource rather than an inline value because App.OnLaunched has to be able to zero its
+          duration when the system animation preference is off; a per-template instance would be
+          unreachable from code.
+
+        * VisualState.Setters only ever touch Background / BorderBrush / Opacity. Translation,
+          Scale and Rotation are composition-backed and cannot be resolved as a Setter target — a
+          setter naming one of them compiles, loads, and then throws the first time the state is
+          entered (see the "WinUI 3 避坑约定" table in AGENTS.md).
     -->
 
     <!-- =============================== Text button =============================== -->
@@ -29,6 +42,7 @@
             Padding="{TemplateBinding Padding}"
             HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
             VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+            BackgroundTransition="{StaticResource AppHoverTransition}"
             AutomationProperties.AccessibilityView="Raw">
             <VisualStateManager.VisualStateGroups>
                 <VisualStateGroup x:Name="CommonStates">
@@ -48,6 +62,19 @@
                         <VisualState.Setters>
                             <Setter Target="Presenter.Background" Value="{ThemeResource AppControlFillDisabledBrush}" />
                             <Setter Target="Presenter.Opacity" Value="0.45" />
+                        </VisualState.Setters>
+                    </VisualState>
+                </VisualStateGroup>
+                <!-- Keyboard focus is the accent edge on the presenter that already exists: no extra
+                     element, no thickness change (which would move the label by a pixel when the
+                     ring appears). PointerFocused is declared but left empty on purpose — a click
+                     should not leave a ring behind. -->
+                <VisualStateGroup x:Name="FocusStates">
+                    <VisualState x:Name="Unfocused" />
+                    <VisualState x:Name="PointerFocused" />
+                    <VisualState x:Name="Focused">
+                        <VisualState.Setters>
+                            <Setter Target="Presenter.BorderBrush" Value="{ThemeResource AppAccentBrush}" />
                         </VisualState.Setters>
                     </VisualState>
                 </VisualStateGroup>
@@ -95,6 +122,7 @@
             Padding="{TemplateBinding Padding}"
             HorizontalContentAlignment="Center"
             VerticalContentAlignment="Center"
+            BackgroundTransition="{StaticResource AppHoverTransition}"
             AutomationProperties.AccessibilityView="Raw">
             <VisualStateManager.VisualStateGroups>
                 <VisualStateGroup x:Name="CommonStates">
@@ -112,6 +140,15 @@
                     <VisualState x:Name="Disabled">
                         <VisualState.Setters>
                             <Setter Target="Presenter.Opacity" Value="0.4" />
+                        </VisualState.Setters>
+                    </VisualState>
+                </VisualStateGroup>
+                <VisualStateGroup x:Name="FocusStates">
+                    <VisualState x:Name="Unfocused" />
+                    <VisualState x:Name="PointerFocused" />
+                    <VisualState x:Name="Focused">
+                        <VisualState.Setters>
+                            <Setter Target="Presenter.BorderBrush" Value="{ThemeResource AppAccentBrush}" />
                         </VisualState.Setters>
                     </VisualState>
                 </VisualStateGroup>
@@ -153,6 +190,7 @@
             Padding="{TemplateBinding Padding}"
             HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
             VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+            BackgroundTransition="{StaticResource AppHoverTransition}"
             AutomationProperties.AccessibilityView="Raw">
             <VisualStateManager.VisualStateGroups>
                 <VisualStateGroup x:Name="CommonStates">
@@ -171,6 +209,17 @@
                         <VisualState.Setters>
                             <Setter Target="Presenter.Background" Value="{ThemeResource AppControlFillDisabledBrush}" />
                             <Setter Target="Presenter.Opacity" Value="0.45" />
+                        </VisualState.Setters>
+                    </VisualState>
+                </VisualStateGroup>
+                <!-- The ring has to come from the on-accent colour: a border in the accent would be
+                     invisible against the accent fill. -->
+                <VisualStateGroup x:Name="FocusStates">
+                    <VisualState x:Name="Unfocused" />
+                    <VisualState x:Name="PointerFocused" />
+                    <VisualState x:Name="Focused">
+                        <VisualState.Setters>
+                            <Setter Target="Presenter.BorderBrush" Value="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
                         </VisualState.Setters>
                     </VisualState>
                 </VisualStateGroup>
@@ -205,6 +254,7 @@
             Padding="{TemplateBinding Padding}"
             HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
             VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+            BackgroundTransition="{StaticResource AppHoverTransition}"
             AutomationProperties.AccessibilityView="Raw">
             <VisualStateManager.VisualStateGroups>
                 <VisualStateGroup x:Name="CommonStates">
@@ -235,6 +285,18 @@
                         </VisualState.Setters>
                     </VisualState>
                     <VisualState x:Name="Indeterminate" />
+                </VisualStateGroup>
+                <!-- Declared after CheckStates on purpose: the later group wins for a property both
+                     set, so a focused-and-checked switch shows the strong text-coloured ring rather
+                     than the accent edge it already has while checked. -->
+                <VisualStateGroup x:Name="FocusStates">
+                    <VisualState x:Name="Unfocused" />
+                    <VisualState x:Name="PointerFocused" />
+                    <VisualState x:Name="Focused">
+                        <VisualState.Setters>
+                            <Setter Target="Presenter.BorderBrush" Value="{ThemeResource AppTextPrimaryBrush}" />
+                        </VisualState.Setters>
+                    </VisualState>
                 </VisualStateGroup>
             </VisualStateManager.VisualStateGroups>
         </ContentPresenter>
@@ -278,21 +340,88 @@
     </Style>
 
     <!-- =============================== Card / panel skeleton =============================== -->
-    <!-- The shared "panel" silhouette: raised surface, hairline edge, card radius. A section is
+    <!-- The shared "panel" silhouette: raised surface, soft edge, card radius. A section is
          labelled with AppSectionLabelStyle (Themes/Tokens.xaml); this is what an element that has to
-         read as floating above the working surface uses — today the log area's empty state, and the
-         starting point for any future panel so the silhouette does not get re-invented per surface.
+         read as floating above the working surface uses.
 
-         Borders rather than shadows on purpose: ThemeShadow needs a Z translation plus a receiver
-         list, and it is a composition cost paid on every frame the element is alive. The tonal step
-         (AppCardBackgroundBrush) plus the hairline already carries the hierarchy on both palettes,
-         including high contrast, where both keys collapse onto the system colours. -->
+         Depth policy (v2.5.2): the cards that live in the configuration rail, the toolbar and the
+         send row express their step with the tonal pair (AppCardBackgroundBrush over the page's
+         AppWindowBackgroundBrush) plus a soft border — they are permanent residents, and a
+         ThemeShadow is a composition cost paid for as long as its element is alive. The surfaces
+         that genuinely float over the data (命令面板 / 发送历史 / 日志空态卡) add
+         Shadow="{StaticResource AppOverlayShadow}" + Translation="0,0,32" at the point of use,
+         which is where the depth actually means something. High contrast collapses both keys onto
+         the system colours. -->
     <Style x:Key="AppCardStyle" TargetType="Border">
         <Setter Property="Background" Value="{ThemeResource AppCardBackgroundBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource AppCardBorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="{StaticResource AppCornerRadiusCard}" />
         <Setter Property="Padding" Value="24,20" />
+    </Style>
+
+    <!-- Rail section card: same silhouette, tighter padding — the rail is 272 px wide and a 24 px
+         inset there costs the content a fifth of its usable width. -->
+    <Style x:Key="AppSectionCardStyle" TargetType="Border" BasedOn="{StaticResource AppCardStyle}">
+        <Setter Property="Padding" Value="12" />
+    </Style>
+
+    <!-- Inset group: a block *inside* a card (the rail's 自动化 switches, the send-settings
+         flyout's option groups). A card inside a card reads as a mistake, so the nested block drops
+         a level instead: sunken fill, control radius, same border family. -->
+    <Style x:Key="AppInsetGroupStyle" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource AppSurfaceSunkenBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource AppCardBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource AppCornerRadiusControl}" />
+        <Setter Property="Padding" Value="10" />
+    </Style>
+
+    <!-- Card header: the title row inside a section card. One step stronger than
+         AppSectionLabelStyle, which stays the small letter-spaced label used for groups *inside* a
+         card (自动化, 发送选项, …). -->
+    <Style x:Key="AppCardTitleStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppUiFontFamily}" />
+        <Setter Property="FontSize" Value="{StaticResource AppFontSizeBody}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{ThemeResource AppTextPrimaryBrush}" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="TextWrapping" Value="NoWrap" />
+    </Style>
+
+    <!-- =============================== Chip =============================== -->
+    <!-- One value in a rounded capsule ("3 个串口", "RX 12.4 KB · TX 1.1 KB"). Chips replaced the
+         vertical rules that used to separate the status-bar readouts: a rule says "these are
+         different things", a capsule says "this is one value", and the numbers used to read as one
+         run-on line. Pill radius, so the shape is unmistakable at ~20 px tall. -->
+    <Style x:Key="AppChipStyle" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource AppChipBackgroundBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource AppChipBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource AppCornerRadiusPill}" />
+        <Setter Property="Padding" Value="8,2" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
+    <Style x:Key="AppChipTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppMonoFontFamily}" />
+        <Setter Property="FontSize" Value="{StaticResource AppFontSizeCaption}" />
+        <Setter Property="Foreground" Value="{ThemeResource AppTextSecondaryBrush}" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="TextWrapping" Value="NoWrap" />
+    </Style>
+
+    <!-- Segmented group: the capsule that holds a run of related icon buttons (the log toolbar's
+         全选 / 复制 / 导出 / 清空). The band behind them is what turns four separate hover targets
+         into one visible cluster — the buttons keep their own hover wash inside it, so nothing about
+         their hit area or their states changes. -->
+    <Style x:Key="AppSegmentedGroupStyle" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource AppSurfaceSunkenBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource AppHairlineBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource AppCornerRadiusPill}" />
+        <Setter Property="Padding" Value="2" />
+        <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
 
     <!-- =============================== Empty state =============================== -->
