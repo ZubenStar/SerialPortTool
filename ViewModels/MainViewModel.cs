@@ -382,9 +382,148 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // Cheap to maintain here and it keeps the status bar off a per-frame path.
         OpenPortCount = _portsByName.Count;
 
+        // The target set only ever names open ports. Dropped here rather than at send time so the flyout's
+        // ticks and the button's label can never disagree with what is actually open.
+        PruneSendTargets();
+
         // "全部关闭" is only enabled while at least one port is open.
         CloseAllPortsCommand.NotifyCanExecuteChanged();
     }
+
+    // ---- 发送目标（v2.4.0） ---------------------------------------------------------------------
+
+    /// <summary>
+    /// 发送目标：本次会话内选中的端口名。**空集合表示「全部已打开的串口」**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Session-only, deliberately not persisted. It is a transient intent, and a saved set naming a port that
+    /// is no longer open would only mislead. An empty set meaning "all" is what keeps the default behaviour
+    /// byte-for-byte what it was before targeting existed.
+    /// </para>
+    /// <para>
+    /// Touched on the UI thread only (the flyout, <see cref="PruneSendTargets"/>, and
+    /// <see cref="SendPayloadAsync"/>), so it needs no synchronisation.
+    /// </para>
+    /// </remarks>
+    private readonly HashSet<string> _sendTargetPorts = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>是否发给全部已打开串口。</summary>
+    public bool IsSendingToAllPorts => _sendTargetPorts.Count == 0;
+
+    /// <summary>
+    /// 「目标」按钮上的文字。
+    /// </summary>
+    /// <remarks>
+    /// Always visible on the send row rather than hidden inside the flyout: the failure this feature invites is
+    /// "I thought I was broadcasting", so the current scope has to be readable without opening anything.
+    /// </remarks>
+    public string SendTargetDisplay => _sendTargetPorts.Count switch
+    {
+        0 => "全部",
+        1 => _sendTargetPorts.First(),
+        _ => $"{_sendTargetPorts.Count} 个串口",
+    };
+
+    /// <summary>某个端口当前是否在目标内（「全部」时每个端口都算在内）。</summary>
+    public bool IsSendTargetSelected(string portName)
+        => _sendTargetPorts.Count == 0 || _sendTargetPorts.Contains(portName);
+
+    /// <summary>
+    /// 勾选 / 取消一个目标端口。
+    /// </summary>
+    /// <remarks>
+    /// Un-ticking the first port materialises the full set, so the gesture reads as "everything except this
+    /// one" rather than "only this one" — the opposite reading would make the very first click do the most
+    /// surprising thing available. Re-ticking the last one collapses back to 全部, so the common case keeps
+    /// reading as 全部 instead of as a list that happens to contain every port.
+    /// </remarks>
+    public void SetSendTargetSelected(string portName, bool selected)
+    {
+        if (_sendTargetPorts.Count == 0)
+        {
+            foreach (var port in OpenPorts)
+            {
+                _sendTargetPorts.Add(port.PortName);
+            }
+        }
+
+        var changed = selected
+            ? _sendTargetPorts.Add(portName)
+            : _sendTargetPorts.Remove(portName);
+
+        if (_sendTargetPorts.Count == OpenPorts.Count)
+        {
+            _sendTargetPorts.Clear();
+            changed = true;
+        }
+
+        if (changed)
+        {
+            NotifySendTargetChanged();
+        }
+    }
+
+    /// <summary>恢复为「全部」。</summary>
+    public void SelectAllSendTargets()
+    {
+        if (_sendTargetPorts.Count == 0)
+        {
+            return;
+        }
+
+        _sendTargetPorts.Clear();
+        NotifySendTargetChanged();
+    }
+
+    /// <summary>
+    /// 剔除已经关闭的端口。
+    /// </summary>
+    /// <remarks>
+    /// A stale name left in the set would make the flyout's ticks disagree with reality, and would keep a
+    /// "N 个串口" label naming ports that no longer exist.
+    /// </remarks>
+    private void PruneSendTargets()
+    {
+        if (_sendTargetPorts.Count == 0)
+        {
+            return;
+        }
+
+        if (_sendTargetPorts.RemoveWhere(portName => !_portsByName.ContainsKey(portName)) > 0)
+        {
+            NotifySendTargetChanged();
+        }
+    }
+
+    private void NotifySendTargetChanged()
+    {
+        OnPropertyChanged(nameof(SendTargetDisplay));
+        OnPropertyChanged(nameof(IsSendingToAllPorts));
+    }
+
+    /// <summary>
+    /// 本次发送的目标端口。
+    /// </summary>
+    /// <remarks>
+    /// The intersection with <see cref="OpenPorts"/> is computed here rather than trusting the stored set, so
+    /// a set that outlived its ports can never address a port that is gone.
+    /// </remarks>
+    private List<string> ResolveSendTargets()
+        => OpenPorts
+            .Select(port => port.PortName)
+            .Where(IsSendTargetSelected)
+            .ToList();
+
+    /// <summary>
+    /// 发送结果里的目标说明：只在"没有发给全部已打开串口"时才点名。
+    /// </summary>
+    /// <remarks>
+    /// The one mistake this feature invites is believing a partial send was a broadcast, so a partial send has
+    /// to say so in the place the outcome is already reported.
+    /// </remarks>
+    private string DescribeSendTargets(IReadOnlyList<string> targetPorts)
+        => IsSendingToAllPorts ? string.Empty : $"（目标：{string.Join(", ", targetPorts)}）";
 
     // AllLogs is the unfiltered back-buffer used by FilterLogs() when SearchText changes. It is
     // never bound to the UI (only DisplayLogs is — see MainWindow.xaml). Holding it as an
@@ -1031,6 +1170,33 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _appearanceDisplay = "跟随系统";
 
+    /// <summary>日志行字号的设置键。</summary>
+    private const string LogFontSizeSettingKey = "LogFontSize";
+
+    /// <summary>
+    /// 日志行字号，绑定到 <c>LogListView.FontSize</c>，行内文本继承它。
+    /// </summary>
+    /// <remarks>
+    /// A double bound straight to the control's inherited <c>FontSize</c>. The row template no longer hard-codes
+    /// a size, which is what makes the setting expressible at all — and what lets the control's wheel step and
+    /// bottom slack follow it. The bounds and the step live in <see cref="LogFontScale"/>, shared with the
+    /// loader that reads a hand-edited settings file.
+    /// </remarks>
+    [ObservableProperty]
+    private double _logFontSize = LogFontScale.Default;
+
+    partial void OnLogFontSizeChanged(double value)
+    {
+        _ = _settingsService.SaveSettingAsync(LogFontSizeSettingKey, (int)Math.Round(value));
+    }
+
+    /// <summary>调整日志字号（Ctrl+滚轮 / Ctrl+加号、减号）。</summary>
+    public void AdjustLogFontSize(int steps)
+        => LogFontSize = LogFontScale.Adjust(LogFontSize, steps);
+
+    /// <summary>恢复默认日志字号（Ctrl+0）。</summary>
+    public void ResetLogFontSize() => LogFontSize = LogFontScale.Default;
+
     /// <summary>
     /// Adopts the preference read from disk at startup <em>without</em> writing it back.
     /// </summary>
@@ -1096,7 +1262,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         foreach (var entry in AllLogs)
         {
-            entry.ColorHex = PortColorPalette.Resolve(entry.ColorHex, isDark);
+            // Through LogRowColorPalette, not PortColorPalette directly: an event row's grey is not a palette
+            // slot, and Resolve returns an unrecognised hex unchanged — so the direct call would leave every
+            // event row on the previous appearance while the data rows moved.
+            entry.ColorHex = LogRowColorPalette.Resolve(entry.Kind, entry.ColorHex, isDark);
         }
 
         // Both swatch sets, not just the TX one: the sidebar's colour menu is built from
@@ -1551,6 +1720,21 @@ public partial class MainViewModel : ObservableObject, IDisposable
         MaxUiLogEntriesPerFlush * (DegradedFlushIntervalMs / FlushIntervalMs);
 
     private const int ErrorStatusThrottleMs = 250;
+
+    /// <summary>
+    /// 同一事件行在窗口内重复时折叠成计数（见 <see cref="ReportPortEvent"/>）。
+    /// </summary>
+    /// <remarks>
+    /// One second: the same order of magnitude as the status bar's own throttle. A frame-error storm runs at
+    /// 30+/s, so without a window the log would be mostly error rows; with a much longer one the "how bad is
+    /// it" signal would arrive too late to correlate with what the device was doing.
+    /// </remarks>
+    private const int EventRepeatWindowMs = 1000;
+
+    /// <summary>事件行的重复计数窗口。只在 UI 线程上访问，因此不需要锁。</summary>
+    private readonly EventAggregateWindow _eventAggregates = new();
+
+    private DispatcherQueueTimer? _eventAggregateTimer;
     // Port stat counters don't need 20Hz UI updates; ~4Hz is visually identical and skips
     // most per-flush GetStatistics/UpdateStatistics work.
     private const int StatsRefreshIntervalMs = 250;
@@ -1844,6 +2028,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
         TxColorHex = await _settingsService.LoadSettingAsync("TxColorHex", PortColorPalette.DefaultTxHex);
         RxColorHex = await _settingsService.LoadSettingAsync("RxColorHex", PortColorPalette.DefaultRxHex);
         IsSidebarCollapsed = await _settingsService.LoadSettingAsync(SidebarCollapsedSettingKey, 0) == 1;
+
+        // Clamped rather than trusted: a hand-edited settings.json naming 4 or 400 must not produce a log that
+        // cannot be read or a row taller than the viewport. Through the same helper the setter uses, so the two
+        // cannot disagree about the range.
+        LogFontSize = LogFontScale.Clamp(
+            await _settingsService.LoadSettingAsync(LogFontSizeSettingKey, (int)LogFontScale.Default));
 
         // Load tuning settings. The master switch is read first: the paths and the listening preference
         // are still loaded (they are preserved across a disable), but nothing may start listening while
@@ -2964,12 +3154,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </remarks>
     private async Task SendPayloadAsync(string text, bool asHex)
     {
-        var targetPorts = OpenPorts
-            .Select(port => port.PortName)
-            .ToList();
-        if (targetPorts.Count == 0)
+        if (OpenPorts.Count == 0)
         {
             StatusMessage = "请先打开一个串口";
+            return;
+        }
+
+        // Targeting is applied here and nowhere else: the send box, the quick-send flyout and the F2 palette
+        // all funnel through this method, so one filter keeps all three consistent. Tuning is deliberately not
+        // included — SendTuningFileAsync has its own worker and its whole design is "broadcast to every open
+        // port".
+        var targetPorts = ResolveSendTargets();
+        if (targetPorts.Count == 0)
+        {
+            // Unreachable while PruneSendTargets runs on every change to OpenPorts, but a send that silently
+            // does nothing is worse than a message that should never appear.
+            StatusMessage = "所选目标串口均已关闭，请重新选择发送目标";
             return;
         }
 
@@ -3019,12 +3219,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // under "向 N 个串口发送 X 字节" would read as "X each" — a number that is wrong for every port.
             var bytesPerPort = payloads[targetPorts[0]].Length;
             var uniformPayloadSize = payloads.Values.All(bytes => bytes.Length == bytesPerPort);
+            var targetNote = DescribeSendTargets(targetPorts);
 
-            StatusMessage = targetPorts.Count == 1
+            StatusMessage = (targetPorts.Count == 1
                 ? $"正在发送 {bytesPerPort} 字节..."
                 : uniformPayloadSize
                     ? $"正在向 {targetPorts.Count} 个串口发送 {bytesPerPort} 字节..."
-                    : $"正在向 {targetPorts.Count} 个串口发送（各端口按自身编码，字节数不同）...";
+                    : $"正在向 {targetPorts.Count} 个串口发送（各端口按自身编码，字节数不同）...")
+                + targetNote;
 
             var sendResults = await SendDataToPortsAsync(targetPorts, portName => payloads[portName]);
             var successfulPorts = sendResults
@@ -3056,11 +3258,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            StatusMessage = targetPorts.Count == 1
+            StatusMessage = (targetPorts.Count == 1
                 ? $"已发送 {bytesPerPort} 字节"
                 : uniformPayloadSize
                     ? $"已向 {targetPorts.Count} 个串口发送 {bytesPerPort} 字节"
-                    : $"已向 {targetPorts.Count} 个串口发送（各端口按自身编码，字节数不同）";
+                    : $"已向 {targetPorts.Count} 个串口发送（各端口按自身编码，字节数不同）")
+                + targetNote;
         }
         catch (Exception ex)
         {
@@ -3183,7 +3386,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 Timestamp = now,
                 PortName = portName,
                 Content = BuildSyntheticLine(i),
-                IsReceived = true,
+                Kind = LogEntryKind.Received,
                 ColorHex = colorHex,
             });
         }
@@ -3256,7 +3459,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     #endregion
 
     /// <summary>
-    /// Queues a locally generated (TX / tuning) entry for the next UI flush.
+    /// Queues a locally generated entry — TX, tuning summary, or a connection event — for the next UI flush.
     /// </summary>
     /// <remarks>
     /// It goes through the same <see cref="_pendingLogBatches"/> queue as received data rather than
@@ -3266,14 +3469,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// lines appeared in a filtered view they did not match), the per-flush batch window and the
     /// queued-count cap — and it fired an individual CollectionChanged per entry.
     /// </remarks>
-    private void AddSentLog(string portName, LogEntry logEntry)
+    private void AddLocalLog(string portName, LogEntry logEntry)
     {
         var queuedLogCount = Interlocked.Add(ref _queuedLogCount, 1);
         if (queuedLogCount > MaxQueuedLogEntries)
         {
             Interlocked.Add(ref _queuedLogCount, -1);
             Interlocked.Increment(ref _totalDropped);
-            _logger.LogWarning("Dropping sent-log entry: queued logs exceeded limit. Port={Port}, Limit={Limit}",
+            _logger.LogWarning("Dropping locally generated log entry: queued logs exceeded limit. Port={Port}, Limit={Limit}",
                 portName, MaxQueuedLogEntries);
             return;
         }
@@ -3367,10 +3570,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 {
                     PortName = portName,
                     Content = line,
-                    IsReceived = false,
+                    Kind = LogEntryKind.Sent,
                     ColorHex = TxColorHexResolved
                 };
-                AddSentLog(portName, logEntry);
+                AddLocalLog(portName, logEntry);
             }
         }
     }
@@ -3891,10 +4094,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 PortName = portName,
                 Content = summary,
-                IsReceived = false,
+                Kind = LogEntryKind.Sent,
                 ColorHex = TxColorHexResolved
             };
-            AddSentLog(portName, logEntry);
+            AddLocalLog(portName, logEntry);
         }
     }
 
@@ -4343,7 +4546,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     PortName = portName,
                     Content = line,
                     Timestamp = now,
-                    IsReceived = true,
+                    Kind = LogEntryKind.Received,
                     ColorHex = portColor
                 };
 
@@ -4820,7 +5023,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
         var portName = e.PortName;
         var oldState = e.OldState;
         var newState = e.NewState;
-        
+        var timestamp = e.Timestamp;
+        var content = LogEventText.DescribeStateChange(newState);
+
+        // The file half is written here, on the raising thread, rather than inside the dispatcher callback.
+        // The close path raises Disconnected from inside SerialPortService.ClosePortAsync and stops that
+        // port's file logger a few lines later, so an enqueued write can lose the one event a post-mortem
+        // needs most. WriteLogs only queues (the writer flushes on its own timer) and is thread-safe.
+        WriteEventToFile(portName, timestamp, content);
+
         _dispatcherQueue.TryEnqueue(() =>
         {
             try
@@ -4828,6 +5039,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 StatusMessage = $"Port {portName}: {newState}";
                 _logger.LogInformation("Port {PortName} state changed: {OldState} -> {NewState}",
                     portName, oldState, newState);
+
+                // Collapsed error counts first, so a port that dies in the middle of a storm still records
+                // how bad it was immediately before the end.
+                DrainEventAggregates();
+
+                // No aggregation for a state change: it is inherently low-frequency, and a reconnect storm is
+                // exactly what the reader is looking for rather than noise to be collapsed.
+                QueueEventRow(portName, timestamp, content);
             }
             catch (Exception ex)
             {
@@ -4837,12 +5056,123 @@ public partial class MainViewModel : ObservableObject, IDisposable
         });
     }
 
+    /// <summary>
+    /// 把一次连接事件写成日志行；同一个键在窗口内重复时改为计数汇总。
+    /// </summary>
+    /// <param name="portName">事件所属端口。</param>
+    /// <param name="timestamp">
+    /// 事件发生的时刻，不是这次提交的时刻：事件行经 <c>_pendingLogBatches</c> 会晚几十毫秒出现，用提交
+    /// 时刻会和真实因果错位。
+    /// </param>
+    /// <param name="content">行内容。</param>
+    /// <param name="aggregateKey">
+    /// 非 null 时参与重复折叠。错误必须传——帧错误/溢出风暴可达 30+/s；状态变化传 null，因为重连风暴本身
+    /// 就是读者要找的信息。
+    /// </param>
+    private void ReportPortEvent(string portName, DateTime timestamp, string content, string? aggregateKey)
+    {
+        if (aggregateKey is not null)
+        {
+            if (!_eventAggregates.Record(aggregateKey, portName, content))
+            {
+                // A repeat inside the window: the line is already in the log, and the count surfaces when the
+                // window drains.
+                return;
+            }
+
+            StartEventAggregateTimer();
+        }
+
+        WriteEventToFile(portName, timestamp, content);
+        QueueEventRow(portName, timestamp, content);
+    }
+
+    /// <summary>
+    /// 把一行事件写进该端口的文件日志。线程安全且不阻塞（<c>WriteLogs</c> 只入队）。
+    /// </summary>
+    private void WriteEventToFile(string portName, DateTime timestamp, string content)
+        => _fileLoggerService.WriteLogs(portName, new[] { CreateEventEntry(portName, timestamp, content) });
+
+    /// <summary>把一行事件交给界面日志的下一步 flush。</summary>
+    private void QueueEventRow(string portName, DateTime timestamp, string content)
+        => AddLocalLog(portName, CreateEventEntry(portName, timestamp, content));
+
+    /// <summary>
+    /// 构造一条事件行。
+    /// </summary>
+    /// <remarks>
+    /// The file copy and the row are deliberately separate objects rather than one shared instance: the file
+    /// write for a state change happens on the raising thread while the row has to be created on the UI
+    /// thread, and one mutable <c>LogEntry</c> crossing threads for the sake of saving an allocation is not a
+    /// trade worth making.
+    /// </remarks>
+    private LogEntry CreateEventEntry(string portName, DateTime timestamp, string content) => new()
+    {
+        Timestamp = timestamp,
+        PortName = portName,
+        Content = content,
+        Kind = LogEntryKind.Event,
+        ColorHex = LogRowColorPalette.EventRow(_isDarkTheme),
+    };
+
+    /// <summary>
+    /// 启动（或重启）事件行的重复计数窗口。
+    /// </summary>
+    /// <remarks>
+    /// Non-repeating, so a fired tick leaves it stopped and the next occurrence opens a fresh window — which
+    /// is what makes a continuous storm produce one summary per second rather than one per error.
+    /// </remarks>
+    private void StartEventAggregateTimer()
+    {
+        if (_eventAggregateTimer is null)
+        {
+            _eventAggregateTimer = _dispatcherQueue.CreateTimer();
+            _eventAggregateTimer.Interval = TimeSpan.FromMilliseconds(EventRepeatWindowMs);
+            _eventAggregateTimer.IsRepeating = false;
+            _eventAggregateTimer.Tick += (_, _) => DrainEventAggregates();
+        }
+
+        if (!_eventAggregateTimer.IsRunning)
+        {
+            _eventAggregateTimer.Start();
+        }
+    }
+
+    /// <summary>
+    /// 窗口结束时为每个被折叠的事件行补一条计数汇总。
+    /// </summary>
+    /// <remarks>
+    /// The summary is a second line rather than an edit of the first. <c>LogEntry.FormattedText</c> is bound
+    /// <c>OneTime</c> — that is part of what keeps the two-element row cheap — so rewriting an entry that is
+    /// already on screen would leave the rendered row showing the old text until its container was recycled.
+    /// Two lines per storm is the price of never displaying a stale count.
+    /// </remarks>
+    private void DrainEventAggregates()
+    {
+        if (!_eventAggregates.HasPending)
+        {
+            return;
+        }
+
+        var windowSeconds = EventRepeatWindowMs / 1000;
+
+        foreach (var (portName, line, count) in _eventAggregates.DrainRepeats())
+        {
+            var content = LogEventText.WithRepeatCount(line, count, windowSeconds);
+            var now = DateTime.Now;
+
+            WriteEventToFile(portName, now, content);
+            QueueEventRow(portName, now, content);
+        }
+    }
+
     private void OnErrorOccurred(object? sender, Services.ErrorEventArgs e)
     {
         // Capture values before dispatching to avoid closure issues
         var portName = e.PortName;
         var errorMessage = e.ErrorMessage;
         var exception = e.Exception;
+        var timestamp = e.Timestamp;
 
         // Always log on background thread — logging never blocks UI.
         _logger.LogError(exception, "Error on port {PortName}", portName);
@@ -4851,20 +5181,33 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // (wrong baud rate, line noise). Every update marshals to the UI thread and
         // re-renders the status bar, contributing to the wheel/selection lag the user
         // experiences. Keep the most recent error visible, drop the rest.
+        //
+        // The decision is computed here but applied inside the dispatcher callback, and it deliberately does
+        // NOT gate the log row: ReportPortEvent has its own aggregation, which collapses repeats into a count
+        // instead of dropping them. Gating both behind one 250 ms throttle is the obvious-looking shape and
+        // the wrong one — it would silently discard 29 of every 30 errors from the log.
         var nowTicks = DateTime.UtcNow.Ticks;
         var lastTicks = Interlocked.Read(ref _lastErrorStatusTicks);
         var elapsedMs = (nowTicks - lastTicks) / TimeSpan.TicksPerMillisecond;
-        if (elapsedMs < ErrorStatusThrottleMs)
+        var updateStatus = elapsedMs >= ErrorStatusThrottleMs;
+        if (updateStatus)
         {
-            return;
+            Interlocked.Exchange(ref _lastErrorStatusTicks, nowTicks);
         }
-        Interlocked.Exchange(ref _lastErrorStatusTicks, nowTicks);
+
+        var content = LogEventText.DescribeError(errorMessage);
+        var aggregateKey = LogEventText.AggregateKey(portName, errorMessage);
 
         _dispatcherQueue.TryEnqueue(() =>
         {
             try
             {
-                StatusMessage = $"Error on {portName}: {errorMessage}";
+                if (updateStatus)
+                {
+                    StatusMessage = $"Error on {portName}: {errorMessage}";
+                }
+
+                ReportPortEvent(portName, timestamp, content, aggregateKey);
             }
             catch (Exception ex)
             {

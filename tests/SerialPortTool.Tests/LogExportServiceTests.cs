@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using SerialPortTool.Core.Enums;
 using SerialPortTool.Models;
 using SerialPortTool.Services;
 using System;
@@ -47,7 +48,7 @@ public sealed class LogExportServiceTests : IDisposable
             Timestamp = new DateTime(2026, 9, 29, 12, 0, 0),
             PortName = portName,
             Content = content,
-            IsReceived = received,
+            Kind = received ? LogEntryKind.Received : LogEntryKind.Sent,
         };
 
     [Fact]

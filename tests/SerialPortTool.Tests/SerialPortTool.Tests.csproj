@@ -50,10 +50,17 @@
     <!-- Send-path planning and the two send-side stores. All pure logic: no service, no window, no
          Microsoft.UI.* — the same requirement every entry in this list has. -->
     <Compile Include="..\..\Core\Enums\SendLineEnding.cs" Link="Linked\SendLineEnding.cs" />
+    <Compile Include="..\..\Core\Enums\LogEntryKind.cs" Link="Linked\LogEntryKind.cs" />
+    <Compile Include="..\..\Core\Enums\ConnectionState.cs" Link="Linked\ConnectionState.cs" />
     <Compile Include="..\..\Helpers\SendLineEndings.cs" Link="Linked\SendLineEndings.cs" />
     <Compile Include="..\..\Helpers\SendHistory.cs" Link="Linked\SendHistory.cs" />
     <Compile Include="..\..\Helpers\SerialEncodings.cs" Link="Linked\SerialEncodings.cs" />
     <Compile Include="..\..\Helpers\PaletteSearchMatcher.cs" Link="Linked\PaletteSearchMatcher.cs" />
+    <!-- Connection-event rows. LogEntryText is pure text + the aggregation window; LogEntry is linked
+         because it now carries the three-way Kind these lines are built from. -->
+    <Compile Include="..\..\Helpers\LogEventText.cs" Link="Linked\LogEventText.cs" />
+    <Compile Include="..\..\Helpers\LogFontScale.cs" Link="Linked\LogFontScale.cs" />
+    <Compile Include="..\..\Models\LogRowColorPalette.cs" Link="Linked\LogRowColorPalette.cs" />
     <!-- Wildcard because the palette is a pair of files (the slot model and the palette itself) and the
          tests need both; one of them has to be allowed to be split further without touching this list. -->
     <Compile Include="..\..\Models\PortColor*.cs" Link="Linked\%(Filename)%(Extension)" />

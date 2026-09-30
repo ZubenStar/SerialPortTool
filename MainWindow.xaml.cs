@@ -1197,6 +1197,14 @@ public sealed partial class MainWindow : Window
     /// </remarks>
     private void OnRootKeyDown(object sender, KeyRoutedEventArgs e)
     {
+        // Checked before the switch: the font-size gestures are the only ones here that need a modifier, and the
+        // switch below reads e.Key alone.
+        if (TryHandleLogFontSizeShortcut(e.Key))
+        {
+            e.Handled = true;
+            return;
+        }
+
         switch (e.Key)
         {
             // F2 rather than Ctrl+K / Ctrl+Shift+P: letter combinations get taken by IMEs and resident
@@ -1213,6 +1221,62 @@ public sealed partial class MainWindow : Window
                 break;
         }
     }
+
+    /// <summary>
+    /// Ctrl+加号 / Ctrl+减号 / Ctrl+0 调整与重置日志字号。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Checked before the switch in <see cref="OnRootKeyDown"/> because it is the only gesture there that needs
+    /// a modifier, and that switch reads <c>e.Key</c> alone.
+    /// </para>
+    /// <para>
+    /// Both the numeric keypad (<c>Add</c> / <c>Subtract</c>) and the main row are accepted. The main row's
+    /// <c>+</c> / <c>-</c> arrive as the unnamed OEM virtual keys 0xBB / 0xBD, hence the casts — requiring the
+    /// numpad would make the shortcut look broken on a laptop keyboard. <c>Ctrl+=</c> lands on the same key as
+    /// <c>Ctrl++</c>, which is the behaviour every app that supports this has.
+    /// </para>
+    /// </remarks>
+    private bool TryHandleLogFontSizeShortcut(Windows.System.VirtualKey key)
+    {
+        if (!IsControlDown())
+        {
+            return false;
+        }
+
+        switch (key)
+        {
+            case Windows.System.VirtualKey.Add:
+            case (Windows.System.VirtualKey)0xBB: // VK_OEM_PLUS — '=' / '+'
+                ViewModel.AdjustLogFontSize(1);
+                return true;
+
+            case Windows.System.VirtualKey.Subtract:
+            case (Windows.System.VirtualKey)0xBD: // VK_OEM_MINUS — '-' / '_'
+                ViewModel.AdjustLogFontSize(-1);
+                return true;
+
+            case Windows.System.VirtualKey.Number0:
+            case Windows.System.VirtualKey.NumberPad0:
+                ViewModel.ResetLogFontSize();
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// 是否按住了 Ctrl。
+    /// </summary>
+    /// <remarks>
+    /// Read explicitly, the way AGENTS.md prescribes for any window-level gesture that needs a modifier and the
+    /// way <c>LogListView</c> already does it for Ctrl+C / Ctrl+A.
+    /// </remarks>
+    private static bool IsControlDown()
+        => Microsoft.UI.Input.InputKeyboardSource
+            .GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control)
+            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
 
     /// <summary>
     /// Opens the log directory in the shell. Shared by 工具 → 打开日志文件夹 and F9.
@@ -1542,6 +1606,106 @@ public sealed partial class MainWindow : Window
         HideBaudRateAlert();
         ViewModel.StatusMessage = "已忽略波特率建议";
     }
+
+    #endregion
+
+    #region Log font size
+
+    /// <summary>
+    /// Ctrl+滚轮 调整日志字号。
+    /// </summary>
+    /// <remarks>
+    /// The control reports the intent rather than changing its own <c>FontSize</c>: the size is persisted by the
+    /// ViewModel, and a control that quietly wrote to its own dependency property would need the shell to
+    /// observe it back — which is the same reason <c>CopyCompleted</c> / <c>CopyFailed</c> exist.
+    /// </remarks>
+    private void LogListView_FontSizeZoomRequested(object? sender, int delta)
+        => ViewModel.AdjustLogFontSize(delta);
+
+    private void IncreaseLogFontSize_Click(object sender, RoutedEventArgs e)
+        => ViewModel.AdjustLogFontSize(1);
+
+    private void DecreaseLogFontSize_Click(object sender, RoutedEventArgs e)
+        => ViewModel.AdjustLogFontSize(-1);
+
+    private void ResetLogFontSize_Click(object sender, RoutedEventArgs e)
+        => ViewModel.ResetLogFontSize();
+
+    #endregion
+
+    #region Send target selection
+
+    /// <summary>
+    /// 构建「目标」菜单。
+    /// </summary>
+    /// <remarks>
+    /// Rebuilt on every open, like the port-colour menu and for the same reason: a <c>MenuFlyout</c> has no
+    /// <c>ItemsSource</c>, and the alternative — a cache — would need change hooks for both the port list and
+    /// the selection. A handful of items behind an explicit user action is not worth either.
+    /// </remarks>
+    private void SendTargetFlyout_Opening(object? sender, object e)
+    {
+        if (sender is not MenuFlyout flyout)
+        {
+            return;
+        }
+
+        flyout.Items.Clear();
+
+        var selectAllItem = new ToggleMenuFlyoutItem
+        {
+            Text = "全部",
+            IsChecked = ViewModel.IsSendingToAllPorts,
+        };
+        selectAllItem.Click += SelectAllSendTargets_Click;
+        flyout.Items.Add(selectAllItem);
+
+        if (ViewModel.OpenPorts.Count == 0)
+        {
+            // An empty menu with no explanation reads as a bug; this also tells the user why the list is
+            // empty at the one moment they are looking for a port that is not there.
+            flyout.Items.Add(new MenuFlyoutItem { Text = "还没有打开串口", IsEnabled = false });
+            return;
+        }
+
+        flyout.Items.Add(new MenuFlyoutSeparator());
+
+        foreach (var port in ViewModel.OpenPorts)
+        {
+            var item = new ToggleMenuFlyoutItem
+            {
+                Text = port.PortName,
+                // Tag carries the port name back, the same shape the colour menu uses for its slot hex.
+                Tag = port.PortName,
+                IsChecked = ViewModel.IsSendTargetSelected(port.PortName),
+            };
+            item.Click += ToggleSendTarget_Click;
+            flyout.Items.Add(item);
+        }
+    }
+
+    /// <summary>
+    /// 勾选 / 取消一个目标端口。
+    /// </summary>
+    /// <remarks>
+    /// The new state is derived from the ViewModel rather than read from <c>item.IsChecked</c>: the order in
+    /// which <c>ToggleMenuFlyoutItem</c> updates that property relative to raising <c>Click</c> is not part of
+    /// the contract, while the model's own answer always is. The item's tick may therefore briefly disagree
+    /// after the click — invisible, because the flyout closes on it — and the next open rebuilds from the
+    /// model.
+    /// </remarks>
+    private void ToggleSendTarget_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleMenuFlyoutItem { Tag: string portName })
+        {
+            return;
+        }
+
+        ViewModel.SetSendTargetSelected(portName, !ViewModel.IsSendTargetSelected(portName));
+    }
+
+    private void SelectAllSendTargets_Click(object sender, RoutedEventArgs e)
+        => ViewModel.SelectAllSendTargets();
 
     #endregion
 

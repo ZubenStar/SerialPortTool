@@ -143,6 +143,29 @@
                                          Tag="Dark"
                                          GroupName="AppTheme"
                                          Click="ThemeMenuItem_Click" />
+                    <MenuFlyoutSeparator />
+                    <!-- The log font size sits with the appearance entries: it is the same kind of choice, and
+                         it is the only other thing in this menu that changes how the data area looks. The
+                         accelerators are here so the gestures are visible; the window-level handler is what
+                         makes them work everywhere else (see OnRootKeyDown), and the two cannot double-fire
+                         because a flyout is a separate popup root. -->
+                    <MenuFlyoutSubItem Text="日志字号">
+                        <MenuFlyoutItem Text="增大" Click="IncreaseLogFontSize_Click">
+                            <MenuFlyoutItem.KeyboardAccelerators>
+                                <KeyboardAccelerator Key="Add" Modifiers="Control" />
+                            </MenuFlyoutItem.KeyboardAccelerators>
+                        </MenuFlyoutItem>
+                        <MenuFlyoutItem Text="减小" Click="DecreaseLogFontSize_Click">
+                            <MenuFlyoutItem.KeyboardAccelerators>
+                                <KeyboardAccelerator Key="Subtract" Modifiers="Control" />
+                            </MenuFlyoutItem.KeyboardAccelerators>
+                        </MenuFlyoutItem>
+                        <MenuFlyoutItem Text="重置" Click="ResetLogFontSize_Click">
+                            <MenuFlyoutItem.KeyboardAccelerators>
+                                <KeyboardAccelerator Key="Number0" Modifiers="Control" />
+                            </MenuFlyoutItem.KeyboardAccelerators>
+                        </MenuFlyoutItem>
+                    </MenuFlyoutSubItem>
                 </MenuBarItem>
                 <MenuBarItem Title="帮助">
                     <MenuFlyoutItem Text="检查更新" Click="CheckUpdate_Click">
@@ -989,8 +1012,10 @@
                                           IsPinnedToBottom="{x:Bind ViewModel.IsLogPinnedToBottom, Mode=TwoWay}"
                                           HighlightMatcher="{x:Bind ViewModel.HighlightMatcher, Mode=OneWay}"
                                           IsHighlightSuppressed="{x:Bind ViewModel.IsHighlightSuppressed, Mode=OneWay}"
+                                          FontSize="{x:Bind ViewModel.LogFontSize, Mode=OneWay}"
                                           CopyCompleted="LogListView_CopyCompleted"
-                                          CopyFailed="LogListView_CopyFailed" />
+                                          CopyFailed="LogListView_CopyFailed"
+                                          FontSizeZoomRequested="LogListView_FontSizeZoomRequested" />
 
                     <!-- Uses {Binding}, not {x:Bind}: a compiled binding with a Converter cannot be
                          used in the window's own element tree (a Window is not a FrameworkElement,
@@ -1093,6 +1118,24 @@
                                       IsChecked="{x:Bind ViewModel.SplitMultilineSend, Mode=TwoWay}"
                                       IsEnabled="{x:Bind ViewModel.CanSplitMultilineSend, Mode=OneWay}"
                                       ToolTipService.ToolTip="勾选并选中行尾符后，输入里的换行会逐行发送（每行各带一个行尾符）；不勾选则整段内容末尾只加一个行尾符" />
+
+                            <!-- 发送目标。文字始终可见，因为这个功能最容易出的错就是"以为在广播、其实只发
+                                 了一个口"。菜单项在 SendTargetFlyout_Opening 里动态构建——MenuFlyout 没有
+                                 ItemsSource，与端口颜色菜单同一个形状。 -->
+                            <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                    MinHeight="{StaticResource AppControlHeightCompact}"
+                                    Padding="9,0"
+                                    ToolTipService.ToolTip="选择本次发送的目标串口。默认「全部」；Tuning 推送不受此设置影响，仍广播到所有已打开串口。">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE8E5;" FontSize="13" />
+                                    <TextBlock Text="{x:Bind ViewModel.SendTargetDisplay, Mode=OneWay}" />
+                                </StackPanel>
+                                <Button.Flyout>
+                                    <MenuFlyout x:Name="SendTargetFlyout"
+                                                Placement="Top"
+                                                Opening="SendTargetFlyout_Opening" />
+                                </Button.Flyout>
+                            </Button>
                         </StackPanel>
 
                         <TextBox x:Name="SendTextBox"

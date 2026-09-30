@@ -267,11 +267,13 @@ public class FileLoggerService : IFileLoggerService, IDisposable
             // 批量从队列中取出日志
             while (processed < MaxBatchSize && _writeQueue.TryDequeue(out var entry))
             {
-                var direction = entry.IsReceived ? "RX" : "TX";
+                // The marker comes from the entry rather than being recomputed here: this formatter used to
+                // carry its own RX/TX ternary, which predates the third kind and would have written every
+                // connection-event row into the file as a sent line.
                 _batchBuffer.Append('[')
                     .Append(entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff"))
                     .Append("] [")
-                    .Append(direction)
+                    .Append(entry.Direction)
                     .Append("] ")
                     .AppendLine(entry.Content);
 

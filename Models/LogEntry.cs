@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using CommunityToolkit.Mvvm.ComponentModel;
+using SerialPortTool.Core.Enums;
 
 namespace SerialPortTool.Models;
 
@@ -39,10 +40,42 @@ public partial class LogEntry : ObservableObject
     // no code honours.
 
     /// <summary>
-    /// 是否为接收数据(false为发送数据)
+    /// 这条行代表什么：接收数据 / 发送数据 / 连接事件。
     /// </summary>
+    /// <remarks>
+    /// The full three-way answer, and the stored one. <c>IsReceived</c> used to be the field, which left no
+    /// way to express a row about the connection itself — see <see cref="Core.Enums.LogEntryKind.Event"/>.
+    /// </remarks>
     [ObservableProperty]
-    private bool _isReceived = true;
+    [NotifyPropertyChangedFor(nameof(IsReceived))]
+    [NotifyPropertyChangedFor(nameof(Direction))]
+    private LogEntryKind _kind = LogEntryKind.Received;
+
+    /// <summary>
+    /// 是否为接收数据。
+    /// </summary>
+    /// <remarks>
+    /// A derived view of <see cref="Kind"/>, kept because "is this a received row?" is the question the two
+    /// remaining call sites actually ask (the port-colour sweep and the file writer). Read-only on purpose:
+    /// it cannot express <see cref="LogEntryKind.Event"/>, so a setter would be a second way to describe the
+    /// same field, and one that can silently disagree with it.
+    /// </remarks>
+    public bool IsReceived => Kind == LogEntryKind.Received;
+
+    /// <summary>
+    /// 这一行写进文本时的类别标记：<c>RX</c> / <c>TX</c> / <c>SYS</c>。
+    /// </summary>
+    /// <remarks>
+    /// Shared with <c>FileLoggerService</c> rather than spelled out again there. The two used to be
+    /// independent expressions of the same idea, and the file writer's copy was written before the third kind
+    /// existed, so it would have labelled every event row <c>TX</c>.
+    /// </remarks>
+    public string Direction => Kind switch
+    {
+        LogEntryKind.Sent => "TX",
+        LogEntryKind.Event => "SYS",
+        _ => "RX",
+    };
 
     /// <summary>
     /// Hex the row is painted with (already resolved for the active appearance by the ViewModel).
@@ -67,8 +100,7 @@ public partial class LogEntry : ObservableObject
         {
             if (_cachedFormattedText == null)
             {
-                var direction = IsReceived ? "RX" : "TX";
-                _cachedFormattedText = $"[{Timestamp:HH:mm:ss.fff}] [{PortName}] [{direction}] {Content}";
+                _cachedFormattedText = $"[{Timestamp:HH:mm:ss.fff}] [{PortName}] [{Direction}] {Content}";
             }
             return _cachedFormattedText;
         }
@@ -78,10 +110,7 @@ public partial class LogEntry : ObservableObject
     /// 转换为字符串表示
     /// </summary>
     public override string ToString()
-    {
-        var direction = IsReceived ? "RX" : "TX";
-        return $"[{Timestamp:HH:mm:ss.fff}] [{PortName}] [{direction}] {Content}";
-    }
+        => $"[{Timestamp:HH:mm:ss.fff}] [{PortName}] [{Direction}] {Content}";
 
     /// <summary>
     /// 清除缓存的格式化文本(当属性变化时调用)
@@ -89,7 +118,7 @@ public partial class LogEntry : ObservableObject
     partial void OnContentChanged(string value) => InvalidateCaches();
     partial void OnPortNameChanged(string value) => InvalidateCaches();
     partial void OnTimestampChanged(DateTime value) => InvalidateCaches();
-    partial void OnIsReceivedChanged(bool value) => InvalidateCaches();
+    partial void OnKindChanged(LogEntryKind value) => InvalidateCaches();
 
     // ---- Highlight cache (v2.2.4) --------------------------------------------------------------
     // Keyword highlighting is per-row decoration, and rows are re-realized on every recycle, so the

@@ -367,9 +367,32 @@ public sealed partial class LogListView : UserControl
     // overwriting itself.
     // ---------------------------------------------------------------------------------------
     private const double WheelStepViewportFraction = 0.2; // one notch ≈ 1/5 of the viewport
-    private const double MinWheelStepPixels = 60;         // ≈ 3 rows at the ~20px row height
     private const double MaxWheelStepPixels = 240;        // no half-screen jumps on tall windows
     private const double WheelNotchDelta = 120.0;         // MouseWheelDelta units per detent
+
+    // ---------------------------------------------------------------------------------------
+    // The step's floor and the "at the bottom" slack are expressed in ROWS rather than pixels,
+    // because the rows are no longer a fixed height: the log font size became user-settable
+    // (v2.4.0), and the old hard-coded 60px / 24px silently assumed a ~20px row. A larger font
+    // would otherwise have made one notch a smaller fraction of the viewport, and the bottom test
+    // tighter than a single row.
+    //
+    // Derived arithmetically from FontSize instead of measured from a realized container: a
+    // font-size change is exactly when the realized containers are still laid out at the OLD
+    // height, so a measurement taken then is stale at the only moment it matters. The anchor
+    // (20px at the default 13px row) was measured by hand, and everything here only has to be
+    // accurate to "about a row".
+    // ---------------------------------------------------------------------------------------
+    private const double DefaultLogFontSize = 13.0;
+    private const double RowHeightAtDefaultFontPx = 20.0;
+    private const double LineBoxRatio = 1.35;
+    private const double MinWheelStepRows = 3.0;      // the note here used to read "≈ 3 rows"
+    private const double FollowBottomSlackRows = 1.2; // ...and this one "about one row"
+
+    // Recomputed by UpdateRowMetrics whenever FontSize changes. Instance state rather than
+    // constants precisely because the row height now follows the font size.
+    private double _minWheelStepPixels = RowHeightAtDefaultFontPx * MinWheelStepRows;
+    private double _followBottomSlackPx = RowHeightAtDefaultFontPx * FollowBottomSlackRows;
 
     // Traversal constants (v2.2.3). These describe how the step is *covered*, not how far it goes:
     //   · TimeConstantMs — exponential approach; ~3x tau covers ~95% of the distance, so one notch
@@ -391,8 +414,8 @@ public sealed partial class LogListView : UserControl
     private const double WheelGlideHandoffPx = 8.0;
 
     // "Is the view at the newest row?" The slack is about one row: without it, sub-pixel rounding
-    // at the bottom flips the follow state on and off while data lands.
-    private const double FollowBottomSlackPx = 24.0;
+    // at the bottom flips the follow state on and off while data lands. The value itself is
+    // `_followBottomSlackPx`, derived from FontSize above.
 
     // Two guards keep "did the user scroll away?" honest:
     //   · A whole-list replacement (clear, a new search, a trim) rebuilds the view from scratch and
@@ -447,7 +470,59 @@ public sealed partial class LogListView : UserControl
         // template's ScrollViewer for the same reason: a re-applied template hands out a new one.
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
+
+        // FontSize is inherited from Control, so the shell sets it (bound to the persisted LogFontSize) and
+        // the rows inherit it. Its change callback is the only hook needed for the row metrics — there is no
+        // layout-pass event to piggyback on, and none is wanted: the metrics are computed from the size, not
+        // from a measurement.
+        RegisterPropertyChangedCallback(FontSizeProperty, (_, _) => UpdateRowMetrics());
     }
+
+    /// <summary>
+    /// 滚轮按住 Ctrl 时请求调整日志字号：+1 放大，-1 缩小。
+    /// </summary>
+    /// <remarks>
+    /// An event rather than the control changing its own FontSize: the size is persisted by the ViewModel, and
+    /// a control that quietly wrote to its own dependency property would need the shell to observe it back.
+    /// This is the same shape <c>CopyCompleted</c> / <c>CopyFailed</c> use for the same reason.
+    /// </remarks>
+    public event EventHandler<int>? FontSizeZoomRequested;
+
+    /// <summary>
+    /// 依据当前字号重算滚轮步长下限与贴底容差。
+    /// </summary>
+    /// <remarks>
+    /// Called from the <c>FontSize</c> change callback. The default field values already correspond to the
+    /// default size, so a control that is never re-sized is correct without this running at all.
+    /// </remarks>
+    private void UpdateRowMetrics()
+    {
+        // Pushed down explicitly as well as mirrored by x:Bind in the markup: the metrics must follow the size
+        // even if the binding's own change notification does not arrive (the shell assigns FontSize after this
+        // control's own XAML has loaded, so "read once at load" would leave the rows one size behind).
+        if (InnerListView is not null)
+        {
+            InnerListView.FontSize = FontSize;
+        }
+
+        var rowHeight = RowHeightAtDefaultFontPx + (FontSize - DefaultLogFontSize) * LineBoxRatio;
+
+        _minWheelStepPixels = rowHeight * MinWheelStepRows;
+        _followBottomSlackPx = rowHeight * FollowBottomSlackRows;
+    }
+
+    /// <summary>
+    /// 是否按住了 Ctrl。
+    /// </summary>
+    /// <remarks>
+    /// The same call the Ctrl+C / Ctrl+A path uses. A pointer event does carry its own modifier state, but this
+    /// app asks the question through <c>InputKeyboardSource</c> in the one other place that needs an answer, and
+    /// having one way to ask is worth more than saving a call here.
+    /// </remarks>
+    private static bool IsControlDown()
+        => Microsoft.UI.Input.InputKeyboardSource
+            .GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control)
+            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
@@ -573,9 +648,21 @@ public sealed partial class LogListView : UserControl
             return;
         }
 
+        // Ctrl+wheel zooms the log text. Handled inside this existing registration rather than by adding a
+        // second handler: both registration sites share this one delegate, and a second AddHandler would run in
+        // addition to this one — the "one notch scrolls twice" failure the registration notes above exist to
+        // prevent. Handled is set for the Ctrl case too, because the fallback registration also reaches this
+        // method and would otherwise zoom a second time.
+        if (IsControlDown())
+        {
+            FontSizeZoomRequested?.Invoke(this, delta > 0 ? 1 : -1);
+            e.Handled = true;
+            return;
+        }
+
         var step = Math.Clamp(
             scrollViewer.ViewportHeight * WheelStepViewportFraction,
-            MinWheelStepPixels,
+            _minWheelStepPixels,
             MaxWheelStepPixels);
 
         // First event of a gesture: start from wherever the view actually is. Later events extend
@@ -592,7 +679,7 @@ public sealed partial class LogListView : UserControl
         // The follow state is decided by where the gesture is *heading*, not by where the view is
         // right now — scrolling back down to the newest row must re-attach immediately, not after
         // the pump finishes.
-        SetPinnedToBottom(_wheelTargetOffset.Value >= maxOffset - FollowBottomSlackPx);
+        SetPinnedToBottom(_wheelTargetOffset.Value >= maxOffset - _followBottomSlackPx);
 
         StartWheelScrollPump();
         e.Handled = true;
@@ -677,7 +764,7 @@ public sealed partial class LogListView : UserControl
             _wheelCurrentOffset = target;
             scrollViewer.ChangeView(null, target, null, disableAnimation: true);
             CancelWheelScroll();
-            SetPinnedToBottom(target >= maxOffset - FollowBottomSlackPx);
+            SetPinnedToBottom(target >= maxOffset - _followBottomSlackPx);
             return;
         }
 
@@ -766,7 +853,7 @@ public sealed partial class LogListView : UserControl
         }
 
         var maxOffset = Math.Max(0, scrollViewer.ScrollableHeight);
-        SetPinnedToBottom(scrollViewer.VerticalOffset >= maxOffset - FollowBottomSlackPx);
+        SetPinnedToBottom(scrollViewer.VerticalOffset >= maxOffset - _followBottomSlackPx);
     }
 
     /// <summary>
@@ -964,7 +1051,7 @@ public sealed partial class LogListView : UserControl
             }
 
             var maxOffset = Math.Max(0, scrollViewer.ScrollableHeight);
-            if (scrollViewer.VerticalOffset >= maxOffset - FollowBottomSlackPx / 2)
+            if (scrollViewer.VerticalOffset >= maxOffset - _followBottomSlackPx / 2)
             {
                 // Already there. ChangeView on every 50 ms flush is pure overhead, and it used to
                 // be a ScrollIntoView that forced the last row to be realized each time.

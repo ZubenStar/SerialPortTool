@@ -17,15 +17,20 @@
          are 0, the row is a single NoWrap 13px line, so ~20px tall — which makes the framework's
          own per-notch step read as "the wheel does nothing"; the control therefore asks the
          template's ScrollViewer for a fixed, viewport-relative offset, and walks to it smoothly
-         (v2.2.3) instead of jumping. Anything that changes the row height must be checked against
-         that step (MinWheelStepPixels ≈ 3 rows) and against the "at the bottom" slack. -->
+         (v2.2.3) instead of jumping. The step's floor and the "at the bottom" slack are derived from
+         the row height — which is why they live in UpdateRowMetrics and follow the FontSize below
+         rather than being constants (v2.4.0). -->
 
     <!-- The Grid exists only to float the 回到最新 pill above the list. The ListView keeps every
          performance property it had (compiled x:Bind, CacheLength, no item transitions, a two
          element row); the wrapper adds no container to the scroll path. -->
     <Grid>
+        <!-- FontSize mirrors the control's own inherited FontSize down to the list, so the row height follows
+             the persisted log font size. Written out explicitly rather than left to inheritance across the
+             UserControl boundary; the row TextBlock deliberately sets no size of its own. -->
         <ListView x:Name="InnerListView"
                   ItemsSource="{x:Bind ItemsSource, Mode=OneWay}"
+                  FontSize="{x:Bind FontSize, Mode=OneWay}"
                   SelectionMode="Extended"
                   Background="{ThemeResource AppSurfaceSunkenBrush}"
                   Padding="8,4"
@@ -114,11 +119,15 @@
                              would cost virtualization time, which is the point of the comment above. The
                              handlers also subscribe to DataContextChanged, because recycled containers
                              reuse this TextBlock for a different LogEntry without reloading it. -->
+                        <!-- No FontSize here on purpose: the log font size is user-settable, and the shell
+                             binds the control's own FontSize (inherited from Control) to that setting. This
+                             TextBlock used to hard-code 13, which both pinned the row height the wheel step
+                             was derived from and made the setting unexpressible. Row height now follows the
+                             font size — see UpdateRowMetrics in the code-behind. -->
                         <TextBlock Grid.Column="1"
                                    Text="{x:Bind FormattedText}"
                                    Foreground="{x:Bind ColorHex, Converter={StaticResource HexColorToBrushConverter}, Mode=OneWay}"
                                    FontFamily="{StaticResource AppMonoFontFamily}"
-                                   FontSize="13"
                                    TextWrapping="NoWrap"
                                    IsTextSelectionEnabled="False"
                                    Padding="0,1,0,1"
