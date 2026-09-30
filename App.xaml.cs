@@ -4,6 +4,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Serilog;
 using SerialPortTool.Core.Enums;
+using SerialPortTool.Helpers;
 using SerialPortTool.Services;
 using SerialPortTool.ViewModels;
 using System;
@@ -91,6 +92,13 @@ public partial class App : Application
                 shared: true,
                 outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
+
+        // Text decoding is switchable per port (UTF-8 / GB18030), and this line doubles as the
+        // availability check for the self-contained publish: the code-page provider is a framework
+        // assembly, but "the assembly ships" and "GetEncoding succeeds in the published output" are
+        // different claims and only the second one matters. One line here settles it on any machine with
+        // a GB18030 device attached, without a build-time step.
+        Log.Information(SerialEncodings.DescribeAvailability());
 
         // XAML's own channel. AppDomain.UnhandledException below does NOT cover an exception raised by
         // the framework on the UI thread (binding evaluation, template instantiation, window

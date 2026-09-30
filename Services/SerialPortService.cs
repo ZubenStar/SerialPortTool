@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using SerialPortTool.Core.Enums;
+using SerialPortTool.Helpers;
 using SerialPortTool.Models;
 
 namespace SerialPortTool.Services;
@@ -30,6 +31,19 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> _lastReconnectAttempt =
         new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Text encoding per open port — used by the receive decoder, by validation, and by text sends.
+    /// </summary>
+    /// <remarks>
+    /// Read from each port's own read thread (validation runs inline there, and the line assembler's
+    /// factory resolves it), which is why this is a concurrent dictionary rather than state the UI thread
+    /// owns — the same rule <c>MainViewModel._portsByName</c> follows. Entries are registered before a
+    /// port opens and removed when it closes, so the map cannot outgrow the set of open ports.
+    /// </remarks>
+    private readonly ConcurrentDictionary<string, string> _portTextEncodings =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private readonly IDataValidationService? _dataValidationService;
     private static readonly TimeSpan ReconnectCooldown = TimeSpan.FromSeconds(3);
 
@@ -129,6 +143,11 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
 
                 _logger.LogInformation("Port {PortName} became available after waiting for handle release", config.PortName);
             }
+
+            // Register the encoding before the handle is opened, so no chunk can be decoded — or
+            // validated — with the previous encoding. Assigning it after the open leaves a window in
+            // which the first bytes from a GB18030 device are judged against UTF-8 and can be discarded.
+            SetPortTextEncoding(config.PortName, config.TextEncodingName);
 
             var portInstance = new PortInstance(config, _logger, _dataValidationService, this);
             
@@ -255,6 +274,10 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
                 // Clear reconnection cooldown so port can be reopened immediately
                 _lastReconnectAttempt.TryRemove(portName, out _);
 
+                // Drop the encoding with the port. It is not lost: the ViewModel remembers it per port and
+                // re-registers it on the next open, so keeping a second copy here could only drift.
+                _portTextEncodings.TryRemove(portName, out _);
+
                 RaisePortStateChanged(portName, ConnectionState.Connected, ConnectionState.Disconnected);
                 _logger.LogInformation("Port {PortName} closed successfully", portName);
 
@@ -279,7 +302,8 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         }
     }
 
-    public async Task<int> OpenAllPortsAsync(SerialPortConfig defaultConfig)
+    public async Task<int> OpenAllPortsAsync(SerialPortConfig defaultConfig,
+        Func<string, string?>? encodingNameForPort = null)
     {
         var availablePorts = await GetAvailablePortsAsync();
         var openedCount = 0;
@@ -302,10 +326,12 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
                     DataBits = defaultConfig.DataBits,
                     StopBits = defaultConfig.StopBits,
                     Parity = defaultConfig.Parity,
+                    Handshake = defaultConfig.Handshake,
                     ReadTimeout = defaultConfig.ReadTimeout,
                     WriteTimeout = defaultConfig.WriteTimeout,
                     AutoReconnect = defaultConfig.AutoReconnect,
-                    ReconnectInterval = defaultConfig.ReconnectInterval
+                    ReconnectInterval = defaultConfig.ReconnectInterval,
+                    TextEncodingName = encodingNameForPort?.Invoke(portName) ?? defaultConfig.TextEncodingName
                 };
 
                 var opened = await OpenPortAsync(config);
@@ -364,6 +390,40 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         var data = encoding.GetBytes(text);
         await SendDataAsync(portName, data);
     }
+
+    public void SetPortTextEncoding(string portName, string encodingName)
+    {
+        if (string.IsNullOrEmpty(portName))
+        {
+            return;
+        }
+
+        var normalized = SerialEncodings.Normalize(encodingName);
+        if (!SerialEncodings.IsSupported(encodingName))
+        {
+            // Worth a warning: this is the "settings.json names something we do not have" case, which
+            // would otherwise be invisible because the fallback is silent by design.
+            _logger.LogWarning("Unknown text encoding '{Encoding}' for port {PortName}; using {Fallback}",
+                encodingName, portName, normalized);
+        }
+
+        _portTextEncodings[portName] = normalized;
+        _logger.LogInformation("Text encoding for port {PortName} set to {Encoding}", portName, normalized);
+    }
+
+    public string GetPortTextEncodingName(string portName)
+        => _portTextEncodings.TryGetValue(portName, out var name) ? name : SerialEncodings.Utf8Name;
+
+    /// <summary>
+    /// Resolved encoding for one port; the default when nothing was registered.
+    /// </summary>
+    /// <remarks>
+    /// Not on the interface: the only consumer is <see cref="PortInstance"/>, which is nested in this
+    /// class, and every caller outside it wants the name (for display and persistence) rather than the
+    /// <see cref="Encoding"/> instance.
+    /// </remarks>
+    private Encoding GetPortTextEncoding(string portName)
+        => SerialEncodings.Resolve(GetPortTextEncodingName(portName));
 
     public SerialPortConfig? GetPortConfig(string portName)
     {
@@ -708,6 +768,7 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
                         DataBits = Config.DataBits,
                         StopBits = Config.StopBits,
                         Parity = Config.Parity,
+                        Handshake = Config.Handshake,
                         ReadTimeout = Config.ReadTimeout,
                         WriteTimeout = Config.WriteTimeout
                     };
@@ -1073,7 +1134,8 @@ public class SerialPortService : ISerialPortService, IDisposable, IAsyncDisposab
         {
             try
             {
-                var validationResult = await _dataValidationService!.ValidateDataAsync(buffer, Config.PortName);
+                var validationResult = await _dataValidationService!.ValidateDataAsync(
+                    buffer, Config.PortName, _parentService.GetPortTextEncoding(Config.PortName));
                 
                 _logger.LogTrace("Data validation for {PortName}: Valid={IsValid}, Score={Score}, Action={Action}",
                     Config.PortName, validationResult.IsValid, validationResult.QualityScore, validationResult.SuggestedAction);

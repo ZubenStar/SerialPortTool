@@ -248,6 +248,70 @@
                                       SelectedItem="{x:Bind ViewModel.DataBits, Mode=TwoWay}"
                                       HorizontalAlignment="Stretch" />
                         </StackPanel>
+
+                        <!-- The three pickers below (plus 数据位 and 波特率 above) are "what the next open
+                             uses": SerialPort applies them when the handle is opened, and applying them
+                             to a live port would mean an implicit close/reopen, which is the race the
+                             reliability rules forbid. Changing one while a port is open therefore only
+                             raises a status-bar hint (MainViewModel.HintThatLineParametersApplyOnNextOpen).
+
+                             SelectedValue uses {Binding}, not {x:Bind}: the enum is boxed into
+                             ComboBox.SelectedValue (object) and the reflection binding converts it back,
+                             the same reason the search toggles use {Binding} for their bool? target. -->
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="停止位" Style="{StaticResource AppCaptionTextStyle}" />
+                            <ComboBox ItemsSource="{x:Bind ViewModel.StopBitsOptions}"
+                                      SelectedValuePath="Value"
+                                      SelectedValue="{Binding StopBits, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Name}" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="校验位" Style="{StaticResource AppCaptionTextStyle}" />
+                            <ComboBox ItemsSource="{x:Bind ViewModel.ParityOptions}"
+                                      SelectedValuePath="Value"
+                                      SelectedValue="{Binding Parity, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Name}" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="流控" Style="{StaticResource AppCaptionTextStyle}" />
+                            <ComboBox ItemsSource="{x:Bind ViewModel.HandshakeOptions}"
+                                      SelectedValuePath="Value"
+                                      SelectedValue="{Binding Handshake, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Name}" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </StackPanel>
+
+                        <!-- Unlike the three pickers above, the encoding is NOT "next open only": it is a
+                             decode concern, so a change is pushed to every open port immediately (and each
+                             port remembers its own value). Different devices on different ports genuinely
+                             use different character sets, so the per-port value is what a re-open restores
+                             and this control is the default for ports that have none yet. -->
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="编码" Style="{StaticResource AppCaptionTextStyle}" />
+                            <ComboBox ItemsSource="{x:Bind ViewModel.AvailableTextEncodings}"
+                                      SelectedItem="{x:Bind ViewModel.TextEncodingName, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch"
+                                      ToolTipService.ToolTip="接收数据的解码方式（也用于文本发送）。对已打开的串口立即生效；每个串口会记住自己的选择。" />
+                        </StackPanel>
                     </StackPanel>
 
                     <!-- Available ports -->
@@ -1000,6 +1064,35 @@
                                     </ComboBox.ItemTemplate>
                                 </ComboBox>
                             </StackPanel>
+
+                            <!-- The send box is single-line, so a device that expects \r could previously
+                                 only be driven through a snippet carrying an escape. 无 is the default and
+                                 keeps the byte stream identical to what it was before this existed. -->
+                            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <TextBlock Text="行尾"
+                                           Style="{StaticResource AppCaptionTextStyle}"
+                                           VerticalAlignment="Center" />
+                                <ComboBox ItemsSource="{x:Bind ViewModel.SendTerminatorOptions}"
+                                          SelectedValuePath="Value"
+                                          SelectedValue="{Binding SendTerminator, Mode=TwoWay}"
+                                          MinHeight="{StaticResource AppControlHeightCompact}"
+                                          MinWidth="106"
+                                          ToolTipService.ToolTip="发送文本时自动追加的行尾符。默认「无」，即发送框里的内容原样发出；串口设备通常需要 CR。">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Name}" />
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </StackPanel>
+
+                            <!-- Only meaningful once a terminator is selected, hence the gate: with 无
+                                 the split would be a no-op, and a switch that does nothing is worse than
+                                 a greyed-out one. -->
+                            <CheckBox Content="多行拆分"
+                                      IsChecked="{x:Bind ViewModel.SplitMultilineSend, Mode=TwoWay}"
+                                      IsEnabled="{x:Bind ViewModel.CanSplitMultilineSend, Mode=OneWay}"
+                                      ToolTipService.ToolTip="勾选并选中行尾符后，输入里的换行会逐行发送（每行各带一个行尾符）；不勾选则整段内容末尾只加一个行尾符" />
                         </StackPanel>
 
                         <TextBox x:Name="SendTextBox"

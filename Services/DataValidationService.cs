@@ -37,17 +37,17 @@ public class DataValidationService : IDataValidationService
         _logger = logger;
     }
 
-    public Task<DataValidationResult> ValidateDataAsync(byte[] data, string portName)
+    public Task<DataValidationResult> ValidateDataAsync(byte[] data, string portName, Encoding encoding)
     {
         // Runs synchronously on the caller's thread. The DataReceived path delivers chunks
         // per-port in order on the serial driver's worker thread; a Task.Run here hopped to
         // the pool on every chunk, which both reordered deliveries under load and thrashed
         // the thread pool at high baud rates. The per-port PortValidationState is only ever
         // touched by that port's worker thread, so the statistics below stay race-free.
-        return Task.FromResult(ValidateDataCore(data, portName));
+        return Task.FromResult(ValidateDataCore(data, portName, encoding));
     }
 
-    private DataValidationResult ValidateDataCore(byte[] data, string portName)
+    private DataValidationResult ValidateDataCore(byte[] data, string portName, Encoding encoding)
     {
         var result = new DataValidationResult
         {
@@ -71,8 +71,9 @@ public class DataValidationService : IDataValidationService
             // 获取或创建端口状态
             var portState = _portStates.GetOrAdd(portName, _ => new PortValidationState());
 
-            // 计算数据质量评分
-            var text = Encoding.UTF8.GetString(data);
+            // 计算数据质量评分。解码用该端口自己的编码：按 UTF-8 解一个 GB18030 字节流只会得到替换
+            // 字符，评分随即跌到「乱码」区间，数据会被丢弃或误触发波特率检测。
+            var text = encoding.GetString(data);
             var printableRatio = ComputePrintableRatio(text);
             var qualityScore = CalculateDataQualityScore(data, text, printableRatio);
             result.QualityScore = qualityScore;
@@ -94,7 +95,7 @@ public class DataValidationService : IDataValidationService
                 if (printableRatio >= CleanableTextRatio)
                 {
                     result.SuggestedAction = ValidationAction.CleanAndProcess;
-                    result.ProcessedData = CleanData(data);
+                    result.ProcessedData = CleanData(data, encoding);
                     result.Message = "数据质量一般，已清理";
                 }
                 else
@@ -198,23 +199,48 @@ public class DataValidationService : IDataValidationService
         };
     }
 
+    /// <summary>
+    /// 文本似然度：解码后有多少字符读起来是文本而不是噪声。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Counts everything except control characters (CR/LF/TAB excepted) and U+FFFD, the replacement
+    /// character a decoder emits for bytes that are not valid in the current encoding.
+    /// </para>
+    /// <para>
+    /// The previous definition counted only ASCII 32..126, which made correctly decoded CJK text look
+    /// like binary data: a GB18030 or UTF-8 Chinese log scored near zero and therefore landed in the
+    /// <see cref="ValidationAction.Discard"/> / <see cref="ValidationAction.TriggerBaudRateDetection"/>
+    /// band. Binary payloads still score near zero, because they decode to replacement characters — the
+    /// detection is not weakened by this, it is corrected.
+    /// </para>
+    /// <para>
+    /// Span loop instead of text.Count(lambda): the LINQ path boxes string's enumerator and pays a
+    /// delegate call per character, on the per-port read thread, for every received chunk.
+    /// </para>
+    /// </remarks>
     private static double ComputePrintableRatio(string text)
     {
         if (string.IsNullOrEmpty(text))
             return 0.0;
 
-        // 可打印字符比例。\r\n\t 是合法的文本控制字符，不算乱码。
-        // Span loop instead of text.Count(lambda): the LINQ path boxes string's enumerator and pays a
-        // delegate call per character, on the per-port read thread, for every received chunk.
         var printableChars = 0;
         var span = text.AsSpan();
         for (var i = 0; i < span.Length; i++)
         {
             var c = span[i];
-            if ((c >= 32 && c <= 126) || c == '\r' || c == '\n' || c == '\t')
+            if (c == '\uFFFD')
             {
-                printableChars++;
+                continue;
             }
+
+            // \r\n\t 是合法的文本控制字符，不算乱码；其余控制字符算噪声。
+            if (char.IsControl(c) && c != '\r' && c != '\n' && c != '\t')
+            {
+                continue;
+            }
+
+            printableChars++;
         }
 
         return (double)printableChars / text.Length;
@@ -327,12 +353,37 @@ public class DataValidationService : IDataValidationService
         return 0.5; // 太长，可能是垃圾数据
     }
 
-    private byte[] CleanData(byte[] data)
+    /// <summary>
+    /// 去掉控制字符后重新编码，其余内容原样保留。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only control characters are dropped now. The previous implementation kept a character only if it
+    /// was in 32..126 (plus CR/LF/TAB), which silently deleted every non-ASCII character: the line
+    /// <c>AT+READY 温度</c> reached the log as <c>AT+READY</c>. That is not a cleaning rule but data loss,
+    /// and it fired exactly where mixed ASCII+CJK traffic lands (middle quality band, printable ratio at
+    /// or above <see cref="CleanableTextRatio"/>). U+FFFD is deliberately kept as well — a debugging tool
+    /// should show that the bytes did not decode rather than hide the evidence.
+    /// </para>
+    /// <para>
+    /// The chunk is decoded and re-encoded with the port's own encoding, so a GB18030 payload is not
+    /// round-tripped through UTF-8 on the way.
+    /// </para>
+    /// </remarks>
+    private static byte[] CleanData(byte[] data, Encoding encoding)
     {
-        var text = Encoding.UTF8.GetString(data);
+        var text = encoding.GetString(data);
 
-        // 移除不可打印字符（保留 \r\n\t 等文本控制字符）
-        var cleanedText = new string(text.Where(c => (c >= 32 && c <= 126) || c == '\r' || c == '\n' || c == '\t').ToArray());
+        var builder = new StringBuilder(text.Length);
+        foreach (var c in text)
+        {
+            if (!char.IsControl(c) || c == '\r' || c == '\n' || c == '\t')
+            {
+                builder.Append(c);
+            }
+        }
+
+        var cleanedText = builder.ToString();
 
         // 限制长度以防止内存问题
         if (cleanedText.Length > 2048)
@@ -340,7 +391,7 @@ public class DataValidationService : IDataValidationService
             cleanedText = cleanedText.Substring(0, 2048);
         }
 
-        return Encoding.UTF8.GetBytes(cleanedText);
+        return encoding.GetBytes(cleanedText);
     }
 
     private bool IsGarbageData(byte[] data, double qualityScore)

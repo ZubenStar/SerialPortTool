@@ -44,7 +44,13 @@ public interface ISerialPortService
     /// <summary>
     /// 打开所有可用串口
     /// </summary>
-    Task<int> OpenAllPortsAsync(SerialPortConfig defaultConfig);
+    /// <param name="defaultConfig">各串口共用的默认参数。</param>
+    /// <param name="encodingNameForPort">
+    /// 逐端口的文本编码（端口名 → 编码名）。返回 null 的端口用 <paramref name="defaultConfig"/> 里的值；
+    /// 传入 null 则全部用默认值。之所以是回调而不是打开之后的补充赋值：编码必须在端口打开<em>之前</em>
+    /// 登记，否则首批数据会先按上一个编码解码（对 GB18030 设备就是开头几行乱码，且可能被校验层丢弃）。
+    /// </param>
+    Task<int> OpenAllPortsAsync(SerialPortConfig defaultConfig, Func<string, string?>? encodingNameForPort = null);
 
     /// <summary>
     /// 关闭所有串口
@@ -65,6 +71,21 @@ public interface ISerialPortService
     /// 发送文本数据
     /// </summary>
     Task SendTextAsync(string portName, string text, System.Text.Encoding? encoding = null);
+
+    /// <summary>
+    /// 设置某个串口的文本编码：接收解码、数据校验与文本发送都用它。
+    /// </summary>
+    /// <remarks>
+    /// 编码是解码/显示层的事，所以它对本就打开的串口可以即时生效，不需要关闭重开——这与停止位、校验位、
+    /// 流控等只能在打开时生效的参数不同。名称由 <c>Helpers.SerialEncodings</c> 规范化，无法识别的名称
+    /// 会退回 UTF-8。
+    /// </remarks>
+    void SetPortTextEncoding(string portName, string encodingName);
+
+    /// <summary>
+    /// 取某个串口当前的文本编码名称；没有记录时返回 UTF-8。
+    /// </summary>
+    string GetPortTextEncodingName(string portName);
 
     /// <summary>
     /// 获取串口配置

@@ -773,21 +773,61 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Enter in the send box sends, matching what the placeholder text promises.
+    /// Enter in the send box sends, and ↑ / ↓ walk the send history.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The text box is single-line, so Enter carries no other meaning here. The event is marked handled
     /// so the press cannot also reach a default button.
+    /// </para>
+    /// <para>
+    /// ↑ / ↓ are taken over for the same reason the log list takes over its own wheel gestures rather than
+    /// relying on the framework: in a single-line box the arrow keys only move the caret, which is
+    /// meaningless, while the recall list is what the user is actually reaching for. The walk itself lives
+    /// on the ViewModel, so it can be exercised without a window; this handler only decides that a key
+    /// means "recall" and keeps the caret where the user expects it.
+    /// </para>
     /// </remarks>
     private async void SendTextBox_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
-        if (e.Key != Windows.System.VirtualKey.Enter)
+        switch (e.Key)
         {
-            return;
-        }
+            case Windows.System.VirtualKey.Enter:
+                e.Handled = true;
+                await SendAsync();
+                break;
 
-        e.Handled = true;
-        await SendAsync();
+            // Handled only when something was actually recalled, so an empty history leaves the arrow key
+            // as an ordinary caret movement rather than swallowing it.
+            case Windows.System.VirtualKey.Up:
+                if (ViewModel.RecallOlderSendText() is not null)
+                {
+                    e.Handled = true;
+                    MoveSendCaretToEnd();
+                }
+                break;
+
+            case Windows.System.VirtualKey.Down:
+                if (ViewModel.RecallNewerSendText() is not null)
+                {
+                    e.Handled = true;
+                    MoveSendCaretToEnd();
+                }
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Puts the caret after the recalled text, so typing continues from what was just recalled.
+    /// </summary>
+    /// <remarks>
+    /// Assigning <c>Text</c> from code leaves the selection at the start of the box, which would silently
+    /// prepend the next keystroke to the payload.
+    /// </remarks>
+    private void MoveSendCaretToEnd()
+    {
+        SendTextBox.SelectionStart = SendTextBox.Text.Length;
+        SendTextBox.SelectionLength = 0;
     }
 
     private async Task SendAsync()

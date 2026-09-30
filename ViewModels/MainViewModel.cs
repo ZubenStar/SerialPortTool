@@ -821,6 +821,66 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private bool _showSentData = true;
 
+    /// <summary>
+    /// 发送文本时追加的行尾符。
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <see cref="SendLineEnding.None"/>: a terminator has to be asked for, because appending
+    /// one silently would change the bytes of every payload on every existing install. The send box is a
+    /// single-line <c>TextBox</c>, so without this a device that expects <c>\r</c> could only be driven
+    /// through a snippet carrying an escape.
+    /// </remarks>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanSplitMultilineSend))]
+    private SendLineEnding _sendTerminator = SendLineEnding.None;
+
+    /// <summary>「行尾符」选择器的选项。</summary>
+    public ObservableCollection<SerialParameterOption<SendLineEnding>> SendTerminatorOptions { get; } = new()
+    {
+        new(SendLineEnding.None, "无"),
+        new(SendLineEnding.Cr, "CR (\\r)"),
+        new(SendLineEnding.Lf, "LF (\\n)"),
+        new(SendLineEnding.CrLf, "CRLF (\\r\\n)"),
+    };
+
+    /// <summary>
+    /// 多行内容逐行发送，每行各带一个行尾符。
+    /// </summary>
+    /// <remarks>
+    /// On by default, so picking a terminator immediately behaves the way a device expects from a
+    /// multi-line paste. Turning it off sends the block as one piece with a single terminator at the end.
+    /// </remarks>
+    [ObservableProperty]
+    private bool _splitMultilineSend = true;
+
+    /// <summary>「多行拆分」只有在选了行尾符之后才有意义，所以未选时把开关置灰。</summary>
+    public bool CanSplitMultilineSend => SendTerminator != SendLineEnding.None;
+
+    /// <summary>
+    /// 最近发送过的内容，最新在前。
+    /// </summary>
+    /// <remarks>
+    /// A plain list rather than an ObservableCollection: nothing binds to it (the recall is the keyboard),
+    /// so per-change notifications would be work nobody observes. The single instance is kept and its
+    /// contents swapped, so the public view never has to be re-read.
+    /// </remarks>
+    private readonly List<string> _recentSendTexts = new();
+
+    /// <summary>发送历史（最新在前），发送框 ↑/↓ 从这里召回。</summary>
+    public IReadOnlyList<string> RecentSendTexts => _recentSendTexts;
+
+    /// <summary>召回游标在 <see cref="RecentSendTexts"/> 中的位置；-1 表示当前没有在召回。</summary>
+    private int _sendHistoryIndex = -1;
+
+    /// <summary>开始召回之前发送框里的内容；↓ 走过最新一条时把它还回去。</summary>
+    private string? _sendHistoryDraft;
+
+    /// <summary>
+    /// True while a recall assignment is in flight, so <see cref="OnSendTextChanged"/> does not treat the
+    /// walk's own writes as a user edit — that would end the walk on its very first step.
+    /// </summary>
+    private bool _isRecallingSendHistory;
+
     [ObservableProperty]
     private string _txColorHex = PortColorPalette.DefaultTxHex;
 
@@ -1169,11 +1229,174 @@ public partial class MainViewModel : ObservableObject, IDisposable
     partial void OnSendTextChanged(string value)
     {
         _ = _settingsService.SaveSettingAsync("SendText", value);
+
+        // A real edit ends a recall walk; the writes the walk itself makes must not, or ↑ would reset the
+        // walk the moment it moved.
+        if (!_isRecallingSendHistory)
+        {
+            ResetSendHistoryNavigation();
+        }
+    }
+
+    partial void OnSendTerminatorChanged(SendLineEnding value)
+    {
+        _ = _settingsService.SaveSettingAsync("SendTerminator", (int)value);
+    }
+
+    partial void OnSplitMultilineSendChanged(bool value)
+    {
+        _ = _settingsService.SaveSettingAsync("SplitMultilineSend", value ? 1 : 0);
     }
 
     partial void OnShowSentDataChanged(bool value)
     {
         _ = _settingsService.SaveSettingAsync("ShowSentData", value ? 1 : 0);
+    }
+
+    // The line parameters are only persisted when a port is opened (see SaveLineParametersAsync); the
+    // handlers exist so a change made while ports are live is not silently ignored.
+    partial void OnDataBitsChanged(int value) => HintThatLineParametersApplyOnNextOpen();
+
+    partial void OnStopBitsChanged(System.IO.Ports.StopBits value) => HintThatLineParametersApplyOnNextOpen();
+
+    partial void OnParityChanged(System.IO.Ports.Parity value) => HintThatLineParametersApplyOnNextOpen();
+
+    partial void OnHandshakeChanged(System.IO.Ports.Handshake value) => HintThatLineParametersApplyOnNextOpen();
+
+    partial void OnTextEncodingNameChanged(string value)
+    {
+        if (_isLoadingSerialParameters)
+        {
+            // Startup read: nothing was changed by the user, so there is nothing to persist or apply.
+            return;
+        }
+
+        _ = ApplyTextEncodingChangeAsync(value);
+    }
+
+    /// <summary>
+    /// Tells the user that a changed line parameter does not reach ports that are already open.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>SerialPort</c> applies data bits / stop bits / parity / handshake when the handle is opened, so
+    /// the only way to apply them to a live port is a close-and-reopen — which is exactly the
+    /// close/reconnect race the "do not regress" list forbids doing implicitly. A status-bar line is
+    /// therefore the whole behaviour: it states the truth without touching a live port.
+    /// </para>
+    /// <para>
+    /// Deliberately not a notification-stack entry: that channel is reserved for what the user must
+    /// notice, and moving a combo box is not one of them.
+    /// </para>
+    /// </remarks>
+    private void HintThatLineParametersApplyOnNextOpen()
+    {
+        if (_isLoadingSerialParameters || OpenPorts.Count == 0)
+        {
+            return;
+        }
+
+        StatusMessage = "串口参数已改为对「下次打开」生效：已打开的串口需关闭后重新打开";
+    }
+
+    /// <summary>
+    /// Reads a line parameter from a plain int setting, rejecting anything outside
+    /// <paramref name="options"/>.
+    /// </summary>
+    /// <remarks>
+    /// Keeps a hand-edited <c>settings.json</c> from turning into a port that can never be opened. The
+    /// fallback is always the shipped default rather than "clamp to something similar".
+    /// </remarks>
+    private static T PickAllowedValue<T>(int raw, ObservableCollection<SerialParameterOption<T>> options, T fallback)
+        where T : struct
+    {
+        var candidate = typeof(T).IsEnum
+            ? (T)Enum.ToObject(typeof(T), raw)
+            : (T)Convert.ChangeType(raw, typeof(T), System.Globalization.CultureInfo.InvariantCulture);
+
+        foreach (var option in options)
+        {
+            if (EqualityComparer<T>.Default.Equals(option.Value, candidate))
+            {
+                return option.Value;
+            }
+        }
+
+        return fallback;
+    }
+
+    /// <summary>
+    /// Persists the line parameters a later open will use.
+    /// </summary>
+    /// <remarks>
+    /// Called only from the two open paths, matching how the baud-rate settings are already saved: these
+    /// are "what the next open uses", not live state.
+    /// </remarks>
+    private async Task SaveLineParametersAsync()
+    {
+        await _settingsService.SaveSettingAsync("DataBits", DataBits);
+        await _settingsService.SaveSettingAsync("StopBits", (int)StopBits);
+        await _settingsService.SaveSettingAsync("Parity", (int)Parity);
+        await _settingsService.SaveSettingAsync("Handshake", (int)Handshake);
+    }
+
+    /// <summary>
+    /// Applies a text-encoding change: persists it, and pushes it to every open port immediately.
+    /// </summary>
+    /// <remarks>
+    /// Unlike the line parameters, the encoding takes effect without a close/reopen — it is a decode
+    /// concern, and the mechanism for changing it is dropping the port's line assembler so the next chunk
+    /// builds one for the new encoding. That is the same operation <see cref="ClearLogs"/> and
+    /// <see cref="ClosePortAsync"/> already perform, so it adds no new way for the read thread and the UI
+    /// thread to meet. A partially received line is dropped with the assembler on purpose: it was decoded
+    /// with the encoding the user just rejected.
+    /// </remarks>
+    private async Task ApplyTextEncodingChangeAsync(string requestedName)
+    {
+        var normalized = SerialEncodings.Normalize(requestedName);
+        if (!SerialEncodings.IsSupported(requestedName))
+        {
+            _logger.LogWarning("Unknown text encoding '{Encoding}'; using {Fallback}", requestedName, normalized);
+        }
+
+        // Snapshot the ports before the first await. OpenPorts is a UI-bound collection and StatusMessage is
+        // a bound property, so neither may be touched from a continuation that could land on a pool thread;
+        // everything else below (the service map, the assembler dictionary) is deliberately thread-safe.
+        var openPorts = OpenPorts.ToList();
+
+        await _settingsService.SaveSettingAsync(SerialEncodingSettingKey, normalized);
+
+        foreach (var port in openPorts)
+        {
+            _serialPortService.SetPortTextEncoding(port.PortName, normalized);
+            await _settingsService.SaveSettingAsync(PortEncodingSettingKey(port.PortName), normalized);
+            _lineAssemblers.TryRemove(port.PortName, out _);
+        }
+
+        StatusMessage = openPorts.Count == 0
+            ? $"文本编码已设为 {normalized}"
+            : $"文本编码已设为 {normalized}，已对 {openPorts.Count} 个串口即时生效";
+    }
+
+    /// <summary>
+    /// The encoding a port opens with: its remembered per-port value, else the current default.
+    /// </summary>
+    /// <remarks>
+    /// Per port rather than global, following <c>PortColor_&lt;port&gt;</c>: two devices on two ports
+    /// genuinely can use two character sets, and the value has to survive a close/reopen in one session.
+    /// </remarks>
+    private async Task<string> ResolvePortEncodingForOpenAsync(string portName)
+    {
+        var remembered = await _settingsService.LoadSettingAsync(
+            PortEncodingSettingKey(portName), TextEncodingName);
+
+        if (!SerialEncodings.IsSupported(remembered))
+        {
+            _logger.LogWarning("Unknown saved text encoding '{Encoding}' for port {PortName}; using {Fallback}",
+                remembered, portName, SerialEncodings.Normalize(remembered));
+        }
+
+        return SerialEncodings.Normalize(remembered);
     }
 
     partial void OnTxColorHexChanged(string value)
@@ -1364,6 +1587,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private System.IO.Ports.Parity _parity = System.IO.Ports.Parity.None;
 
+    /// <summary>
+    /// Flow control (handshake) used when a port is opened.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <see cref="System.IO.Ports.Handshake.None"/>, which is also what <c>SerialPort</c>
+    /// defaults to — an unchanged install therefore sends exactly the bytes it always did.
+    /// </remarks>
+    [ObservableProperty]
+    private System.IO.Ports.Handshake _handshake = System.IO.Ports.Handshake.None;
+
     public ObservableCollection<int> AvailableBaudRates { get; } = new()
     {
         1152000, 2000000, 3000000, 6000000
@@ -1436,6 +1669,58 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         5, 6, 7, 8
     };
+
+    /// <summary>Stop-bit choices. Labels are written out because <c>OnePointFive</c> is not a name.</summary>
+    public ObservableCollection<SerialParameterOption<System.IO.Ports.StopBits>> StopBitsOptions { get; } = new()
+    {
+        new(System.IO.Ports.StopBits.One, "1"),
+        new(System.IO.Ports.StopBits.OnePointFive, "1.5"),
+        new(System.IO.Ports.StopBits.Two, "2"),
+    };
+
+    /// <summary>Parity choices.</summary>
+    public ObservableCollection<SerialParameterOption<System.IO.Ports.Parity>> ParityOptions { get; } = new()
+    {
+        new(System.IO.Ports.Parity.None, "无校验"),
+        new(System.IO.Ports.Parity.Odd, "奇校验"),
+        new(System.IO.Ports.Parity.Even, "偶校验"),
+        new(System.IO.Ports.Parity.Mark, "标记校验"),
+        new(System.IO.Ports.Parity.Space, "空格校验"),
+    };
+
+    /// <summary>Flow-control choices.</summary>
+    public ObservableCollection<SerialParameterOption<System.IO.Ports.Handshake>> HandshakeOptions { get; } = new()
+    {
+        new(System.IO.Ports.Handshake.None, "无"),
+        new(System.IO.Ports.Handshake.XOnXOff, "软件 XON/XOFF"),
+        new(System.IO.Ports.Handshake.RequestToSend, "硬件 RTS/CTS"),
+        new(System.IO.Ports.Handshake.RequestToSendXOnXOff, "RTS/CTS + XON/XOFF"),
+    };
+
+    /// <summary>
+    /// True while <see cref="InitializeAsync"/> is adopting the saved line parameters.
+    /// </summary>
+    /// <remarks>
+    /// Guards the change handlers below so a startup read is not reported as a user edit that would
+    /// affect already-open ports. Same shape as <c>_skipTuningEnabledPersistence</c>.
+    /// </remarks>
+    private bool _isLoadingSerialParameters;
+
+    /// <summary>
+    /// Text encoding a newly opened port starts with. Each port also has its own remembered value
+    /// (<c>PortEncoding_&lt;port&gt;</c>), so re-opening one restores what it was last using.
+    /// </summary>
+    [ObservableProperty]
+    private string _textEncodingName = SerialEncodings.Utf8Name;
+
+    /// <summary>Encoding choices for the sidebar picker.</summary>
+    public IReadOnlyList<string> AvailableTextEncodings { get; } = SerialEncodings.SupportedNames;
+
+    /// <summary>Settings key holding the encoding new ports start with.</summary>
+    private const string SerialEncodingSettingKey = "SerialEncoding";
+
+    /// <summary>Settings key holding one port's remembered encoding.</summary>
+    private static string PortEncodingSettingKey(string portName) => $"PortEncoding_{portName}";
 
     public MainViewModel(
         ISerialPortService serialPortService,
@@ -1511,10 +1796,51 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _logger.LogInformation("Loaded baud rate settings: BaudRate={BaudRate}, UseCustom={UseCustom}, CustomValue={CustomValue}",
             BaudRate, UseCustomBaudRate, CustomBaudRate);
 
+        // Line parameters. Read under a suppression flag so a startup read cannot be reported as a user
+        // edit (see HintThatLineParametersApplyOnNextOpen), and validated because the values round-trip
+        // through settings.json as plain ints — a hand-edited file could name a value the enum does not
+        // define, or StopBits.None, which SerialPort refuses at open time.
+        _isLoadingSerialParameters = true;
+        try
+        {
+            var dataBits = await _settingsService.LoadSettingAsync("DataBits", 8);
+            DataBits = AvailableDataBits.Contains(dataBits) ? dataBits : 8;
+
+            StopBits = PickAllowedValue(
+                await _settingsService.LoadSettingAsync("StopBits", (int)System.IO.Ports.StopBits.One),
+                StopBitsOptions,
+                System.IO.Ports.StopBits.One);
+
+            Parity = PickAllowedValue(
+                await _settingsService.LoadSettingAsync("Parity", (int)System.IO.Ports.Parity.None),
+                ParityOptions,
+                System.IO.Ports.Parity.None);
+
+            Handshake = PickAllowedValue(
+                await _settingsService.LoadSettingAsync("Handshake", (int)System.IO.Ports.Handshake.None),
+                HandshakeOptions,
+                System.IO.Ports.Handshake.None);
+
+            // Normalize even the default, so a settings.json holding "gb18030" or "GB-18030" resolves to
+            // the canonical spelling before it is ever written back or shown in the picker.
+            TextEncodingName = SerialEncodings.Normalize(
+                await _settingsService.LoadSettingAsync(SerialEncodingSettingKey, SerialEncodings.Utf8Name));
+        }
+        finally
+        {
+            _isLoadingSerialParameters = false;
+        }
+
         // Load send settings
         SendAsHex = await _settingsService.LoadSettingAsync("SendAsHex", 0) == 1;
         SendText = await _settingsService.LoadSettingAsync("SendText", string.Empty);
         ShowSentData = await _settingsService.LoadSettingAsync("ShowSentData", 1) == 1;
+        SendTerminator = PickAllowedValue(
+            await _settingsService.LoadSettingAsync("SendTerminator", (int)SendLineEnding.None),
+            SendTerminatorOptions,
+            SendLineEnding.None);
+        SplitMultilineSend = await _settingsService.LoadSettingAsync("SplitMultilineSend", 1) == 1;
+        await LoadRecentSendTextsAsync();
         TxColorHex = await _settingsService.LoadSettingAsync("TxColorHex", PortColorPalette.DefaultTxHex);
         RxColorHex = await _settingsService.LoadSettingAsync("RxColorHex", PortColorPalette.DefaultRxHex);
         IsSidebarCollapsed = await _settingsService.LoadSettingAsync(SidebarCollapsedSettingKey, 0) == 1;
@@ -1669,7 +1995,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 BaudRate = baudRateToUse,
                 DataBits = DataBits,
                 StopBits = StopBits,
-                Parity = Parity
+                Parity = Parity,
+                Handshake = Handshake,
+                TextEncodingName = await ResolvePortEncodingForOpenAsync(portName)
             };
 
             // Sampled before the open and compared after it: 全部关闭 pressed while this port was
@@ -1710,6 +2038,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 await _settingsService.SaveSettingAsync("BaudRate", BaudRate);
                 await _settingsService.SaveSettingAsync("UseCustomBaudRate", UseCustomBaudRate ? 1 : 0);
                 await _settingsService.SaveSettingAsync("CustomBaudRate", CustomBaudRate);
+                await SaveLineParametersAsync();
                 _logger.LogInformation("Saved baud rate settings: UseCustom={UseCustom}, CustomValue={CustomValue}",
                     UseCustomBaudRate, CustomBaudRate);
 
@@ -1723,7 +2052,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Error opening port {portName}: {ex.Message}";
+            // 1.5 stop bits is legal in the API but not supported by every UART/driver combination, and the
+            // failure surfaces as a generic IOException/ArgumentException. Without the hint there is no way
+            // to connect "I changed one dropdown" to "the port will not open".
+            StatusMessage = StopBits == System.IO.Ports.StopBits.OnePointFive
+                ? $"Error opening port {portName}: {ex.Message} — 1.5 停止位可能不被设备/驱动支持，请改回 1 或 2 后重试"
+                : $"Error opening port {portName}: {ex.Message}";
             _logger.LogError(ex, "Error opening port {PortName}", portName);
         }
         finally
@@ -1754,12 +2088,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             _logger.LogInformation("OpenAllPorts: Using baud rate {BaudRate}", baudRateToUse);
 
+            // Remembered encodings are read *before* the batch starts: the service registers a port's
+            // encoding while it opens it, so a value read afterwards would arrive after the first chunks
+            // had already been decoded with the wrong one. A port that appears between the scan and the
+            // batch falls back to the default — the same thing that happens for a port never configured.
+            var encodingsByPort = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var candidate in AvailablePorts)
+            {
+                encodingsByPort[candidate] = await ResolvePortEncodingForOpenAsync(candidate);
+            }
+
             var defaultConfig = new SerialPortConfig
             {
                 BaudRate = baudRateToUse,
                 DataBits = DataBits,
                 StopBits = StopBits,
-                Parity = Parity
+                Parity = Parity,
+                Handshake = Handshake,
+                TextEncodingName = TextEncodingName
             };
 
             // Sampled before the batch and compared after it: 全部关闭 pressed while this loop was
@@ -1771,7 +2117,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
             var alreadyOpen = _serialPortService.GetOpenPorts()
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            var openedCount = await _serialPortService.OpenAllPortsAsync(defaultConfig);
+            var openedCount = await _serialPortService.OpenAllPortsAsync(
+                defaultConfig,
+                portName => encodingsByPort.TryGetValue(portName, out var encoding)
+                    ? encoding
+                    : TextEncodingName);
 
             if (Volatile.Read(ref _closeAllEpoch) != closeAllEpoch)
             {
@@ -1814,13 +2164,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 }
             }
 
-            StatusMessage = $"Opened {openedCount} port(s) successfully (BaudRate: {baudRateToUse})";
+            StatusMessage = openedCount == 0 && StopBits == System.IO.Ports.StopBits.OnePointFive
+                ? $"Opened {openedCount} port(s) successfully (BaudRate: {baudRateToUse}) — 1.5 停止位可能不被设备/驱动支持，请改回 1 或 2 后重试"
+                : $"Opened {openedCount} port(s) successfully (BaudRate: {baudRateToUse})";
             _logger.LogInformation("Batch opened {Count} ports with baud rate {BaudRate}", openedCount, baudRateToUse);
 
             // Save baud rate settings for next time
             await _settingsService.SaveSettingAsync("BaudRate", BaudRate);
             await _settingsService.SaveSettingAsync("UseCustomBaudRate", UseCustomBaudRate ? 1 : 0);
             await _settingsService.SaveSettingAsync("CustomBaudRate", CustomBaudRate);
+            await SaveLineParametersAsync();
         }
         catch (Exception ex)
         {
@@ -2471,6 +2824,116 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     #endregion
 
+    /// <summary>
+    /// ↑：往历史里更早的一条走。
+    /// </summary>
+    /// <returns>要显示在发送框里的内容；没有历史时返回 null。</returns>
+    /// <remarks>
+    /// Shell-style recall: the first ↑ of a walk stashes whatever was typed, so ↓ can hand it back instead
+    /// of stranding the user on a history entry they did not want.
+    /// </remarks>
+    public string? RecallOlderSendText()
+    {
+        if (_recentSendTexts.Count == 0)
+        {
+            return null;
+        }
+
+        if (_sendHistoryIndex < 0)
+        {
+            _sendHistoryDraft = SendText;
+            _sendHistoryIndex = 0;
+        }
+        else
+        {
+            _sendHistoryIndex = Math.Min(_sendHistoryIndex + 1, _recentSendTexts.Count - 1);
+        }
+
+        return ApplySendHistoryRecall(_recentSendTexts[_sendHistoryIndex]);
+    }
+
+    /// <summary>
+    /// ↓：往最新的一条走，走过最新一条就恢复开始召回前的内容。
+    /// </summary>
+    /// <returns>要显示在发送框里的内容；当前没有在召回时返回 null（此时 ↓ 只是普通的方向键）。</returns>
+    public string? RecallNewerSendText()
+    {
+        if (_sendHistoryIndex < 0)
+        {
+            return null;
+        }
+
+        _sendHistoryIndex--;
+        if (_sendHistoryIndex < 0)
+        {
+            var draft = _sendHistoryDraft ?? string.Empty;
+            _sendHistoryDraft = null;
+            return ApplySendHistoryRecall(draft);
+        }
+
+        return ApplySendHistoryRecall(_recentSendTexts[_sendHistoryIndex]);
+    }
+
+    /// <summary>结束当前召回，使下一次 ↑ 从最新一条重新开始。</summary>
+    public void ResetSendHistoryNavigation()
+    {
+        _sendHistoryIndex = -1;
+        _sendHistoryDraft = null;
+    }
+
+    private string ApplySendHistoryRecall(string text)
+    {
+        _isRecallingSendHistory = true;
+        try
+        {
+            SendText = text;
+        }
+        finally
+        {
+            _isRecallingSendHistory = false;
+        }
+
+        return text;
+    }
+
+    private async Task LoadRecentSendTextsAsync()
+    {
+        var json = await _settingsService.LoadSettingAsync("RecentSendTexts", string.Empty);
+
+        if (!SendHistory.TryDeserialize(json, out var entries) && !string.IsNullOrWhiteSpace(json))
+        {
+            // Recoverable by design: the recall list is a convenience, so a damaged value costs the list
+            // and not the session. Logged once, and never with the contents.
+            _logger.LogWarning("Ignoring an unreadable send history from settings; starting with an empty list");
+        }
+
+        _recentSendTexts.Clear();
+        _recentSendTexts.AddRange(entries);
+    }
+
+    private Task SaveRecentSendTextsAsync()
+        => _settingsService.SaveSettingAsync("RecentSendTexts", SendHistory.Serialize(_recentSendTexts));
+
+    /// <summary>
+    /// Records a payload in the send history, newest first.
+    /// </summary>
+    /// <remarks>
+    /// Called only once at least one port accepted the send, so ↑ offers what actually went out rather than
+    /// what was attempted. A hex payload is recorded exactly as typed: the hex switch belongs to the user,
+    /// and recalling a payload only to have it re-interpreted differently would be worse than not offering
+    /// it at all.
+    /// </remarks>
+    private void RecordSendHistory(string payload)
+    {
+        var merged = SendHistory.Merge(_recentSendTexts, payload);
+
+        _recentSendTexts.Clear();
+        _recentSendTexts.AddRange(merged);
+
+        ResetSendHistoryNavigation();
+        _ = SaveRecentSendTextsAsync();
+    }
+
     [RelayCommand(CanExecute = nameof(CanSend))]
     private async Task SendAsync()
     {
@@ -2484,11 +2947,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// Broadcasts one payload to every open port and reports the outcome through the status bar.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Split out of <see cref="SendAsync"/> in v2.2.4 so the quick-send library travels exactly the
     /// same path as the send box — same broadcast, same hex parsing and error text, same sent-log
     /// entry, same statistics refresh. A second send implementation would inevitably drift from this
     /// one. It is deliberately not gated on <c>SendCommand.IsRunning</c>: that guard belongs to the
     /// command's <c>CanExecute</c>, and concurrent writes are serialised per port by the service.
+    /// </para>
+    /// <para>
+    /// Two things are decided here rather than per caller. The payload is encoded <b>per port</b>, because
+    /// two open ports can be configured for two character sets and one send has to serve both — the text is
+    /// built once and only the encoding differs. And the line terminator is applied
+    /// (<see cref="SendLineEndings"/>) before that encoding, so a device that expects <c>\r</c> can be
+    /// driven from the single-line send box.
+    /// </para>
     /// </remarks>
     private async Task SendPayloadAsync(string text, bool asHex)
     {
@@ -2503,8 +2975,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            string displayContent;
-            byte[] data;
+            Dictionary<string, byte[]> payloads;
+            IReadOnlyList<string> displayLines;
 
             if (asHex)
             {
@@ -2514,20 +2986,47 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     return;
                 }
 
-                data = bytes;
-                displayContent = $"[HEX] {BitConverter.ToString(bytes).Replace("-", " ")}";
+                // Hex is already bytes, so the same array goes to every port and the line-ending setting
+                // deliberately does not apply: appending \r to a hand-built frame would corrupt it.
+                payloads = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+                foreach (var portName in targetPorts)
+                {
+                    payloads[portName] = bytes;
+                }
+
+                displayLines = new[] { $"[HEX] {BitConverter.ToString(bytes).Replace("-", " ")}" };
             }
             else
             {
-                data = Encoding.UTF8.GetBytes(text);
-                displayContent = text;
+                var plan = SendLineEndings.CreatePlan(text, SendTerminator, SplitMultilineSend);
+
+                // Encoded once per port, before any write starts: the encoding is read from live per-port
+                // state, and a second read after the first send would be a chance to disagree with the
+                // bytes already on the wire.
+                payloads = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+                foreach (var portName in targetPorts)
+                {
+                    payloads[portName] = SerialEncodings
+                        .Resolve(_serialPortService.GetPortTextEncodingName(portName))
+                        .GetBytes(plan.Payload);
+                }
+
+                displayLines = CapSentLogLines(plan.DisplayLines);
             }
 
-            StatusMessage = targetPorts.Count == 1
-                ? $"正在发送 {data.Length} 字节..."
-                : $"正在向 {targetPorts.Count} 个串口发送 {data.Length} 字节...";
+            // The status line states a per-port size, matching the original wording. With per-port encodings
+            // the sizes can differ (GB18030 and UTF-8 disagree on how many bytes "温度" is), and summing them
+            // under "向 N 个串口发送 X 字节" would read as "X each" — a number that is wrong for every port.
+            var bytesPerPort = payloads[targetPorts[0]].Length;
+            var uniformPayloadSize = payloads.Values.All(bytes => bytes.Length == bytesPerPort);
 
-            var sendResults = await SendDataToPortsAsync(targetPorts, data);
+            StatusMessage = targetPorts.Count == 1
+                ? $"正在发送 {bytesPerPort} 字节..."
+                : uniformPayloadSize
+                    ? $"正在向 {targetPorts.Count} 个串口发送 {bytesPerPort} 字节..."
+                    : $"正在向 {targetPorts.Count} 个串口发送（各端口按自身编码，字节数不同）...";
+
+            var sendResults = await SendDataToPortsAsync(targetPorts, portName => payloads[portName]);
             var successfulPorts = sendResults
                 .Where(result => result.IsSuccess)
                 .Select(result => result.PortName)
@@ -2538,10 +3037,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             if (ShowSentData && successfulPorts.Count > 0)
             {
-                AddSentLogs(successfulPorts, displayContent);
+                AddSentLogs(successfulPorts, displayLines);
             }
 
             RefreshPortStatistics(targetPorts);
+
+            if (successfulPorts.Count > 0)
+            {
+                RecordSendHistory(text);
+            }
 
             if (failedResults.Count > 0)
             {
@@ -2553,8 +3057,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             }
 
             StatusMessage = targetPorts.Count == 1
-                ? $"已发送 {data.Length} 字节"
-                : $"已向 {targetPorts.Count} 个串口发送 {data.Length} 字节";
+                ? $"已发送 {bytesPerPort} 字节"
+                : uniformPayloadSize
+                    ? $"已向 {targetPorts.Count} 个串口发送 {bytesPerPort} 字节"
+                    : $"已向 {targetPorts.Count} 个串口发送（各端口按自身编码，字节数不同）";
         }
         catch (Exception ex)
         {
@@ -2781,13 +3287,27 @@ public partial class MainViewModel : ObservableObject, IDisposable
         SchedulePendingLogFlush();
     }
 
+    /// <summary>
+    /// Sends one payload to every target port, encoding it per port through <paramref name="dataForPort"/>.
+    /// </summary>
+    /// <remarks>
+    /// Plain async sends: writes are async IO, so the old LongRunning dedicated threads (one per port,
+    /// blocking on GetResult) bought nothing but thread-per-port waste. The payloads are materialised in a
+    /// loop rather than through a lazy <c>Select</c>, so the encoder runs exactly once per port and before
+    /// anything is awaited — a second evaluation could otherwise read state that has since changed, and
+    /// would disagree with the bytes already on the wire.
+    /// </remarks>
     private Task<PortSendResult[]> SendDataToPortsAsync(
         IReadOnlyList<string> targetPorts,
-        byte[] data)
+        Func<string, byte[]> dataForPort)
     {
-        // Plain async sends: writes are async IO, so the old LongRunning dedicated threads
-        // (one per port, blocking on GetResult) bought nothing but thread-per-port waste.
-        return Task.WhenAll(targetPorts.Select(portName => SendDataToPortWorkerAsync(portName, data)));
+        var sends = new List<Task<PortSendResult>>(targetPorts.Count);
+        foreach (var portName in targetPorts)
+        {
+            sends.Add(SendDataToPortWorkerAsync(portName, dataForPort(portName)));
+        }
+
+        return Task.WhenAll(sends);
     }
 
     private async Task<PortSendResult> SendDataToPortWorkerAsync(string portName, byte[] data)
@@ -2813,18 +3333,45 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void AddSentLogs(IReadOnlyList<string> targetPorts, string displayContent)
+    /// <summary>Most sent-log lines one send may produce.</summary>
+    /// <remarks>
+    /// A multi-line send writes one entry per line <em>per port</em>, so an unbounded paste would flood the
+    /// log it is describing. The cap is on the log only — the full payload always goes on the wire, and the
+    /// replacement row says how many lines were not listed individually.
+    /// </remarks>
+    private const int MaxSentLogLinesPerSend = 20;
+
+    private static IReadOnlyList<string> CapSentLogLines(IReadOnlyList<string> lines)
+    {
+        if (lines.Count <= MaxSentLogLinesPerSend)
+        {
+            return lines;
+        }
+
+        var capped = new List<string>(lines.Take(MaxSentLogLinesPerSend))
+        {
+            $"…（本行内容与其余 {lines.Count - MaxSentLogLinesPerSend} 行未逐行显示，均已发送）"
+        };
+
+        return capped;
+    }
+
+    /// <summary>Queues one sent-log entry per port per line.</summary>
+    private void AddSentLogs(IReadOnlyList<string> targetPorts, IReadOnlyList<string> displayLines)
     {
         foreach (var portName in targetPorts)
         {
-            var logEntry = new LogEntry
+            foreach (var line in displayLines)
             {
-                PortName = portName,
-                Content = displayContent,
-                IsReceived = false,
-                ColorHex = TxColorHexResolved
-            };
-            AddSentLog(portName, logEntry);
+                var logEntry = new LogEntry
+                {
+                    PortName = portName,
+                    Content = line,
+                    IsReceived = false,
+                    ColorHex = TxColorHexResolved
+                };
+                AddSentLog(portName, logEntry);
+            }
         }
     }
 
@@ -3547,21 +4094,37 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     // Per-port line assembly state. Serial chunks arrive at arbitrary byte offsets, so a
-    // UTF-8 multi-byte character or a text line can be split across two DataReceived events.
+    // multi-byte character or a text line can be split across two DataReceived events.
     // Decoding each chunk in isolation turned split characters into U+FFFD (which the garbage
     // detector then flagged) and split lines into two broken entries. A persistent Decoder
     // carries incomplete byte sequences across chunks; a StringBuilder carries the partial
     // tail line until its newline arrives.
+    //
+    // The encoding arrives as a constructor parameter rather than a mutable field: a Decoder cannot be
+    // re-pointed at another encoding, so switching means dropping the whole assembler. That happens on
+    // the UI thread (ApplyTextEncodingChangeAsync, and the TryRemove in ClosePortAsync / ClearLogs); the
+    // read thread is single-threaded per port and either keeps using the instance it already holds for
+    // one more chunk or builds a fresh one — there is no torn state either way.
     private sealed class PortLineAssembler
     {
+        public PortLineAssembler(Encoding textEncoding)
+        {
+            TextEncoding = textEncoding;
+            Decoder = textEncoding.GetDecoder();
+        }
+
+        /// <summary>The encoding this assembler decodes with; also the source of the char-buffer bound.</summary>
+        public readonly Encoding TextEncoding;
+
         public readonly StringBuilder Pending = new(128);
 
         // Scratch char buffer sized to the largest chunk seen (GetMaxCharCount upper bound).
         public char[] DecodeBuffer = Array.Empty<char>();
 
         // Decoder is not thread-safe, but all chunks for one port arrive on the serial
-        // driver's single DataReceived worker thread, so access is serialized.
-        public readonly Decoder Utf8Decoder = Encoding.UTF8.GetDecoder();
+        // driver's single DataReceived worker thread, so access is serialized. The Encoding instance is
+        // shared and safe to re-read; the Decoder deliberately is not.
+        public readonly Decoder Decoder;
     }
 
     private readonly ConcurrentDictionary<string, PortLineAssembler> _lineAssemblers =
@@ -3676,20 +4239,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            // Decode incrementally through the port's persistent decoder so UTF-8 multi-byte
-            // sequences split across chunk boundaries don't become U+FFFD garbage. Encoding.UTF8
-            // uses replacement fallback, so GetString can never throw — there is no decode
-            // failure path to handle here.
+            // Decode incrementally through the port's persistent decoder so multi-byte sequences split
+            // across chunk boundaries don't become U+FFFD garbage. Every encoding the app offers decodes
+            // with a replacement fallback (see SerialEncodings.Resolve), so GetChars can never throw —
+            // there is no decode failure path to handle here.
+            //
+            // The encoding is looked up on this (the read) thread, which is why the service keeps it in a
+            // concurrent map rather than in state the UI thread owns.
             var portName = e.PortName;
-            var assembler = _lineAssemblers.GetOrAdd(portName, _ => new PortLineAssembler());
+            var assembler = _lineAssemblers.GetOrAdd(portName, name => new PortLineAssembler(
+                SerialEncodings.Resolve(_serialPortService.GetPortTextEncodingName(name))));
 
-            var maxChars = Encoding.UTF8.GetMaxCharCount(e.Data.Length);
+            var maxChars = assembler.TextEncoding.GetMaxCharCount(e.Data.Length);
             if (assembler.DecodeBuffer.Length < maxChars)
             {
                 assembler.DecodeBuffer = new char[maxChars];
             }
 
-            var charsDecoded = assembler.Utf8Decoder.GetChars(
+            var charsDecoded = assembler.Decoder.GetChars(
                 e.Data, 0, e.Data.Length, assembler.DecodeBuffer, 0, flush: false);
             assembler.Pending.Append(assembler.DecodeBuffer, 0, charsDecoded);
 
@@ -4515,7 +5082,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
             BaudRate = baudRate,
             DataBits = DataBits,
             StopBits = StopBits,
-            Parity = Parity
+            Parity = Parity,
+            Handshake = Handshake,
+            TextEncodingName = await ResolvePortEncodingForOpenAsync(portName)
         };
 
         var opened = await _serialPortService.OpenPortAsync(config);
@@ -4597,6 +5166,42 @@ public partial class MainViewModel : ObservableObject, IDisposable
         public double Confidence { get; set; }
         public bool ShouldAutoSwitch { get; set; }
     }
+}
+
+/// <summary>
+/// One entry of a serial line-parameter picker (data bits are a plain int list; stop bits, parity and
+/// flow control use this so the picker can show a Chinese label).
+/// </summary>
+/// <remarks>
+/// A display wrapper rather than a bare enum value, for the same reason <see cref="PortColorOption"/>
+/// exists: <c>StopBits.OnePointFive</c> is not something a user reads off a combo box, and the enum name
+/// is what a bare binding would render. The enum stays the value that is persisted and applied — only
+/// the label lives here.
+/// </remarks>
+public sealed class SerialParameterOption<T> where T : struct
+{
+    public SerialParameterOption(T value, string name)
+    {
+        Value = value;
+        Name = name;
+    }
+
+    /// <summary>The enum value. This is what <c>SelectedValuePath</c> binds to.</summary>
+    public T Value { get; }
+
+    /// <summary>Label shown in the picker.</summary>
+    public string Name { get; }
+
+    /// <summary>
+    /// The label, so a picker that forgets its <c>ItemTemplate</c> shows the name instead of the type name.
+    /// </summary>
+    /// <remarks>
+    /// Not theoretical: a <c>ComboBox</c> with neither an <c>ItemTemplate</c> nor a
+    /// <c>DisplayMemberPath</c> falls back to <see cref="object.ToString"/>, which for this type renders
+    /// <c>SerialPortTool.ViewModels.SerialParameterOption`1[...]</c> in the closed box. A type whose whole
+    /// purpose is to carry a label should not be able to fail that way.
+    /// </remarks>
+    public override string ToString() => Name;
 }
 
 /// <summary>

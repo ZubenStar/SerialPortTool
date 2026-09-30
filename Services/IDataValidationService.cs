@@ -12,8 +12,12 @@ public interface IDataValidationService
     /// </summary>
     /// <param name="data">原始字节数据</param>
     /// <param name="portName">串口名称</param>
+    /// <param name="encoding">
+    /// 该端口当前使用的文本编码。评分、可打印比例与清理都基于按此编码解码出的文本，所以一个 GB18030
+    /// 端口不会因为「按 UTF-8 解码后全是替换字符」而被误判为乱码、丢弃或触发波特率检测。
+    /// </param>
     /// <returns>验证结果</returns>
-    Task<DataValidationResult> ValidateDataAsync(byte[] data, string portName);
+    Task<DataValidationResult> ValidateDataAsync(byte[] data, string portName, System.Text.Encoding encoding);
 
     /// <summary>
     /// 检查是否需要触发波特率重新检测

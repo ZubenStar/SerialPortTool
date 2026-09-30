@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using SerialPortTool.Helpers;
 using SerialPortTool.Models;
 using SerialPortTool.ViewModels;
 using System;
@@ -215,12 +216,20 @@ public sealed partial class QuickCommandPalette : UserControl
     /// Rebuilds the result list for the current query.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Clears and refills the same collection instead of swapping the instance: the list is bound once in
     /// the constructor, so replacing it would mean re-binding on every keystroke. This is a plain
     /// <c>ObservableCollection</c> rather than the shell's <c>RangeObservableCollection</c> deliberately
     /// — the single-<c>Reset</c> discipline exists because a multi-item <c>Reset</c> on the log's
     /// <c>ListView</c> throws under load, and that hazard belongs to the log's scale (thousands of rows,
     /// fires while the user scrolls), not to a list of tens of rows that is rebuilt while it holds focus.
+    /// </para>
+    /// <para>
+    /// Every entry is scored before the list is truncated. The previous shape stopped at <see cref="MaxResults"/>
+    /// rows in <em>source</em> order, so with more than sixty rows a query that named something exactly could
+    /// still answer with sixty ports and hide it. Scoring is a few dozen string comparisons per keystroke,
+    /// which is nothing next to the fact that the row the user asked for has to be the first one.
+    /// </para>
     /// </remarks>
     private void Rebuild()
     {
@@ -228,17 +237,31 @@ public sealed partial class QuickCommandPalette : UserControl
 
         _results.Clear();
 
+        var matches = new List<(PaletteEntry Entry, int Score, int Order)>();
+        var order = 0;
+
         foreach (var entry in BuildEntries())
         {
-            if (_results.Count >= MaxResults)
+            var score = PaletteSearchMatcher.Score(query, entry.Title, entry.Keywords);
+            if (score is not null)
             {
-                break;
+                matches.Add((entry, score.Value, order));
             }
 
-            if (query.Length == 0 || entry.Keywords.Contains(query, StringComparison.OrdinalIgnoreCase))
-            {
-                _results.Add(entry);
-            }
+            order++;
+        }
+
+        // Ties fall back to source order, which is what keeps an empty query showing snippets before ports
+        // exactly as it always did.
+        matches.Sort((left, right) =>
+        {
+            var byScore = right.Score.CompareTo(left.Score);
+            return byScore != 0 ? byScore : left.Order.CompareTo(right.Order);
+        });
+
+        foreach (var match in matches.Take(MaxResults))
+        {
+            _results.Add(match.Entry);
         }
 
         // Preselect the top row so Enter always has a target, and ShowSelection keeps it visible while
