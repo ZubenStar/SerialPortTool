@@ -42,6 +42,31 @@ public static class SendLineEndings
     /// </param>
     public static SendPlan CreatePlan(string text, SendLineEnding lineEnding, bool splitMultiline)
     {
+        var (segments, displayLines) = Build(text, lineEnding, splitMultiline);
+        return new SendPlan(string.Concat(segments), segments, displayLines);
+    }
+
+    /// <summary>
+    /// Splits one payload into the pieces a line-delayed send writes one at a time.
+    /// </summary>
+    /// <remarks>
+    /// Concatenating what this returns reproduces <see cref="CreatePlan"/>'s payload <em>exactly</em>, because
+    /// both come out of the same <see cref="Build"/> call — that identity is what makes the F7 line delay
+    /// safe to add: with the interval at zero the caller sends the whole concatenation in one write, so the
+    /// bytes on the wire cannot differ from an install that never turned the delay on.
+    /// </remarks>
+    public static IReadOnlyList<string> CreateLineSequence(string text, SendLineEnding lineEnding, bool splitMultiline)
+        => Build(text, lineEnding, splitMultiline).Segments;
+
+    /// <summary>
+    /// The one place the payload shape is decided. Both public entry points go through it so the single-write
+    /// and split-write results cannot drift apart.
+    /// </summary>
+    private static (List<string> Segments, string[] DisplayLines) Build(
+        string text,
+        SendLineEnding lineEnding,
+        bool splitMultiline)
+    {
         var terminator = Terminator(lineEnding);
 
         if (terminator.Length == 0)
@@ -49,12 +74,12 @@ public static class SendLineEndings
             // No terminator selected: send exactly what is in the box. Splitting would be pointless (the
             // join would reproduce the input) and would risk changing bytes on an install that never
             // asked for this feature.
-            return new SendPlan(text, new[] { text });
+            return (new List<string> { text }, new[] { text });
         }
 
         if (!splitMultiline)
         {
-            return new SendPlan(text + terminator, new[] { text });
+            return (new List<string> { text + terminator }, new[] { text });
         }
 
         // \r\n first, so a Windows-style line break is not counted as two line breaks.
@@ -68,17 +93,19 @@ public static class SendLineEndings
         }
 
         var builder = new StringBuilder(normalized.Length + terminator.Length * lines.Length);
+        var segments = new List<string>(lines.Length);
         foreach (var line in lines)
         {
             builder.Append(line).Append(terminator);
+            segments.Add(line + terminator);
         }
 
-        return new SendPlan(builder.ToString(), lines);
+        return (segments, lines);
     }
 }
 
 /// <summary>
-/// One text-mode send: the string to encode, and the lines the sent-log shows for it.
+/// One text-mode send: the string to encode, the pieces it is made of, and the lines the sent-log shows.
 /// </summary>
 /// <remarks>
 /// <see cref="Payload"/> is deliberately still a <em>string</em> rather than bytes: the same send can go to
@@ -87,14 +114,25 @@ public static class SendLineEndings
 /// </remarks>
 public sealed class SendPlan
 {
-    public SendPlan(string payload, IReadOnlyList<string> displayLines)
+    public SendPlan(string payload, IReadOnlyList<string> segments, IReadOnlyList<string> displayLines)
     {
         Payload = payload;
+        Segments = segments;
         DisplayLines = displayLines;
     }
 
     /// <summary>Exactly what to encode and write, terminators included.</summary>
     public string Payload { get; }
+
+    /// <summary>
+    /// 逐行发送时一次写一格的片段；按顺序拼接即 <see cref="Payload"/>。
+    /// </summary>
+    /// <remarks>
+    /// The pieces a line-delayed send (v2.5.0) writes one at a time. Their concatenation is
+    /// <see cref="Payload"/> and their count matches <see cref="DisplayLines"/>, so a caller either sends
+    /// the payload whole or walks the two lists in lockstep.
+    /// </remarks>
+    public IReadOnlyList<string> Segments { get; }
 
     /// <summary>Logical lines, without terminators, for the sent-log entries.</summary>
     public IReadOnlyList<string> DisplayLines { get; }

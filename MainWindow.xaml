@@ -6,6 +6,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:converters="using:SerialPortTool.Converters"
     xmlns:controls="using:SerialPortTool.Controls"
+    xmlns:models="using:SerialPortTool.Models"
     mc:Ignorable="d"
     Title="{x:Bind ViewModel.Title, Mode=OneWay}">
 
@@ -31,6 +32,18 @@
     <Grid x:Name="RootLayout"
           Background="{ThemeResource AppWindowBackgroundBrush}"
           DataContext="{x:Bind ViewModel}">
+        <Grid.Resources>
+            <!-- A port picker built in code-behind (the notes dialog) needs an ItemTemplate, because a
+                 ComboBox over AvailablePortItem with neither an ItemTemplate nor a DisplayMemberPath falls
+                 back to object.ToString. AvailablePortItem.ToString returns the port name, which would
+                 happen to work — but relying on that fallback is exactly how a later refactor silently
+                 turns this dialog into a column of type names. -->
+            <DataTemplate x:Key="PortNameItemTemplate" x:DataType="models:AvailablePortItem">
+                <TextBlock Text="{x:Bind PortName, Mode=OneWay}"
+                           FontFamily="{StaticResource AppMonoFontFamily}" />
+            </DataTemplate>
+        </Grid.Resources>
+
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -247,6 +260,45 @@
                     <StackPanel Grid.Row="0" Spacing="10">
                         <TextBlock Text="串口参数" Style="{StaticResource AppSectionLabelStyle}" />
 
+                        <!-- Named presets (F3). Above the individual parameters rather than below: picking a
+                            档案 first and then adjusting is the natural order, and the pickers below show
+                            what the preset actually set. -->
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="配置档案" Style="{StaticResource AppCaptionTextStyle}" />
+                            <ComboBox ItemsSource="{x:Bind ViewModel.PortPresets, Mode=OneWay}"
+                                      SelectedItem="{x:Bind ViewModel.SelectedPortPreset, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch"
+                                      MinHeight="{StaticResource AppControlHeightCompact}"
+                                      ToolTipService.ToolTip="保存过的串口参数组合。套用后对新打开的串口生效。">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="models:PortPreset">
+                                        <TextBlock Text="{x:Bind Name, Mode=OneWay}" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                        MinHeight="{StaticResource AppControlHeightCompact}"
+                                        Padding="9,0"
+                                        Content="套用"
+                                        Click="ApplyPortPreset_Click"
+                                        IsEnabled="{x:Bind ViewModel.HasSelectedPortPreset, Mode=OneWay}"
+                                        ToolTipService.ToolTip="把这套档案的参数写回侧栏；已打开的串口不受影响" />
+                                <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                        MinHeight="{StaticResource AppControlHeightCompact}"
+                                        Padding="9,0"
+                                        Content="保存当前"
+                                        Click="SavePortPreset_Click"
+                                        ToolTipService.ToolTip="把当前参数存成一套档案" />
+                                <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                        MinHeight="{StaticResource AppControlHeightCompact}"
+                                        Padding="9,0"
+                                        Content="删除"
+                                        Click="DeletePortPreset_Click"
+                                        IsEnabled="{x:Bind ViewModel.HasSelectedPortPreset, Mode=OneWay}" />
+                            </StackPanel>
+                        </StackPanel>
+
                         <StackPanel Spacing="4">
                             <TextBlock Text="波特率" Style="{StaticResource AppCaptionTextStyle}" />
                             <ComboBox x:Name="BaudRateComboBox"
@@ -335,6 +387,32 @@
                                       HorizontalAlignment="Stretch"
                                       ToolTipService.ToolTip="接收数据的解码方式（也用于文本发送）。对已打开的串口立即生效；每个串口会记住自己的选择。" />
                         </StackPanel>
+
+                        <!-- Automation. Both switches are off by default and stay that way until asked:
+                             restoring ports writes to whatever is plugged in now, and an init sequence
+                             writes commands to a device nobody opened. Economy of surprise says opt in. -->
+                        <Border Style="{StaticResource AppCardStyle}" Padding="10">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="自动化" Style="{StaticResource AppSectionLabelStyle}" />
+
+                                <CheckBox Content="启动时恢复上次打开的串口"
+                                          IsChecked="{x:Bind ViewModel.RestoreLastPortsOnStartup, Mode=TwoWay}"
+                                          ToolTipService.ToolTip="下次启动时按上次记住的参数重新打开这些串口。串口已拔掉会自动跳过；默认关闭。" />
+
+                                <CheckBox Content="打开后自动发送初始化序列"
+                                          IsChecked="{x:Bind ViewModel.AutoInitSequenceEnabled, Mode=TwoWay}"
+                                          ToolTipService.ToolTip="端口打开成功后自动发送下面的内容。每次打开只发一次，自动重连不会重发；默认关闭。" />
+
+                                <TextBox Text="{x:Bind ViewModel.AutoInitSequence, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         PlaceholderText="例如：AT+RESET&#xA;AT+INFO"
+                                         AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         MaxHeight="88"
+                                         IsEnabled="{x:Bind ViewModel.AutoInitSequenceEnabled, Mode=OneWay}"
+                                         InputScope="Text"
+                                         ToolTipService.ToolTip="多行内容将逐行发送；支持 ${date} ${time} 等变量与 \\r \\n 转义" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
 
                     <!-- Available ports -->
@@ -372,16 +450,44 @@
                         <ListView x:Name="PortListView"
                                   ItemsSource="{x:Bind ViewModel.AvailablePorts, Mode=OneWay}"
                                   SelectionMode="Single"
-                                  MaxHeight="168"
+                                  MaxHeight="220"
                                   SelectionChanged="PortListView_SelectionChanged">
                             <ListView.ItemTemplate>
-                                <DataTemplate x:DataType="x:String">
-                                    <TextBlock Text="{x:Bind}"
-                                               FontFamily="{StaticResource AppMonoFontFamily}"
-                                               VerticalAlignment="Center" />
+                                <!-- Three things a button-sized row can honestly say about a port: which one it
+                                     is, what is behind it, and what the user calls it. The second and third
+                                     lines are always present as elements and empty as strings when there is
+                                     nothing to say — an empty TextBlock occupies no height, so no Visibility
+                                     binding is needed and none can get out of step. -->
+                                <DataTemplate x:DataType="models:AvailablePortItem">
+                                    <StackPanel Margin="0,2" Spacing="1">
+                                        <TextBlock Text="{x:Bind PortName, Mode=OneWay}"
+                                                   FontFamily="{StaticResource AppMonoFontFamily}"
+                                                   FontSize="13"
+                                                   FontWeight="SemiBold" />
+                                        <TextBlock Text="{x:Bind DeviceLine, Mode=OneWay}"
+                                                   Style="{StaticResource AppCaptionTextStyle}"
+                                                   FontFamily="{StaticResource AppMonoFontFamily}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{x:Bind MetadataLine, Mode=OneWay}"
+                                                   Style="{StaticResource AppCaptionTextStyle}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
+
+                        <!-- Notes are edited from here rather than from a button inside the row: clicking
+                             anything inside a ListView item selects that item, and this list's selection IS
+                             "open the port" — a per-row edit button would open a port as a side effect. -->
+                        <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                MinHeight="{StaticResource AppControlHeightCompact}"
+                                Click="EditPortNotes_Click"
+                                ToolTipService.ToolTip="给串口写备注、标签或分组，方便下次认出它">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE70B;" FontSize="13" />
+                                <TextBlock Text="端口备注" />
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
 
                     <!-- Open ports -->
@@ -1119,6 +1225,43 @@
                                       IsEnabled="{x:Bind ViewModel.CanSplitMultilineSend, Mode=OneWay}"
                                       ToolTipService.ToolTip="勾选并选中行尾符后，输入里的换行会逐行发送（每行各带一个行尾符）；不勾选则整段内容末尾只加一个行尾符" />
 
+                            <!-- Line interval (F7). Zero is the default and means one write, byte-for-byte
+                                 what this app has always sent; anything above it inserts that many ms
+                                 between lines. Text rather than NumberBox so a half-typed value is left
+                                 alone instead of being rewritten under the caret. -->
+                            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <TextBlock Text="行间隔"
+                                           Style="{StaticResource AppCaptionTextStyle}"
+                                           VerticalAlignment="Center" />
+                                <TextBox Text="{x:Bind ViewModel.SendLineDelayText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MinWidth="{StaticResource AppControlHeightCompact}"
+                                         Width="72"
+                                         MinHeight="{StaticResource AppControlHeightCompact}"
+                                         InputScope="Number"
+                                         IsEnabled="{x:Bind ViewModel.CanSplitMultilineSend, Mode=OneWay}"
+                                         ToolTipService.ToolTip="多行发送时行与行之间等待的毫秒数。0 = 整段一次发出（默认，字节与改动前完全一致）；仅在选择行尾符并勾选多行拆分后生效">
+                                    <TextBox.Resources>
+                                        <Thickness x:Key="TextControlBorderThemeThickness">1</Thickness>
+                                    </TextBox.Resources>
+                                </TextBox>
+                                <TextBlock Text="ms"
+                                           Style="{StaticResource AppCaptionTextStyle}"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+
+                            <!-- Send history panel (F8). Overlaid, and read-only over the same list the ↑/↓
+                                 keys recall from — it does not replace that recall. -->
+                            <Button Style="{StaticResource AppToolbarButtonStyle}"
+                                    MinHeight="{StaticResource AppControlHeightCompact}"
+                                    Padding="9,0"
+                                    Click="OpenSendHistory_Click"
+                                    ToolTipService.ToolTip="查看、搜索并挑选之前发送过的内容（也可用 ↑/↓ 逐条召回）">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE81C;" FontSize="13" />
+                                    <TextBlock Text="发送历史" />
+                                </StackPanel>
+                            </Button>
+
                             <!-- 发送目标。文字始终可见，因为这个功能最容易出的错就是"以为在广播、其实只发
                                  了一个口"。菜单项在 SendTargetFlyout_Opening 里动态构建——MenuFlyout 没有
                                  ItemsSource，与端口颜色菜单同一个形状。 -->
@@ -1365,6 +1508,19 @@
                                       OpenPorts="{x:Bind ViewModel.OpenPorts, Mode=OneWay}"
                                       AvailablePorts="{x:Bind ViewModel.AvailablePorts, Mode=OneWay}"
                                       Activated="CommandPalette_Activated" />
+
+        <!-- ============================= Send history panel (F8) =============================
+             Same overlay placement as the palette: last child, spanning both rows, Collapsed until opened,
+             no layout contribution while hidden. It reads the ViewModel's one send-history collection, the
+             same one the ↑/↓ keys recall from — see the control's own remarks for why it must not have a
+             list of its own. -->
+        <controls:SendHistoryPanel x:Name="HistoryPanel"
+                                   Grid.Row="0"
+                                   Grid.RowSpan="2"
+                                   Entries="{x:Bind ViewModel.SendHistoryEntries, Mode=OneWay}"
+                                   Activated="HistoryPanel_Activated"
+                                   Deleted="HistoryPanel_EntryDeleted"
+                                   ClearRequested="HistoryPanel_ClearRequested" />
 
     </Grid>
 </Window>

@@ -317,16 +317,20 @@ public sealed partial class QuickCommandPalette : UserControl
 
         if (AvailablePorts is not null)
         {
-            foreach (var portName in AvailablePorts.OfType<string>())
+            // OfType<AvailablePortItem> rather than OfType<string>: the sidebar list switched from bare
+            // port names to this projection in v2.5.0, and OfType silently yields nothing rather than
+            // failing — so this once compiled cleanly while every detected port vanished from the palette.
+            foreach (var item in AvailablePorts.OfType<AvailablePortItem>())
             {
+                // The note is searchable because that is how a user finds "the one I wrote 传感器 on".
                 yield return new PaletteEntry
                 {
                     Kind = PaletteEntryKind.AvailablePort,
-                    Title = portName,
-                    Subtitle = "可打开",
+                    Title = item.PortName,
+                    Subtitle = item.HasDeviceDetails ? item.DeviceLine : "可打开",
                     Glyph = "\uE710",
-                    Keywords = $"{portName} 可打开 open",
-                    PortName = portName,
+                    Keywords = $"{item.SearchText} 可打开 open",
+                    PortName = item.PortName,
                 };
             }
         }

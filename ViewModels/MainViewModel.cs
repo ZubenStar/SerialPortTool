@@ -17,6 +17,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -311,8 +312,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public string VersionDisplay => VersionInfo.VersionString;
 
+    /// <summary>
+    /// 扫描到的串口。
+    /// </summary>
+    /// <remarks>
+    /// <see cref="AvailablePortItem"/> rather than a bare <see cref="string"/> since v2.5.0: the row has to
+    /// say three things (which port, what device is behind it, and what the user calls it), and only the
+    /// first fits in a string. Every read site uses <c>.PortName</c>; see the note on
+    /// <c>AvailablePortItem.ToString</c> for why the type cannot degrade to a type name if a picker ever
+    /// forgets its template.
+    /// </remarks>
     [ObservableProperty]
-    private ObservableCollection<string> _availablePorts = new();
+    private ObservableCollection<AvailablePortItem> _availablePorts = new();
 
     [ObservableProperty]
     private ObservableCollection<PortViewModel> _openPorts = new();
@@ -1917,6 +1928,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         ISnippetService snippetService,
         IHighlightRuleService highlightRuleService,
         ILogExportService logExportService,
+        ISerialPortDeviceEnumerator deviceEnumerator,
+        IPortMetadataService portMetadataService,
+        IPortPresetService portPresetService,
         Services.IBaudRateDetectorService? baudRateDetectorService = null,
         Services.IDataValidationService? dataValidationService = null)
     {
@@ -1933,6 +1947,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _logExportService = logExportService;
         _baudRateDetectorService = baudRateDetectorService;
         _dataValidationService = dataValidationService;
+        _deviceEnumerator = deviceEnumerator;
+        _portMetadataService = portMetadataService;
+        _portPresetService = portPresetService;
 
         // Keep _portsByName in sync with OpenPorts so the hot data-receive path can do O(1)
         // lookups instead of LINQ scans. OpenPorts itself is the source of truth for the UI.
@@ -1969,6 +1986,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // construction — see InitializeSnippetsAsync — which is what makes fire-and-forget safe here.
         _ = InitializeSnippetsAsync();
         _ = InitializeHighlightRulesAsync();
+        _ = InitializePortPresetsAsync();
     }
 
     private async Task InitializeAsync()
@@ -2024,7 +2042,27 @@ public partial class MainViewModel : ObservableObject, IDisposable
             SendTerminatorOptions,
             SendLineEnding.None);
         SplitMultilineSend = await _settingsService.LoadSettingAsync("SplitMultilineSend", 1) == 1;
+        await LoadSendLineDelayAsync();
         await LoadRecentSendTextsAsync();
+
+        // Automation switches. Both are off unless the user turned them on, and both are adopted through
+        // the property (rather than the field) under the same suppression flag the other line parameters
+        // use, so a startup read is neither mistaken for a change nor written straight back. Assigning the
+        // field would leave the bound checkbox showing the default while the value underneath is different.
+        _isLoadingSerialParameters = true;
+        try
+        {
+            RestoreLastPortsOnStartup =
+                await _settingsService.LoadSettingAsync(SessionRestoreEnabledSettingKey, 0) == 1;
+            AutoInitSequenceEnabled =
+                await _settingsService.LoadSettingAsync(AutoInitEnabledSettingKey, 0) == 1;
+            AutoInitSequence =
+                await _settingsService.LoadSettingAsync(AutoInitScriptSettingKey, string.Empty);
+        }
+        finally
+        {
+            _isLoadingSerialParameters = false;
+        }
         TxColorHex = await _settingsService.LoadSettingAsync("TxColorHex", PortColorPalette.DefaultTxHex);
         RxColorHex = await _settingsService.LoadSettingAsync("RxColorHex", PortColorPalette.DefaultRxHex);
         IsSidebarCollapsed = await _settingsService.LoadSettingAsync(SidebarCollapsedSettingKey, 0) == 1;
@@ -2060,6 +2098,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         // Scan ports
         await ScanPortsAsync();
+
+        // After the scan rather than before it: whether a remembered port is still plugged in is exactly
+        // what the scan answers, and restoring before that would attempt opens blindly.
+        await RestorePreviousSessionAsync();
 
         var shouldResumeTuningWatch = await _settingsService.LoadSettingAsync("TuningIsWatching", 0) == 1;
         if (IsTuningEnabled && shouldResumeTuningWatch && CanUseTuning)
@@ -2104,10 +2146,29 @@ public partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             var ports = await _serialPortService.GetAvailablePortsAsync();
+
+            // Device identity and the user's own notes are read once per scan rather than once per row:
+            // both decorate every row equally, and a list of twenty ports should not mean twenty registry
+            // walks. Neither can fail the scan — see the interface comments.
+            var devices = await _deviceEnumerator.EnumerateAsync();
+            var metadata = await _portMetadataService.LoadAsync();
+
             AvailablePorts.Clear();
-            foreach (var port in ports)
+            foreach (var portName in ports)
             {
-                AvailablePorts.Add(port);
+                var item = new AvailablePortItem(portName);
+
+                if (devices.TryGetValue(portName, out var device))
+                {
+                    item.ApplyDeviceInfo(device);
+                }
+
+                if (metadata.TryGetValue(portName, out var note))
+                {
+                    item.ApplyMetadata(note);
+                }
+
+                AvailablePorts.Add(item);
             }
 
             StatusMessage = $"Found {AvailablePorts.Count} available ports";
@@ -2194,6 +2255,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // still being opened must not be undone by the port arriving a second later.
             var closeAllEpoch = Volatile.Read(ref _closeAllEpoch);
 
+            // The auto-init sequence is armed *here*, before the open call, rather than when the Connected
+            // state change arrives: the service raises Connected from inside OpenPortAsync, so anything set
+            // after that await would always be too late for the first — and only — send this arms.
+            if (AutoInitSequenceEnabled && AutoInitSequence.Trim().Length > 0)
+            {
+                _autoInitArmed[portName] = 1;
+            }
+
             var opened = await _serialPortService.OpenPortAsync(config);
             if (opened)
             {
@@ -2222,6 +2291,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 portViewModel.UpdateStatistics(stats);
 
                 OpenPorts.Add(portViewModel);
+
+                // Remembered for the startup restore, which replays the parameters this port actually
+                // opened with rather than whatever the sidebar happens to say later.
+                _openPortConfigs[portName] = config.Clone();
+                _ = PersistSessionRestoreAsync();
 
                 // Save port color and baud rate settings for next time
                 SavePortColor(portName, portColor);
@@ -2285,7 +2359,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             var encodingsByPort = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var candidate in AvailablePorts)
             {
-                encodingsByPort[candidate] = await ResolvePortEncodingForOpenAsync(candidate);
+                encodingsByPort[candidate.PortName] = await ResolvePortEncodingForOpenAsync(candidate.PortName);
             }
 
             var defaultConfig = new SerialPortConfig
@@ -2408,6 +2482,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // must not be able to sit in front of that. Closing first also captures the tail of the
             // log rather than truncating it.
             await _serialPortService.CloseAllPortsAsync();
+
+            // Nothing is open, so there is nothing for the startup restore to replay. Cleared here rather
+            // than per-port below because ClosePortAsync already handles the single-port case.
+            _openPortConfigs.Clear();
+            _autoInitArmed.Clear();
+            _ = PersistSessionRestoreAsync();
 
             foreach (var port in portsToClose)
             {
@@ -3200,6 +3280,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 var plan = SendLineEndings.CreatePlan(text, SendTerminator, SplitMultilineSend);
 
+                // F7: with a line interval set and more than one line to write, the lines go out one at a
+                // time. The zero case never enters this branch, so an install that leaves the interval at
+                // its default sends exactly what it always sent — see SendLinesWithDelayAsync.
+                if (SendLineDelayMs > 0 && plan.Segments.Count > 1)
+                {
+                    if (await SendLinesWithDelayAsync(targetPorts, plan))
+                    {
+                        RecordSendHistory(text);
+                    }
+
+                    return;
+                }
+
                 // Encoded once per port, before any write starts: the encoding is read from live per-port
                 // state, and a second read after the first send would be a chance to disagree with the
                 // bytes already on the wire.
@@ -3283,6 +3376,823 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         await _serialPortService.SendTextAsync(portName, text, Encoding.UTF8);
     }
+
+    #region Port identity, notes, presets, automation and history (v2.5.0)
+
+    // =============================================================================================
+    // Fields and settings keys shared by the features below
+    // =============================================================================================
+
+    private readonly ISerialPortDeviceEnumerator _deviceEnumerator;
+    private readonly IPortMetadataService _portMetadataService;
+    private readonly IPortPresetService _portPresetService;
+
+    /// <summary>Settings key holding whether the startup restore (F9) is on. Off by default.</summary>
+    private const string SessionRestoreEnabledSettingKey = "SessionRestoreEnabled";
+
+    /// <summary>Settings key holding the startup restore payload: port name → profile.</summary>
+    private const string SessionRestorePayloadSettingKey = "SessionRestorePorts";
+
+    /// <summary>Settings key holding the line-delay interval (F7).</summary>
+    private const string SendLineDelaySettingKey = "SendLineDelayMs";
+
+    /// <summary>Settings key holding whether an init sequence is sent after open (F4). Off by default.</summary>
+    private const string AutoInitEnabledSettingKey = "AutoInitSequenceEnabled";
+
+    /// <summary>Settings key holding that init sequence.</summary>
+    private const string AutoInitScriptSettingKey = "AutoInitSequence";
+
+    /// <summary>The parameters each currently open port actually opened with, for the startup restore.</summary>
+    private readonly Dictionary<string, SerialPortConfig> _openPortConfigs =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Ports whose next <c>Connected</c> transition should run the init sequence. See F4 below.</summary>
+    private readonly ConcurrentDictionary<string, byte> _autoInitArmed = new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly JsonSerializerOptions ProfileJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = false,
+    };
+
+    // =============================================================================================
+    // F6 — per-port notes / tags / group
+    // =============================================================================================
+
+    /// <summary>The metadata currently shown for one row, or null when the row has none.</summary>
+    public PortMetadata? GetPortMetadata(string portName)
+    {
+        foreach (var item in AvailablePorts)
+        {
+            if (string.Equals(item.PortName, portName, StringComparison.OrdinalIgnoreCase))
+            {
+                return new PortMetadata
+                {
+                    PortName = item.PortName,
+                    Notes = item.Notes,
+                    Tags = item.Tags,
+                    Group = item.Group,
+                };
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 写入一个端口的备注 / 标签 / 分组，并就地更新列表里的那一行。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The row is patched in place rather than re-scanned, because a scan two seconds after saving a note
+    /// is both slower and resets whatever the user was about to click — the note has to appear where they
+    /// are already looking.
+    /// </para>
+    /// <para>
+    /// Whole-set read-modify-write: <see cref="IPortMetadataService"/> persists one string key, and this
+    /// runs on a button press, not on a hot path, so the extra read costs nothing measurable. The
+    /// alternative (a per-port key) would leave orphaned entries behind for every machine ever plugged in.
+    /// </para>
+    /// </remarks>
+    public async Task SavePortMetadataAsync(string portName, string notes, string tags, string group)
+    {
+        if (string.IsNullOrWhiteSpace(portName))
+        {
+            return;
+        }
+
+        var all = (await _portMetadataService.LoadAsync()).Values.ToList();
+        var existing = all.FirstOrDefault(
+            entry => string.Equals(entry.PortName, portName, StringComparison.OrdinalIgnoreCase));
+
+        if (existing is null)
+        {
+            existing = new PortMetadata { PortName = portName };
+            all.Add(existing);
+        }
+
+        existing.Notes = notes;
+        existing.Tags = tags;
+        existing.Group = group;
+
+        var sanitized = _portMetadataService.Sanitize(existing);
+
+        // An entry whose every field is blank is a row the user cleared, so it is removed rather than kept
+        // as a shell — otherwise the setting grows one entry per port ever edited and never shrinks.
+        if (sanitized.IsEmpty)
+        {
+            all.Remove(existing);
+            await _portMetadataService.SaveAsync(all);
+        }
+        else
+        {
+            await _portMetadataService.SaveAsync(all);
+        }
+
+        foreach (var item in AvailablePorts)
+        {
+            if (string.Equals(item.PortName, portName, StringComparison.OrdinalIgnoreCase))
+            {
+                item.ApplyMetadata(sanitized);
+                break;
+            }
+        }
+
+        StatusMessage = sanitized.IsEmpty
+            ? $"已清除 {portName} 的备注"
+            : $"已保存 {portName} 的备注";
+    }
+
+    // =============================================================================================
+    // F3 — named port configuration presets
+    // =============================================================================================
+
+    /// <summary>The saved presets, oldest first, for the sidebar picker.</summary>
+    public ObservableCollection<PortPreset> PortPresets { get; } = new();
+
+    /// <summary>The preset selected in the sidebar.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSelectedPortPreset))]
+    private PortPreset? _selectedPortPreset;
+
+    /// <summary>Gates the 套用 / 删除 buttons, so neither has to say "select one first" after the fact.</summary>
+    public bool HasSelectedPortPreset => SelectedPortPreset is not null;
+
+    private async Task InitializePortPresetsAsync()
+    {
+        try
+        {
+            var presets = await _portPresetService.LoadAsync();
+
+            PortPresets.Clear();
+            foreach (var preset in presets)
+            {
+                PortPresets.Add(preset);
+            }
+        }
+        catch (Exception ex)
+        {
+            // The service is already exception-safe for its own failures; this catches the collection
+            // being touched while the window is going away. Never worth failing the launch over.
+            _logger.LogWarning(ex, "Could not load the port preset library");
+        }
+    }
+
+    /// <summary>把侧栏当前的参数与行尾符抓成一份可保存的 profile。</summary>
+    public SerialPortProfile CaptureCurrentProfile()
+        => PortProfileMapper.FromConfig(
+            new SerialPortConfig
+            {
+                BaudRate = BaudRate,
+                DataBits = DataBits,
+                StopBits = StopBits,
+                Parity = Parity,
+                Handshake = Handshake,
+                TextEncodingName = TextEncodingName,
+            },
+            SendTerminator);
+
+    /// <summary>名字能否使用；返回 null 表示可以。</summary>
+    public string? ValidatePortPresetName(string name, string? editingId)
+        => _portPresetService.Validate(
+            new PortPreset { Name = name, Id = editingId ?? string.Empty },
+            PortPresets.ToList(),
+            editingId);
+
+    /// <summary>新增或覆盖一套档案。</summary>
+    public async Task<bool> SavePortPresetAsync(string name, string? editingId = null)
+    {
+        var trimmed = (name ?? string.Empty).Trim();
+
+        var error = ValidatePortPresetName(trimmed, editingId);
+        if (error is not null)
+        {
+            StatusMessage = error;
+            return false;
+        }
+
+        var existing = string.IsNullOrEmpty(editingId)
+            ? null
+            : PortPresets.FirstOrDefault(preset => string.Equals(preset.Id, editingId, StringComparison.Ordinal));
+
+        var profile = CaptureCurrentProfile();
+
+        if (existing is not null)
+        {
+            existing.Name = trimmed;
+            existing.Profile = profile;
+        }
+        else
+        {
+            PortPresets.Add(_portPresetService.Create(profile, trimmed));
+        }
+
+        await _portPresetService.SaveAsync(PortPresets.ToList());
+        SelectedPortPreset = existing ?? PortPresets.LastOrDefault();
+
+        StatusMessage = $"已保存档案“{trimmed}”";
+        return true;
+    }
+
+    /// <summary>
+    /// 套用一套档案：把它的参数与行尾符写回侧栏。
+    /// </summary>
+    /// <remarks>
+    /// Applied to the sidebar and not to live ports, which is the same rule every other line parameter
+    /// follows (<see cref="HintThatLineParametersApplyOnNextOpen"/>): applying them to an open port means
+    /// an implicit close/reopen, and that race is forbidden. The status line says so explicitly, because
+    /// "nothing happened" is otherwise indistinguishable from "it worked".
+    /// </remarks>
+    public async Task ApplyPortPresetAsync(PortPreset? preset)
+    {
+        if (preset is null)
+        {
+            StatusMessage = "请先在档案列表里选一套配置";
+            return;
+        }
+
+        var profile = SerialPortConfigCodec.Sanitize(preset.Profile);
+
+        ApplyBaudRateToSidebar(profile.BaudRate);
+        DataBits = profile.DataBits;
+        StopBits = (System.IO.Ports.StopBits)profile.StopBits;
+        Parity = (System.IO.Ports.Parity)profile.Parity;
+        Handshake = (System.IO.Ports.Handshake)profile.Handshake;
+        TextEncodingName = profile.TextEncodingName;
+
+        // Across-field on purpose: a preset that changed the baud rate but left the terminator would be a
+        // half-applied setup that looks applied while sending the wrong frame.
+        SendTerminator = (SendLineEnding)profile.LineEnding;
+
+        await PersistCurrentLineParametersAsync();
+
+        StatusMessage = $"已套用档案“{preset.Name}”：这些参数在下次打开串口时生效";
+    }
+
+    public async Task DeletePortPresetAsync(PortPreset? preset)
+    {
+        if (preset is null)
+        {
+            StatusMessage = "请先选择要删除的档案";
+            return;
+        }
+
+        PortPresets.Remove(preset);
+        if (ReferenceEquals(SelectedPortPreset, preset))
+        {
+            SelectedPortPreset = PortPresets.LastOrDefault();
+        }
+
+        await _portPresetService.SaveAsync(PortPresets.ToList());
+
+        StatusMessage = $"已删除档案“{preset.Name}”";
+    }
+
+    /// <summary>
+    /// 把一个波特率放回侧栏；列表里没有的值走「自定义」，让 Combobox 仍然说得通。
+    /// </summary>
+    private void ApplyBaudRateToSidebar(int baudRate)
+    {
+        if (AvailableBaudRates.Contains(baudRate))
+        {
+            CustomBaudRate = string.Empty;
+            UseCustomBaudRate = false;
+            BaudRate = baudRate;
+            return;
+        }
+
+        UseCustomBaudRate = true;
+        CustomBaudRate = baudRate.ToString();
+        BaudRate = baudRate;
+    }
+
+    /// <summary>把当前侧栏参数写回 settings。</summary>
+    private async Task PersistCurrentLineParametersAsync()
+    {
+        await _settingsService.SaveSettingAsync("BaudRate", BaudRate);
+        await _settingsService.SaveSettingAsync("UseCustomBaudRate", UseCustomBaudRate ? 1 : 0);
+        await _settingsService.SaveSettingAsync("CustomBaudRate", CustomBaudRate);
+        await SaveLineParametersAsync();
+        await _settingsService.SaveSettingAsync("SendTerminator", (int)SendTerminator);
+    }
+
+    // =============================================================================================
+    // F9 — restore the previously open ports at startup
+    // =============================================================================================
+
+    /// <summary>启动时恢复上次打开的串口。默认关闭。</summary>
+    [ObservableProperty]
+    private bool _restoreLastPortsOnStartup;
+
+    partial void OnRestoreLastPortsOnStartupChanged(bool value)
+    {
+        if (_isLoadingSerialParameters)
+        {
+            return;
+        }
+
+        _ = _settingsService.SaveSettingAsync(SessionRestoreEnabledSettingKey, value ? 1 : 0);
+    }
+
+    /// <summary>记录「当前打开的串口都用哪些参数」，供下次启动恢复。</summary>
+    private async Task PersistSessionRestoreAsync()
+    {
+        if (!RestoreLastPortsOnStartup)
+        {
+            // Recording while the switch is off would mean enabling it restores ports from a session the
+            // user never asked to remember.
+            await _settingsService.SaveSettingAsync(SessionRestorePayloadSettingKey, string.Empty);
+            return;
+        }
+
+        var map = new Dictionary<string, SerialPortProfile>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in _openPortConfigs)
+        {
+            map[pair.Key] = PortProfileMapper.FromConfig(pair.Value, SendTerminator);
+        }
+
+        await _settingsService.SaveSettingAsync(
+            SessionRestorePayloadSettingKey,
+            JsonSerializer.Serialize(map, ProfileJsonOptions));
+    }
+
+    /// <summary>
+    /// 扫描之后尝试恢复上次打开的串口。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Runs after <c>ScanPortsAsync</c> rather than in the constructor because "is the port still there"
+    /// is the only question that matters here, and the scan is what answers it.
+    /// </para>
+    /// <para>
+    /// Every failure is per-port and non-fatal. Same rule as <c>SnippetService.LoadAsync</c>: a convenience
+    /// feature must not be able to stop the app from starting, and a machine whose USB hub was unplugged
+    /// overnight is the expected case rather than the broken one.
+    /// </para>
+    /// </remarks>
+    private async Task RestorePreviousSessionAsync()
+    {
+        if (!RestoreLastPortsOnStartup)
+        {
+            return;
+        }
+
+        string raw;
+        try
+        {
+            raw = await _settingsService.LoadSettingAsync(SessionRestorePayloadSettingKey, string.Empty);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read the session restore payload");
+            return;
+        }
+
+        if (!SerialPortConfigCodec.TryParseMap<SerialPortProfile>(raw, ProfileJsonOptions, out var saved))
+        {
+            return;
+        }
+
+        if (saved.Count == 0)
+        {
+            return;
+        }
+
+        var restored = 0;
+        var skipped = 0;
+
+        foreach (var pair in saved)
+        {
+            try
+            {
+                var profile = SerialPortConfigCodec.Sanitize(pair.Value);
+
+                // Per-field validation happens inside the codec; this is the one check that needs the live
+                // machine: a port that no longer exists is skipped, not reported as a failure.
+                if (!IsPortStillPresent(pair.Key))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                var config = PortProfileMapper.ToConfig(profile, pair.Key);
+                var opened = await _serialPortService.OpenPortAsync(config);
+                if (!opened)
+                {
+                    skipped++;
+                    continue;
+                }
+
+                await AfterRestoredPortOpenedAsync(pair.Key, config);
+                restored++;
+            }
+            catch (Exception ex)
+            {
+                skipped++;
+                _logger.LogWarning(ex, "Could not restore port {PortName} from the previous session", pair.Key);
+            }
+        }
+
+        StatusMessage = skipped == 0
+            ? $"已恢复上次打开的 {restored} 个串口"
+            : $"已恢复 {restored} 个串口，跳过 {skipped} 个（设备已拔下或打开失败）";
+    }
+
+    private bool IsPortStillPresent(string portName)
+    {
+        foreach (var item in AvailablePorts)
+        {
+            if (string.Equals(item.PortName, portName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 把一个「直接由服务打开的」端口接进 MainWindow 的其余状态。
+    /// </summary>
+    /// <remarks>
+    /// This is deliberately a small subset of <c>OpenPortAsync</c>: no baud-rate saving (nothing changed),
+    /// no auto-init arming (restoring a session must not re-send anything), no statistics snapshot. The
+    /// duplication that remains — file logging, colour, the row — is the minimum a port needs to behave
+    /// like one the user opened.
+    /// </remarks>
+    private async Task AfterRestoredPortOpenedAsync(string portName, SerialPortConfig config)
+    {
+        await _fileLoggerService.StartLoggingAsync(portName);
+
+        var portColor = await GetOrAssignPortColorAsync(portName);
+        var portViewModel = new PortViewModel(portName, _serialPortService, _dispatcherQueue)
+        {
+            ColorHex = portColor
+        };
+
+        portViewModel.UpdateStatistics(_serialPortService.GetStatistics(portName));
+        OpenPorts.Add(portViewModel);
+        SavePortColor(portName, portColor);
+
+        _serialPortService.SetPortTextEncoding(portName, config.TextEncodingName);
+        _openPortConfigs[portName] = config.Clone();
+    }
+
+    // =============================================================================================
+    // F4 — automatic init sequence after open
+    // =============================================================================================
+
+    /// <summary>
+    /// 端口打开成功后自动发送的初始化序列。默认关闭。
+    /// </summary>
+    /// <remarks>
+    /// Off by default because it writes to a device nobody asked it to write to. That is not a theoretical
+    /// concern: plenty of bootloaders and configuration consoles interpret an unexpected command during
+    /// their first second by switching modes, so a wrong script is not "a harmless extra line" but "the
+    /// device is no longer doing what it was doing". The user has to turn this on.
+    /// </remarks>
+    [ObservableProperty]
+    private bool _autoInitSequenceEnabled;
+
+    /// <summary>初始化序列的内容（多行时逐行发送）。</summary>
+    [ObservableProperty]
+    private string _autoInitSequence = string.Empty;
+
+    partial void OnAutoInitSequenceEnabledChanged(bool value)
+    {
+        if (_isLoadingSerialParameters)
+        {
+            return;
+        }
+
+        _ = _settingsService.SaveSettingAsync(AutoInitEnabledSettingKey, value ? 1 : 0);
+    }
+
+    partial void OnAutoInitSequenceChanged(string value)
+    {
+        if (_isLoadingSerialParameters)
+        {
+            return;
+        }
+
+        _ = _settingsService.SaveSettingAsync(AutoInitScriptSettingKey, value ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Connected 时判断要不要跑一次初始化序列。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The armed flag is what keeps this from becoming a reconnect storm. <c>AutoReconnect</c> re-raises
+    /// Connected every few seconds for a flaky cable, and each raise would otherwise replay the script — a
+    /// device being re-initialised twenty times a minute while trying to recover. Only <c>OpenPortAsync</c>
+    /// arms it, and the first Connected consumes it, so exactly one open produces exactly one sequence.
+    /// </para>
+    /// <para>
+    /// 「全部打开」 deliberately does not arm anything: batch-opening every port on the machine and then
+    /// writing an init script to each is the kind of automation that is very hard to undo.
+    /// </para>
+    /// </remarks>
+    private void MaybeRunAutoInitSequence(string portName, Core.Enums.ConnectionState newState)
+    {
+        if (newState != Core.Enums.ConnectionState.Connected)
+        {
+            return;
+        }
+
+        if (!_autoInitArmed.TryRemove(portName, out _))
+        {
+            return;
+        }
+
+        _ = RunAutoInitSequenceAsync(portName);
+    }
+
+    /// <summary>
+    /// How long to wait after the port comes up before writing anything.
+    /// </summary>
+    /// <remarks>
+    /// Many devices need a moment after their serial line is asserted before a command on it means anything,
+    /// and writing into that window is how the first line of a script gets swallowed.
+    /// </remarks>
+    private const int AutoInitLeadInMs = 150;
+
+    private async Task RunAutoInitSequenceAsync(string portName)
+    {
+        try
+        {
+            await Task.Delay(AutoInitLeadInMs);
+
+            if (!_portsByName.ContainsKey(portName))
+            {
+                // Closed (or never stayed open) during the wait: nothing to initialise.
+                return;
+            }
+
+            var script = AutoInitSequence.Trim();
+            if (script.Length == 0)
+            {
+                return;
+            }
+
+            // Same variable syntax as a snippet, and the same "unrecognised token stays verbatim" rule —
+            // a typo must reach the device as typed, not disappear into the ether.
+            var expanded = _snippetService.ExpandVariables(script, DateTimeOffset.Now);
+
+            var plan = SendLineEndings.CreatePlan(expanded, SendTerminator, SplitMultilineSend);
+            var targets = new[] { portName };
+
+            if (SendLineDelayMs > 0 && plan.Segments.Count > 1)
+            {
+                await SendLinesWithDelayAsync(targets, plan);
+            }
+            else
+            {
+                await SendTextToTargetsAsync(targets, plan.Payload, plan.DisplayLines);
+            }
+
+            StatusMessage = $"Port {portName}: 已自动发送初始化序列";
+        }
+        catch (Exception ex)
+        {
+            // Not a drag-the-user-into-it failure: the port is open and usable either way.
+            _logger.LogError(ex, "The auto init sequence failed on {PortName}", portName);
+        }
+    }
+
+    // =============================================================================================
+    // F7 — per-line interval for multi-line sends
+    // =============================================================================================
+
+    /// <summary>Upper bound on the line interval. Ten seconds between lines is already a timeout.</summary>
+    public const int MaxLineDelayMs = 10_000;
+
+    /// <summary>
+    /// 行间隔输入框里的原文。真正生效的是 <see cref="SendLineDelayMs"/>。
+    /// </summary>
+    /// <remarks>
+    /// A string rather than an int because WinUI's <c>NumberBox</c> binds <c>double</c> and an int property
+    /// would either need an IValueConverter nobody asked for or silently fail to update. Parsing here keeps
+    /// both directions honest and lets an unparseable value stay whatever the user typed instead of being
+    /// rewritten under them mid-keystroke.
+    /// </remarks>
+    [ObservableProperty]
+    private string _sendLineDelayText = "0";
+
+    private bool _isLoadingSendSettings;
+
+    /// <summary>行与行之间的等待毫秒数；0 表示整段一次写出（与没有这个功能时完全一致）。</summary>
+    public int SendLineDelayMs { get; private set; }
+
+    partial void OnSendLineDelayTextChanged(string value)
+    {
+        SendLineDelayMs = ParseLineDelay(value);
+        OnPropertyChanged(nameof(SendLineDelayMs));
+
+        if (!_isLoadingSendSettings)
+        {
+            _ = _settingsService.SaveSettingAsync(SendLineDelaySettingKey, SendLineDelayMs);
+        }
+    }
+
+    private static int ParseLineDelay(string? value)
+    {
+        if (int.TryParse(value, out var parsed) && parsed >= 0)
+        {
+            return parsed > MaxLineDelayMs ? MaxLineDelayMs : parsed;
+        }
+
+        // Anything unparseable behaves as "no delay", which is existing behaviour rather than a surprising
+        // one — and the clamped value is written back only on the next real edit.
+        return 0;
+    }
+
+    /// <summary>Default delay when the switch first becomes reachable.</summary>
+    private async Task LoadSendLineDelayAsync()
+    {
+        var stored = await _settingsService.LoadSettingAsync(SendLineDelaySettingKey, 0);
+
+        _isLoadingSendSettings = true;
+        try
+        {
+            SendLineDelayText = ParseLineDelay(stored.ToString()).ToString();
+        }
+        finally
+        {
+            _isLoadingSendSettings = false;
+        }
+    }
+
+    /// <summary>
+    /// 把一个已经切好的计划逐行写出，行间等待 <see cref="SendLineDelayMs"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Byte identity is the contract.</b> Concatenating the segments reproduces the single-write payload
+    /// exactly (pinned by <c>SendLineEndingsTests</c>), so with the interval left at zero nothing here ever
+    /// runs and an install that never opens the setting cannot change what reaches the device.
+    /// </para>
+    /// <para>
+    /// <c>Task.Delay</c> rather than <c>Thread.Sleep</c>: this sits on the UI thread's continuation, and a
+    /// blocking wait would freeze the whole window between lines. Nothing more elaborate is needed — the
+    /// wait is re-evaluated each iteration because the target set can shrink while we wait.
+    /// </para>
+    /// </remarks>
+    /// <returns>True when at least one line reached at least one port — what decides whether the payload is
+    /// worth putting in the ↑ history, which only offers things that actually went out.</returns>
+    private async Task<bool> SendLinesWithDelayAsync(
+        IReadOnlyList<string> targetPorts,
+        SerialPortTool.Helpers.SendPlan plan)
+    {
+        var written = 0;
+        var anyAccepted = false;
+
+        for (var index = 0; index < plan.Segments.Count; index++)
+        {
+            if (index > 0)
+            {
+                await Task.Delay(SendLineDelayMs);
+            }
+
+            // Re-evaluated every iteration rather than once: the whole point of the interval is that
+            // something can happen between the lines, and the most likely thing is the port going away.
+            var liveTargets = targetPorts.Where(name => _portsByName.ContainsKey(name)).ToList();
+            if (liveTargets.Count == 0)
+            {
+                StatusMessage = written > 0
+                    ? $"已发送 {written} 行；等待剩余行时目标串口已关闭"
+                    : "目标串口已关闭，未发送";
+                return anyAccepted;
+            }
+
+            if (await SendTextToTargetsAsync(
+                    liveTargets, plan.Segments[index], new[] { plan.DisplayLines[index] }))
+            {
+                anyAccepted = true;
+            }
+
+            written++;
+        }
+
+        StatusMessage = written == 1
+            ? "已发送 1 行"
+            : $"已按 {SendLineDelayMs} ms 行间隔逐行发送 {written} 行";
+        return anyAccepted;
+    }
+
+    /// <summary>
+    /// 把一段已经算好的文本发给指定端口，并写入发送日志。
+    /// </summary>
+    /// <returns>True when at least one port accepted it.</returns>
+    private async Task<bool> SendTextToTargetsAsync(
+        IReadOnlyList<string> targetPorts,
+        string payload,
+        IReadOnlyList<string> displayLines)
+    {
+        var payloads = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var portName in targetPorts)
+        {
+            payloads[portName] = SerialEncodings
+                .Resolve(_serialPortService.GetPortTextEncodingName(portName))
+                .GetBytes(payload);
+        }
+
+        var sendResults = await SendDataToPortsAsync(targetPorts, portName => payloads[portName]);
+        var successfulPorts = sendResults
+            .Where(result => result.IsSuccess)
+            .Select(result => result.PortName)
+            .ToList();
+
+        if (ShowSentData && successfulPorts.Count > 0)
+        {
+            AddSentLogs(successfulPorts, CapSentLogLines(displayLines));
+        }
+
+        RefreshPortStatistics(targetPorts);
+
+        return successfulPorts.Count > 0;
+    }
+
+    // =============================================================================================
+    // F8 — searchable send history panel
+    // =============================================================================================
+
+    /// <summary>发送历史面板是否打开。它叠加在既有的 ↑/↓ 召回之上，不替换它。</summary>
+    [ObservableProperty]
+    private bool _isSendHistoryPanelOpen;
+
+    /// <summary>
+    /// 面板显示的历史列表：与 ↑/↓ 召回<b>同一份</b>数据。
+    /// </summary>
+    /// <remarks>
+    /// Same source rather than a parallel one — a second list is how a history ends up disagreeing with
+    /// itself ("I deleted it in the panel and ↑ still served it"). Rebuilt on open and after every change;
+    /// fifty strings is not worth an ObservableCollection diffing protocol.
+    /// </remarks>
+    public ObservableCollection<string> SendHistoryEntries { get; } = new();
+
+    /// <summary>History deferred until someone opens the panel, so the ↑/↓ recall has no competition.</summary>
+    public void OpenSendHistoryPanel()
+    {
+        RefreshSendHistoryEntries();
+        IsSendHistoryPanelOpen = true;
+    }
+
+    public void CloseSendHistoryPanel() => IsSendHistoryPanelOpen = false;
+
+    private void RefreshSendHistoryEntries()
+    {
+        SendHistoryEntries.Clear();
+        foreach (var entry in _recentSendTexts)
+        {
+            SendHistoryEntries.Add(entry);
+        }
+
+        OnPropertyChanged(nameof(HasSendHistory));
+    }
+
+    /// <summary>True when there is any history to show, so the panel can say why it is empty.</summary>
+    public bool HasSendHistory => SendHistoryEntries.Count > 0;
+
+    /// <summary>把一条历史放进发送框。</summary>
+    public void UseSendHistoryEntry(string payload)
+    {
+        ApplySendHistoryRecall(payload);
+        ResetSendHistoryNavigation();
+        IsSendHistoryPanelOpen = false;
+    }
+
+    /// <summary>
+    /// 删除单条历史。
+    /// </summary>
+    public async Task RemoveSendHistoryEntryAsync(string payload)
+    {
+        if (_recentSendTexts.RemoveAll(entry => string.Equals(entry, payload, StringComparison.Ordinal)) == 0)
+        {
+            return;
+        }
+
+        await SaveRecentSendTextsAsync();
+
+        // The recall cursor indexes the same list, so deleting under it would make ↑ land on the wrong entry.
+        ResetSendHistoryNavigation();
+        RefreshSendHistoryEntries();
+    }
+
+    public async Task ClearSendHistoryAsync()
+    {
+        if (_recentSendTexts.Count == 0)
+        {
+            return;
+        }
+
+        _recentSendTexts.Clear();
+        await SaveRecentSendTextsAsync();
+        ResetSendHistoryNavigation();
+        RefreshSendHistoryEntries();
+    }
+
+    #endregion
 
     #region Synthetic load (developer only)
 
@@ -4286,6 +5196,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 OpenPorts.Remove(portVm);
             }
 
+            _openPortConfigs.Remove(portName);
+            _autoInitArmed.TryRemove(portName, out _);
+            _ = PersistSessionRestoreAsync();
+
             StatusMessage = $"Port {portName} closed successfully.";
             _logger.LogInformation("Port {PortName} closed successfully", portName);
         }
@@ -5043,6 +5957,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 // Collapsed error counts first, so a port that dies in the middle of a storm still records
                 // how bad it was immediately before the end.
                 DrainEventAggregates();
+
+                // Auto-init is queued from inside the sequence below rather than awaited: the row rendered
+                // here is "connected", and the send must not be able to appear ahead of it in the log.
+                MaybeRunAutoInitSequence(portName, newState);
 
                 // No aggregation for a state change: it is inherently low-frequency, and a reconnect storm is
                 // exactly what the reader is looking for rather than noise to be collapsed.

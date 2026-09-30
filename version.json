@@ -1,561 +1,576 @@
 {
-    "version": "2.4.0",
-    "description": "SerialPortTool Version Configuration",
-    "changelog": [
-        {
-            "date": "2026-09-30",
-            "version": "2.4.0",
-            "changes": [
-                "串口事件现在会出现在日志里：打开、关闭、断开、重连与端口错误都会作为一条 [SYS] 行写进日志流，与数据行按时间顺序交错排列。此前这些事只写状态栏和程序运行日志——状态栏会被下一条消息覆盖，而运行日志是另一个文件，于是「这几秒为什么没有数据」这个问题在日志里根本查不到",
-                "同一批事件也写进每个串口的文件日志（标记为 SYS），所以事后翻文件就能回答「凌晨三点这个口为什么断了」。代价要说明白：文件日志从此不再等于「设备发来的字节流」，而是「收到的数据 + 这个端口上发生的事」。发送出去的内容仍然不落这个文件，这一点和以前一样",
-                "错误风暴不会再淹没数据：驱动可以在一秒内报三十多次帧错误/溢出错误，现在每一次错误出现时立刻记一行，随后同一端口同一内容的重复会在 1 秒窗口内折叠成一条带次数的汇总行（例如「重复 17 次」）。状态栏的原有节流保持不变，但日志不再跟着一起丢——那等于 30 次里悄悄丢掉 29 次",
-                "状态变化不折叠：断开、重连这类事件无论多频繁都逐条记录，因为「这个口每隔三秒断一次」正是要看到的信息，而不是要压掉的噪声",
-                "事件行用弱化的中性灰显示，与端口颜色区分开，多口日志里一眼能看出哪几行是设备数据、哪几行是这个端口本身的状态；切换浅色/深色时它们也会跟着换",
-                "日志字号可调：在日志区按住 Ctrl 滚轮即可缩放，Ctrl + 加号 / 减号 同样可以，Ctrl + 0 恢复默认；「外观 → 日志字号」菜单里也有这三项。字号会被记住（范围 10~24），重启后保持",
-                "日志区的滚轮步长与「贴底」判定现在跟随行高：以前这两个数值是按固定行高写死的，把字调大之后一格滚轮会变得明显偏小、判断是否在底部也会比一行还紧。它们现在按当前字号推导，所以放大字体不会让滚轮变弱",
-                "发送可以只发给指定串口：发送行新增「目标」选择器，默认「全部」，可以逐个勾选；选中的范围会同时作用于发送框、快捷指令和 F2 命令面板，并且按钮上始终显示当前范围，部分发送时状态栏也会点名实际发给了哪些口——「以为在广播、其实只发了一个口」是这类功能最容易出的错",
-                "「目标」只在本此运行内有效、不写入设置；被选中的串口关闭时会自动从中移除，全部移除后回到「全部」。Tuning 推送不受该设置影响，仍然广播到所有已打开串口",
-                "默认设置下发送的字节、日志的筛选/裁剪/滚轮与贴底判定全部维持原样；不改变任何既有行为的默认值"
-            ]
-        },
-        {
-            "date": "2026-09-30",
-            "version": "2.3.0",
-            "changes": [
-                "串口参数补齐：侧栏「串口参数」区现在可以设置停止位（1 / 1.5 / 2）、校验位（无 / 奇 / 偶 / 标记 / 空格）与流控（无 / 软件 XON-XOFF / 硬件 RTS-CTS / 两者），这一直写在说明里但界面里其实只有波特率和数据位",
-                "五项线路参数（波特率、数据位、停止位、校验位、流控）全部随设置保存，重启后保持上次选择；此前只有波特率会被记住，数据位、停止位与校验位每次启动都回到默认值",
-                "这些参数只在串口打开时生效，所以在已有串口打开的情况下改动下拉框会在状态栏明确说明「对下次打开生效」，而不是让改动悄悄无效；重新打开串口后即按新参数工作",
-                "选择 1.5 停止位而串口打开失败时，错误提示会额外指出可能是设备或驱动不支持 1.5 停止位，建议改回 1 或 2 —— 这类失败原本只是一条普通的打开异常，看不出与刚改的那一栏有关",
-                "新增「编码」下拉（UTF-8 / GB18030）：接收数据的解码方式可以按串口设置，GB18030 设备的中文日志不再显示为乱码；每个串口各自记住自己的编码，改动的当下就对已打开的串口生效（不需要关闭重开）",
-                "修复混合内容丢字：`AT+READY 温度` 这类以 ASCII 为主、夹杂中文的行，在通过数据清理分支时中文会被整段删掉，日志里只剩前半句。现在清理只去除控制字符，任何非 ASCII 内容都原样保留（U+FFFD 也保留，以便看出「这段字节没能按当前编码解码」而不是被悄悄抹掉）",
-                "修复中文日志被判为乱码：质量评分此前只把 ASCII 可见字符算作「文本」，于是正确解码的中文会让文本似然度接近 0，数据可能被判为垃圾而丢弃、或误报「建议重新检测波特率」。现在评分按「解码后不是控制字符也不是替换字符」计算，中文正常计为文本，真正的二进制数据仍然会因为满是替换字符而被识别出来",
-                "新增「行尾」下拉（无 / CR / LF / CRLF，默认「无」）：发送框是单行输入框，先前没有任何办法在末尾加一个回车，只能靠快捷指令里写转义；默认值为「无」意味着不改变任何现有发送字节",
-                "新增「多行拆分」开关（选中行尾符后可用）：勾选时输入里的换行会逐行发送、每行各带一个行尾符，不勾选则整段内容末尾只加一个行尾符；无论哪种，多行内容的发送日志每行一条（超过 20 行只逐行显示前 20 条并注明其余行已发送）",
-                "发送框支持先按 ↑ 召回最近发送过的内容（最多 10 条，随设置保存），按 ↓ 回到更新的一条，走过最新一条会恢复开始召回前输入框里的内容；重新发送同一条只会把它移到最前，不会产生重复项。十六进制内容按原样记入历史，召回后由十六进制开关决定如何解释",
-                "命令面板（F2）的搜索升级为分词匹配：多词查询按词逐条命中（顺序无关）、忽略连字符与标点（`prod api` 或 `prodapi` 都能找到 `prod-api-01`），中文不再需要和空格、标点严丝合缝，并且结果按「标题开头 > 标题包含 > 关键字包含」排序 —— 先前是取列表里的前 60 条做整串包含判断，条目一多就可能把用户明确点名的那个指令挤掉",
-                "外观、日志、滚轮、贴底与裁剪行为全部不变；默认设置下发送的字节与升级前逐字节一致"
-            ]
-        },
-        {
-            "date": "2026-09-29",
-            "version": "2.2.4",
-            "changes": [
-                "Started a round of improvements borrowed from a comparable project (Netcatty, an Electron/React terminal client): the borrowable items, the trade-off rules they must obey and an explicit \"not borrowing\" list are now archived in AGENTS.md, so later phases work from one written source instead of re-deriving them",
-                "The backlog is grouped into performance/smoothness, UI/motion, new features and engineering/testing, and every item names the mechanism it must not break - the wheel-scroll ownership, the pinned-to-bottom follow state, the single-Reset batch notifications and the display-buffer trim thresholds are all off limits",
-                "Fixed the log view competing with a data flood instead of surviving it: while a port delivers far more lines than the view can present at full detail, the per-port statistics and the combined traffic totals are no longer recomputed on every update, so the UI thread spends its budget applying the incoming lines and stays responsive to scrolling and typing - the counters settle on their exact final values as soon as the stream calms down",
-                "A flood is judged from the traffic itself (150 lines or 16 KB within 100 ms, or a line that has grown past 4096 characters without a terminator) and the verdict is held for 750 ms of quiet afterwards, so bursty traffic cannot make the view flip in and out of the mode",
-                "No data is dropped or delayed by this: received lines are still queued, filtered, trimmed and written to the log files exactly as before, and the display-buffer thresholds are unchanged",
-                "While a flood lasts, the log view is now refreshed in fewer, larger batches instead of many small ones: the number of full list rebuilds per second drops to about a third, which is where most of the per-frame layout work was going, while the number of lines shown per second is unchanged",
-                "The refresh rate returns to normal on its own within a second of the stream calming down, and the batch size is scaled together with the rate so the queue drains at exactly the same speed as before - a slower drain would have turned a flood into dropped lines",
-                "The log area no longer sits blank before anything is open: it shows a short hint explaining how to start (pick a port on the left, or press 全部打开) and that several ports can be monitored at once with a colour per port",
-                "Added a shared card/panel style to the theme (raised surface, hairline edge, card radius) so a new surface starts from one silhouette instead of re-inventing it, including in high-contrast mode where the two new tokens map onto the system colours",
-                "The appearance switch (跟随系统 / 浅色 / 深色) is now a short cross-fade instead of an instant repaint, and the baud-rate banner fades in and out instead of appearing and disappearing; both are opacity-only, so the UI thread pays nothing for them, and both are skipped entirely when Windows' animations are switched off",
-                "Starting the app still paints its first frame in the saved appearance with no fade: the transition only runs when the resolved light/dark actually changes while the window is already on screen",
-                "Added short notifications in the bottom-right corner: copying logs now confirms itself, and a refused clipboard - the failure a status-bar line used to lose, because an empty clipboard is the only evidence the user gets - stays on screen until it is dismissed",
-                "The notification stack shows at most four messages and never blocks the log behind it: only the messages themselves take clicks, so the wheel and selections still reach the log through the space around them",
-                "The port colour palette now has exactly one definition: the menu swatches are generated from it instead of being mirrored by hand in both the window markup and the theme file, which removes a whole class of 'the menu offers this colour while the log renders another' drift. No visible change.",
-                "Added a quick-send library: save what is in the send box as a named, grouped command and broadcast it to every open port in one click from the 快捷 menu beside 发送 - the library is stored with your settings, so it survives restarts and upgrades, and each entry can be deleted on its own",
-                "A saved command can opt into substitution: ${date}, ${time}, ${datetime}, ${epoch} and ${epochms} plus the usual CR/LF/TAB escapes are interpreted at send time, while anything unrecognised is sent exactly as typed - so a payload that really contains the text ${...} is never rewritten",
-                "Saved commands are sent through the same code path as the send box, so hex parsing, error messages, the sent-line entry and the byte counters behave identically",
-                "Added keyword highlighting: define rules from the 高亮 menu beside the search box - plain text or a regular expression, optionally case-sensitive, with a colour taken from the same palette the port colours use - and the matching text is recoloured in the log so ERROR, TIMEOUT and friends stand out while scanning. Rules are saved with your settings and can be disabled or deleted one at a time",
-                "Highlighting is decoration, so it is the first thing to go under load: while a port is flooding the log it pauses and returns on its own within a second of the stream calming down. The log contents, the file output and the filters are unaffected",
-                "Highlighting paints the text element each row already has instead of adding anything to the row, so the list keeps its previous scrolling and virtualization behaviour, and a pattern that cannot work is rejected when you add it rather than silently doing nothing",
-                "Added log export: the toolbar's export button saves what you are looking at to a text file - the whole filtered view, or just the rows you have selected when there is a selection - so it matches the screen line for line rather than dumping the raw byte stream",
-                "Exports carry a short commented header with the time, the scope (current view or selection), the row count, the search box contents and the encoding, and are written as UTF-8 without a BOM so they can be piped straight into grep or a parser",
-                "The export is taken as one snapshot before the file dialog opens, so the file always describes a single moment instead of whatever streamed in while you were choosing where to save it; the write happens off the UI thread, and a failure (a read-only folder, or a file open in another program) is reported in the status bar instead of ending the session",
-                "Added a command palette on F2: one keyboard-first switcher for both serial ports (already-open ones show their channel colour and byte counts, and can be opened or closed from here) and saved quick-send commands (searchable by name, group or payload), so the common actions no longer need the mouse",
-                "The palette filters as you type, with arrow keys to move, Enter to run and Esc, a second F2 or a click on the dimmed backdrop to dismiss; it reads the same snippet and port lists the rest of the interface uses, so nothing it offers can disagree with what you see elsewhere",
-                "F2 rather than a Ctrl+ combination: letter shortcuts are routinely swallowed by input methods and resident tools, which is the same reason F9 already opens the log folder",
-                "Added a logic-layer unit test suite (xUnit) covering the highlight-rule engine and the export writer: persistence round-trips, corrupt settings tolerance, pattern validation, literal versus regex matching, case sensitivity, overlap precedence, the per-line cap, the overlong-line skip, the export header, UTF-8 without a BOM, failure reporting and cancellation",
-                "Fixed a cancellation path in the log export that could surface as an unhandled exception instead of a result - a token that was already cancelled made the call throw out of a method documented never to throw. Found by the new tests",
-                "A cancelled or failed export now deletes the half-written file, so a truncated log cannot be mistaken for a complete one"
-            ]
-        },
-        {
-            "date": "2026-09-28",
-            "version": "2.2.3",
-            "changes": [
-                "Log list wheel scrolling is now a short glide instead of a teleport: one notch still covers about a fifth of the list, but the view eases into place over ~150-200ms, and a burst of notches (or a touchpad's fine-grained deltas) now adds up instead of each event overwriting the previous one",
-                "Scrolling away from the newest row now detaches the follow instead of being dragged back by the next batch: you can read history during a live stream without pausing reception, and scrolling back down re-attaches automatically",
-                "Added a 回到最新 button at the bottom-right of the log area - it appears only while the view is detached from the newest row and jumps straight back to it, resuming the follow",
-                "While you are reading history the display buffer stops being trimmed from the head, so rows are no longer pulled out from under the cursor (the buffer still has a hard cap, and the trims that were skipped are made up as soon as the view returns to the newest row)"
-            ]
-        },
-        {
-            "date": "2026-09-21",
-            "version": "2.2.2",
-            "changes": [
-                "A found update is now remembered locally: once a newer version has been discovered, later silent checks read it back instead of asking GitHub again, so dismissing the prompt with 稍后 and restarting the app shows the update immediately - no waiting out a throttle window and no extra API request",
-                "The remembered update stays valid for 24 hours, so the app re-confirms against GitHub once a day instead of advertising a superseded or withdrawn release indefinitely, and it is dropped immediately when it stops being newer than the running build (i.e. you installed it) or when you choose 跳过此版本 - it can never pin the app to a version it has already installed or to one you deliberately skipped",
-                "Silent update checks are now throttled on the success side as well: when no update is pending, two successful checks are at least 30 minutes apart, so restarting the app repeatedly (or sharing a public IP with other GitHub users behind NAT or a proxy) can no longer burn through the anonymous 60 requests/hour API limit and surface as \"更新检查过于频繁（GitHub 接口限流）\" - Help → Check for updates is unaffected and still hits the network immediately",
-                "A new version is now found within at most 30 minutes of its release instead of within a day, and the failed-check backoff (1 hour) is unchanged, so a rate-limited or offline check still cannot turn into a request storm"
-            ]
-        },
-        {
-            "date": "2026-09-21",
-            "version": "2.2.1",
-            "changes": [
-                "Renamed the installed application and its shortcuts from 串口工具 (SerialPortTool) to SerialPortTool, so the Start-menu folder, the desktop shortcut, the Setup window and Apps & features all read SerialPortTool",
-                "The installer now removes the previous 串口工具 (SerialPortTool) Start-menu group and desktop shortcut while upgrading, so a renamed display name can no longer leave both the old and the new entry behind"
-            ]
-        },
-        {
-            "date": "2026-09-21",
-            "version": "2.2.0",
-            "changes": [
-                "Added window-level keyboard shortcuts, resolved by a single KeyDown handler on the root content Grid so a gesture works wherever the focus is - the search and send boxes included",
-                "F9 now opens the log folder from anywhere in the window, and the 工具 → 打开日志文件夹 menu entry shows the gesture"
-            ]
-        },
-        {
-            "date": "2026-09-21",
-            "version": "2.1.5",
-            "changes": [
-                "Log list wheel scrolling now moves in proportional, viewport-relative steps (about a fifth of the list per notch) instead of barely one row, so scrolling back through a paused log actually works",
-                "The wheel is now handled by the log list itself rather than by the framework: the step is viewport-relative (60-240 px) and scaled for precision wheels and touchpads, horizontal-wheel gestures and scrolling with the scrollbar or the keyboard are unaffected, and the 'locked to latest' follow behaviour while running is unchanged"
-            ]
-        },
-        {
-            "date": "2026-09-20",
-            "version": "2.1.4",
-            "changes": [
-                "Log search now filters on commit: typing only fills the box and the query runs on Enter or the 搜索 button, so a half-typed pattern can no longer rebuild the whole log view (or blank it out) on every keystroke",
-                "Added a 文本 / 正则 switch to the search bar. Text mode is the default and matches literally, so a query containing ( ) [ ] * . or ? is no longer rejected as an invalid regular expression with an empty result list",
-                "Added a 区分大小写 switch; both switches are remembered across restarts (settings keys SearchUseRegex / SearchCaseSensitive)",
-                "Search history moved out of the auto-opening dropdown into a flyout behind a 历史 button: typing opens nothing, a query is recorded when it is run rather than when the box loses focus, each entry can still be deleted individually, and 清空历史 keeps its confirmation prompt",
-                "The invalid-pattern message is now Chinese and can only appear in regex mode (正则表达式无效：…)",
-                "The live log flush and the full re-filter now share one cached matcher keyed by (query, mode, case), so newly arriving lines and already displayed lines can no longer be filtered by different rules"
-            ]
-        },
-        {
-            "date": "2026-09-20",
-            "version": "2.1.3",
-            "changes": [
-                "Closing a port can no longer be undone by the automatic reconnect: a close that landed while a reconnect was waiting out its delay used to be followed by the reconnect reopening the port, and that handle was then invisible to both the app and the UI — the only way to release it was to exit the app",
-                "Closing a port now also cancels a running baud-rate scan for that port; the scan owns the port while it probes (~40 s) and used to reopen it afterwards, so a close during a scan looked like it had silently failed",
-                "The baud-rate scan no longer reopens a port that was closed while it was running, and duplicate scan requests for the same port are ignored instead of stacking another close/reopen cycle",
-                "An auto-reconnect that lost the race to a close no longer reports the port as Connected",
-                "关闭全部 now also undoes ports that were still being opened at that moment, instead of letting them appear (open) a moment later",
-                "Port lookups are case-insensitive, matching Windows: a close using a differently spelled port name (com3 / COM3) used to do nothing at all, silently leaving the port open",
-                "The same case-insensitivity applies to opening: a saved port name in a different case was refused as “not available in the system” after waiting, even though the port was there",
-                "Closing a port is no longer queued behind its log file: the port is released first and the file logger is stopped afterwards, so a slow or redirected log volume can no longer look like an unclosable port, and the tail of the log is kept instead of being cut off",
-                "An open request that outlives the app no longer registers a port after shutdown has already released everything"
-            ]
-        },
-        {
-            "date": "2026-09-18",
-            "version": "2.1.2",
-            "changes": [
-                "Update checks are no longer throttled by a successful check: every launch now checks GitHub Releases, so a version published minutes after the previous check is reported immediately instead of staying invisible for up to 24 hours",
-                "Only failed checks are throttled now: a failure (offline, timeout, rate limit, unusable response) backs off for one hour, which keeps the anonymous API limit safe without ever hiding a new release",
-                "The app also re-checks every 24 hours while it stays open, so a long-running session no longer has to be restarted to learn about a new version",
-                "Help → Check for updates always hits the network immediately and no longer changes the throttle state, so a manual check cannot push the next silent check back by a day",
-                "The obsolete Update.LastCheckUtc throttle timestamp is cleaned up on the first launch of this build"
-            ]
-        },
-        {
-            "date": "2026-09-18",
-            "version": "2.1.1",
-            "changes": [
-                "Tuning / TOTA pushing is now a hidden feature that is off by default: the toolbar row only appears after ticking 工具 → 启用 Tuning 功能, the choice is remembered across restarts, and the default interface shows no Tuning controls at all",
-                "Turning the Tuning switch off stops the file watch but keeps the configured .bin path, protocol JSON and the was-watching preference, so re-enabling the feature restores exactly what was configured",
-                "Removed the bundled mic-tota-tuning.json sample; a tuning protocol descriptor must now be supplied by the user",
-                "Added a single-instance guard: a second launch explains itself and exits instead of competing for the same COM ports and overwriting the settings file, and the application log is now opened for sharing so a second process no longer loses its logging silently",
-                "Settings can no longer be destroyed by a bad read: a settings.json that fails to parse puts the service into a visible read-only state instead of being overwritten with an empty document, and writes are atomic (temp file + replace) so an interrupted write cannot create the truncated file that starts that cycle",
-                "Shutdown no longer leaks COM handles: ports are closed asynchronously while the window tears down, the synchronous fallback path no longer blocks on nested timeouts that abandoned their own work, and queued writes are cancelled before the port is disposed",
-                "Fixed the ObjectDisposedException that could surface when the window was closed with sends in flight",
-                "Baud-rate detection can be cancelled and no longer races its own receive callback; closing the window during a scan no longer keeps the process alive for up to a minute",
-                "Fixed the log list rebuilding itself about 20 times per second once it reached its size cap; trimming now removes extra so a rebuild happens a few times per minute instead",
-                "Fixed port colours not repainting log rows that were already on screen, which left the log showing two palettes at once",
-                "Fixed the port-colour lookup racing the UI thread during concurrent reception",
-                "Copying logs no longer takes the application down when another program holds the clipboard",
-                "Hexadecimal send no longer mangles payloads that contain a literal 0x",
-                "Enter in the send box now sends, matching what the placeholder text promises",
-                "Custom baud rates are validated against a sane upper bound instead of accepting any positive number",
-                "Search re-filtering is debounced for real: the history dropdown and the Enter key no longer each trigger an extra full rebuild on top of it",
-                "Sent and tuning log entries now go through the same queue as received data, so they are trimmed, filtered and batched like everything else",
-                "Fixed auto-scroll staying permanently dead after the log view was unloaded and re-loaded",
-                "Fixed a tuning bin file that was still being written being hashed and sent as if it were final, which then suppressed every later automatic send",
-                "Fixed an infinite loop when a text filter with an empty pattern was used for highlighting",
-                "Tuning descriptor validation now covers the info area fields and rejects integer overflow instead of building a packet with wrong lengths",
-                "The About dialog no longer shows the current time as the build time when the generated build timestamp is missing, which made \"which build am I running?\" unanswerable in exactly the situation where it matters",
-                "The build now fails when version.json cannot be read instead of stamping a stale hard-coded version, and the release pipeline asserts the manifest version, the assembly version and the presence of both release assets",
-                "The installer refuses to build without an injected version (a 0.0.0 package would permanently break auto-update on every machine that installed it) and no longer installs on Windows versions below 1809",
-                "Removed the dead code, duplicate language-folder rules and stale documentation references found by a full repository audit"
-            ]
-        },
-        {
-            "date": "2026-09-18",
-            "version": "2.1.0",
-            "changes": [
-                "Redesigned the interface around a bench-instrument faceplate: graphite/paper neutrals, hairline dividers, monospace data and one live-signal accent, replacing the stock-control look",
-                "Added an appearance switch (follow system / light / dark) under a new 外观 menu; the choice is remembered and applied before the first frame, so a dark-theme launch no longer flashes light",
-                "Both palettes are calibrated separately rather than inverted - including the ten port identity colours, which gained a lifted, desaturated dark variant so multi-port logs stay readable on graphite",
-                "Fused the title bar with the app chrome: brand, menus, port overview and the window buttons now share one band, backed by Mica with an automatic opaque fallback where Mica is unavailable (Windows 10, transparency effects off)",
-                "Rearranged the layout: a narrower foldable configuration rail that also collapses itself below 900 px, search and Tuning merged into a single two-row toolbar with file paths reduced to name chips (full path on hover), and the log area absorbing all remaining height",
-                "Added a channel trace and channel legend to the log: a 3 px bar in the row's port colour plus a legend strip mapping colour to port and byte counts, so interleaved multi-port traffic stays attributable at a glance",
-                "Log rows now re-colour immediately when a port colour changes or the appearance switches, instead of staying on the previous palette",
-                "Status bar now reports the open-port count, combined RX/TX totals, the live match count and the current appearance",
-                "Replaced the emoji icons with themed Fluent glyphs and unified button, input, dropdown, checkbox, menu, tooltip, scrollbar and dialog styling on one token set",
-                "Removed the last hard-coded light-theme colours (the baud-rate banner and the regex error hint) in favour of semantic tokens, and added a high-contrast theme dictionary that follows the system colours",
-                "UI-thread exceptions raised by the XAML framework are now logged: only AppDomain.UnhandledException was wired up, which never sees a binding, template or window-construction failure, so such a crash left the log completely empty",
-                "Serilog and the exception handlers are configured before App.xaml is loaded and before the XAML compiler's generated break-on-unhandled-exception hook is registered, so the log now names the failure before the debugger stops on it",
-                "Window chrome setup (Mica material, custom title bar, caption button colours) is now best-effort: an unsupported or policy-blocked API logs a warning and falls back to the plain window instead of preventing the window from appearing",
-                "Reading the system animation preference can no longer fail the startup path"
-            ]
-        },
-        {
-            "date": "2026-09-17",
-            "version": "2.0.4",
-            "changes": [
-                "Finished the Node 24 migration of the release pipeline: the artifact actions were still on the deprecated runtime - upload-artifact v5 and download-artifact v5 both target Node 20, so they needed v6 and v7 respectively, one major higher than the checkout/setup-dotnet bumps",
-                "Release runs no longer print any Node.js 20 deprecation warning"
-            ]
-        },
-        {
-            "date": "2026-09-17",
-            "version": "2.0.3",
-            "changes": [
-                "Moved the release pipeline to the Node 24 generation of the official GitHub Actions (checkout, setup-dotnet, upload-artifact, download-artifact v5), so release runs stop reporting the deprecated Node 20 runtime",
-                "Fixed desktop and Start-menu shortcuts still showing the previous icon after an update: Windows keeps the old bitmap in its icon cache and in Explorer's in-memory image list, and a silent in-place update never gives the shell a chance to re-read it",
-                "The installer now notifies the shell (SHChangeNotify / SHCNE_ASSOCCHANGED) once the files are in place, so Explorer re-reads the shortcut icons and repaints the desktop immediately instead of waiting for a manual refresh",
-                "Shortcuts now take their icon explicitly from the shipped logo.ico instead of indirectly from the executable's icon resource, so the shortcut icon can no longer drift from the icon that actually ships"
-            ]
-        },
-        {
-            "date": "2026-09-17",
-            "version": "2.0.2",
-            "changes": [
-                "Fixed the app not coming back after an auto-update: the installed build used to install the new files silently and then stay closed",
-                "The installer now restarts the app explicitly in silent mode instead of relying on Restart Manager, which only relaunches processes it closed itself - and the app has already exited by the time the installer runs",
-                "Removed the never-enabled restart fallback switch from the Inno Setup script and the RESTARTAPPLICATIONS flag from the updater's arguments, so exactly one restart path is active and two instances can never be started"
-            ]
-        },
-        {
-            "date": "2026-09-17",
-            "version": "2.0.1",
-            "changes": [
-                "Rebuilt the application icon as a genuine multi-resolution .ico (16 to 256 px) so Explorer and the taskbar stop upscaling a single 32 px bitmap, which is what made the desktop icon look blurry",
-                "Added a simplified small-size variant of the icon (filled connector, bolder strokes, larger symbol ratio) so the 16/20/24 px frames stay legible instead of turning into grey mush",
-                "Replaced the icon artwork with a watermark-free, centred composition on a rounded blue-to-cyan gradient"
-            ]
-        },
-        {
-            "date": "2026-09-14",
-            "version": "2.0.0",
-            "changes": [
-                "Version 2.0.0 milestone: distribution moves from a loose file dump to a single per-user installer, with in-app update checking and silent auto-update built in",
-                "Added in-app update checking against GitHub Releases: a silent check a few seconds after startup plus a manual 'Check for updates' entry in the Help menu",
-                "Added the download-and-install flow - the installer is streamed to a temp folder, verified by length and PE header, then launched silently to replace files and restart the app",
-                "Skipping a version is persisted so the silent check stops nagging; the portable ZIP build only notifies and opens the download page instead of replacing files",
-                "Added an Inno Setup per-user installer (no administrator rights, no UAC prompt) so a release is a single Setup.exe instead of hundreds of loose files; the portable ZIP is still published",
-                "Update checks throttle themselves to once per 24 hours and fail silently, keeping the anonymous GitHub API rate limit in mind",
-                "Version comparison parses the release tag numerically instead of comparing strings"
-            ]
-        },
-        {
-            "date": "2026-09-14",
-            "version": "1.8.13",
-            "changes": [
-                "Reassemble serial chunks per port so UTF-8 characters and lines split across reads no longer become replacement characters or broken log entries",
-                "Cache the live-search regex and hand whole batches to the file logger to cut UI-thread work under high-throughput streams",
-                "Send tuning/text payloads to all ports via async I/O instead of a dedicated thread per port",
-                "Run data validation inline on each port's read thread and pause garbage bursts with a short drop cooldown instead of queueing overlapping work",
-                "Pass binary and non-ASCII payloads through unchanged so the text cleaner no longer strips them",
-                "Removed unused code (performance monitor, string-to-visibility converter, an alert overload, LogEntry id) and kept ReadyToRun disabled for WinUI 3 stability",
-                "Bound log-list update frequency with adaptive add/remove-range notifications, a throttled statistics refresh, and a UI-thread brush cache"
-            ]
-        },
-        {
-            "date": "2026-05-28",
-            "version": "1.8.12",
-            "changes": [
-                "Fixed WinUI 3 ListView crash with 'indices larger than Int32.MaxValue - 1' by switching RangeObservableCollection batch updates to Reset notifications",
-                "Debounced settings persistence with 500ms in-memory coalescing to eliminate per-keystroke disk I/O in the send-text box and other property-change save paths",
-                "Reused per-port byte buffer for SerialPort.Read to reduce GC pressure under high-throughput data",
-                "Cached OpenPorts dictionary to remove LINQ scans from GetPortColor and the per-flush stats/sent-log paths",
-                "Rewrote GarbageDataDetector as a zero-allocation single-pass span scan (preserves existing thresholds)",
-                "Stopped firing CollectionChanged notifications for AllLogs (back-buffer only — never bound to UI)",
-                "Removed unused PortViewModel.Logs / FilteredLogs collections and their O(n) RemoveAt(0) trim path",
-                "Guarded hot-path LogTrace calls with IsEnabled to skip argument boxing at production log levels"
-            ]
-        },
-        {
-            "date": "2026-05-22",
-            "version": "1.8.11",
-            "changes": [
-                "Fixed port reopen failure after closing with incorrect baud rate (retry availability check for OS handle release)",
-                "Clear stale validation state and reconnection cooldown on port close",
-                "Reset _isClosing flag on port open to ensure clean state for reopen",
-                "Moved cleanup delay to finally block in PortInstance Dispose for reliable handle release"
-            ]
-        },
-        {
-            "date": "2026-05-14",
-            "version": "1.8.10",
-            "changes": [
-                "Fixed settings.json file lock conflicts causing tuning watcher and port open failures",
-                "Added reconnection cooldown to prevent reconnect storm with thousands of UnauthorizedAccessException errors",
-                "Fixed CancellationTokenSource disposed crash in tuning auto-send",
-                "Fixed tuning send failure when port is reconnecting (check IsPortOpen before sending)",
-                "Fixed concurrent Queue modification exception in DataValidationService",
-                "Added global unhandled exception handlers to prevent silent crashes"
-            ]
-        },
-        {
-            "date": "2026-04-29",
-            "version": "1.8.9",
-            "changes": [
-                "Fixed multi-port tuning sends by running each COM port on its own send worker",
-                "Updated the regular send button to broadcast to all open COM ports with per-port results"
-            ]
-        },
-        {
-            "date": "2026-04-29",
-            "version": "1.8.8",
-            "changes": [
-                "Version 1.8.8 release"
-            ]
-        },
-        {
-            "date": "2026-04-29",
-            "version": "1.8.7",
-            "changes": [
-                "Version 1.8.7 release"
-            ]
-        },
-        {
-            "date": "2026-04-14",
-            "version": "1.8.6",
-            "changes": [
-                "Reduced high-volume log flicker by merging pending serial log updates before applying them on the UI thread",
-                "Deferred log trimming until the display buffer exceeds a higher threshold to avoid repeated full-list churn near the cap",
-                "Throttled auto-scroll updates to prevent forced layout refreshes on every incoming log batch",
-                "Improved batch collection notifications to keep WinUI bindings in sync during range updates"
-            ]
-        },
-        {
-            "date": "2026-04-10",
-            "version": "1.8.5",
-            "changes": [
-                "Removed unused package references including WinUIEx, Newtonsoft.Json, CsvHelper, and unused CommunityToolkit controls",
-                "Replaced Host.CreateDefaultBuilder with a lightweight ServiceCollection container for desktop startup",
-                "Reduced release output dependencies by trimming unused hosting, configuration, and WebView-related assemblies"
-            ]
-        },
-        {
-            "date": "2026-04-10",
-            "version": "1.8.4",
-            "changes": [
-                "Trimmed GitHub release packages by removing debug symbol files",
-                "Kept only zh-CN and en-us framework language resource folders in release archives",
-                "Stopped bundling README.md and version.json in release ZIP packages"
-            ]
-        },
-        {
-            "date": "2026-04-09",
-            "version": "1.8.3",
-            "changes": [
-                "Optimized log trimming by replacing RemoveRange with the more efficient RemoveFromStart path",
-                "Updated the GitHub release workflow to publish updated releases without keeping them in draft state"
-            ]
-        },
-        {
-            "date": "2026-04-08",
-            "version": "1.8.2",
-            "changes": [
-                "Fixed GitHub Actions release workflow version verification against git tags",
-                "Hardened version.json parsing in the release pipeline to avoid whitespace and encoding mismatches",
-                "Standardized workflow step outputs to lowercase names for more reliable release packaging"
-            ]
-        },
-        {
-            "date": "2026-04-08",
-            "version": "1.8.0",
-            "changes": [
-                "Replaced ItemsRepeater with ListView for multi-line log selection and copy support",
-                "Added Ctrl+C to copy selected logs, Ctrl+A to select all, and right-click context menu",
-                "Custom compact ListViewItem template for tight log spacing with soft selection highlight",
-                "Preserved per-line color display and UI virtualization for smooth scrolling"
-            ]
-        },
-        {
-            "date": "2026-02-04",
-            "version": "1.7.0",
-            "changes": [
-                "Added per-port color customization for visual distinction of multiple COM ports",
-                "Each port automatically gets a unique color from a 10-color palette when opened",
-                "Added color picker dropdown in open ports list to manually change port colors",
-                "Log entries now display in their port's assigned color for easy identification",
-                "Moved HexColorToBrushConverter to application resources for global accessibility"
-            ]
-        },
-        {
-            "date": "2026-01-12",
-            "version": "1.6.3",
-            "changes": [
-                "Fixed custom baud rate not being applied correctly (added UpdateSourceTrigger=PropertyChanged)",
-                "Added save/restore functionality for custom baud rate settings",
-                "Fixed COM port close issue when using incorrect baud rate (added timeout and _isClosing flag)",
-                "Custom baud rate checkbox and value now persist across application restarts",
-                "Status message now displays the actual baud rate being used when opening ports"
-            ]
-        },
-        {
-            "date": "2025-12-25",
-            "version": "1.6.2",
-            "changes": [
-                "Enhanced search history functionality with improved UI and user experience",
-                "Added clear current search button (✕) that appears when there is text",
-                "Added individual delete buttons for each history item in dropdown",
-                "Added clear all search history button with confirmation dialog",
-                "Fixed issue where selecting history items would cause text to disappear",
-                "Fixed duplicate history save issues with debounce mechanism",
-                "Improved dropdown menu layout to prevent text truncation",
-                "Added StringToVisibilityConverter for dynamic UI element visibility",
-                "Optimized ComboBox event handling to prevent binding conflicts",
-                "Enhanced search box with better focus management and selection handling",
-                "Search history now correctly persists across application restarts",
-                "Added detailed debug logging for troubleshooting search functionality"
-            ]
-        },
-        {
-            "date": "2025-12-15",
-            "version": "1.6.1",
-            "changes": [
-                "Disabled ReadyToRun (R2R) compilation in release workflow for better compatibility",
-                "Disabled single-file publishing to resolve deployment issues"
-            ]
-        },
-        {
-            "date": "2025-12-15",
-            "version": "1.6.0",
-            "changes": [
-                "Implemented simplified version management with single source of truth in version.json",
-                "Added automatic version synchronization between version.json, .csproj, and Package.appxmanifest",
-                "Added clear logs functionality with dedicated button and command",
-                "Refactored search event handlers for better reliability (replaced TextSubmitted with separate handlers)",
-                "Added SearchBox_DropDownClosed, SearchBox_LostFocus, and SearchBox_KeyDown event handlers",
-                "Fixed Package.appxmanifest encoding with BOM for UTF-8 support",
-                "Updated Package.appxmanifest MinVersion to use app version instead of Windows version",
-                "Enhanced build process with UpdateManifestVersion MSBuild target",
-                "Improved version extraction using regex at MSBuild evaluation time",
-                "Simplified bump-version.ps1 script to only modify version.json"
-            ]
-        },
-        {
-            "date": "2025-12-12",
-            "version": "1.5.0",
-            "changes": [
-                "Added recent search history with combobox for quick access to previous searches",
-                "Enhanced search functionality with dropdown history selection",
-                "Improved user experience with search term persistence"
-            ]
-        },
-        {
-            "date": "2025-12-10",
-            "version": "1.4.1",
-            "changes": [
-                "Removed clear logs functionality to simplify log management",
-                "Enhanced port closing and disposal reliability with comprehensive logging",
-                "Increased retry count from 3 to 5 for port close operations",
-                "Added specific handling for UnauthorizedAccessException and IOException",
-                "Improved buffer discarding before closing to prevent blocking",
-                "Extended delays for Windows COM port handle release (500ms, 250ms, 150ms)",
-                "Added garbage collection fallback on close errors to free resources",
-                "Enhanced error handling in Dispose method with proper cleanup steps",
-                "Added detailed debug logging for close and dispose process",
-                "Improved edge case handling for null ports and missing ports"
-            ]
-        },
-        {
-            "date": "2025-12-09",
-            "version": "1.4.0",
-            "changes": [
-                "Added automatic baud rate detection with BaudRateDetectorService",
-                "Implemented DataValidationService for real-time data quality assessment",
-                "Added baud rate mismatch alert UI with auto-fix functionality",
-                "Integrated validation services into SerialPortService for enhanced data processing",
-                "Added garbage data detection and filtering to prevent UI issues",
-                "Implemented automatic baud rate switching with high confidence detection",
-                "Added data quality statistics and trend analysis",
-                "Enhanced error handling with fallback encoding support (UTF-8/ASCII/binary)",
-                "Added rate limiting and memory protection for large data packets",
-                "Removed ARM64 platform support, simplified to x64-only builds",
-                "Updated CI/CD pipeline to streamline x64-only releases"
-            ]
-        },
-        {
-            "date": "2025-12-05",
-            "version": "1.3.1",
-            "changes": [
-                "Added application icon integration to main window",
-                "Added logo.ico and logo.png assets to Assets/Images directory",
-                "Configured ApplicationIcon property in project file",
-                "Implemented icon loading with existence validation",
-                "Enhanced visual branding and professional appearance"
-            ]
-        },
-        {
-            "date": "2025-12-04",
-            "version": "1.3.0",
-            "changes": [
-                "Bug fixes and performance improvements"
-            ]
-        },
-        {
-            "date": "2025-12-03",
-            "version": "1.2.0",
-            "changes": [
-                "Added comprehensive About dialog with version and build information",
-                "Implemented VersionInfo helper for centralized version display",
-                "Enhanced About dialog with app features and copyright information",
-                "Removed unused 'New Connection' menu item for cleaner UI",
-                "Connected About menu item to functional About dialog",
-                "UI improvements for better user experience"
-            ]
-        },
-        {
-            "date": "2025-12-02",
-            "version": "1.1.0",
-            "changes": [
-                "Major performance optimizations for high-throughput scenarios (10-20x improvement)",
-                "Added LogEntry formatted text caching (50-70% reduction in string allocations)",
-                "Implemented batch file writing with async queue (10-20x faster file I/O)",
-                "Added regex compilation caching with smart memory management (5-10x faster filtering)",
-                "Implemented RangeObservableCollection for batch UI updates (50-80% improvement)",
-                "Optimized data reception with pre-allocated capacity and batch processing",
-                "Added PerformanceMonitor helper for operation profiling and slow operation warnings",
-                "Increased MaxDisplayLogs from 1000 to 2000 for better data visibility",
-                "Enhanced UI virtualization with TextBlock optimizations",
-                "Reduced GC pressure by 40-60% through memory allocation optimizations",
-                "Added comprehensive performance documentation in PERFORMANCE_OPTIMIZATIONS.md"
-            ]
-        },
-        {
-            "date": "2025-12-01",
-            "version": "1.0.2",
-            "changes": [
-                "Fixed GitHub Actions workflow .NET setup issues",
-                "Corrected RuntimeIdentifier format for ARM64 builds",
-                "Updated build configuration for better cross-platform support"
-            ]
-        },
-        {
-            "date": "2025-12-01",
-            "version": "1.0.1",
-            "changes": [
-                "Bug fixes"
-            ]
-        },
-        {
-            "version": "1.0.0",
-            "date": "2025-12-01",
-            "changes": [
-                "Initial release",
-                "Multi-port serial monitor support",
-                "Automatic version and build time display"
-            ]
-        }
-    ]
+  "version": "2.5.0",
+  "description": "SerialPortTool Version Configuration",
+  "changelog": [
+    {
+      "date": "2026-09-30",
+      "version": "2.5.0",
+      "changes": [
+        "配置档案（预设）：左侧「串口参数」区新增档案列表，可以把当前的波特率 / 数据位 / 停止位 / 校验位 / 流控 / 编码连同行尾符一起存成一套有名字的档案（最多 12 套，随设置保存），之后选中点「套用」一键复现。行尾符刻意属于档案的一部分——只改波特率却保留旧的行尾符，会造成「看着套用了、发出的帧还是错的」这种最难察觉的结果",
+        "套用档案只写回侧栏，也就是「下次打开串口时生效」，与其它五项线路参数同一条规则：不会把已经打开的串口悄悄关掉重开。状态栏会明确写出这一点，因为「没反应」和「已生效」在界面上长得一模一样。自动重连、读写超时与端口颜色不属于档案——它们各自已经有唯一的来源",
+        "串口设备信息：可用串口列表里的每个 COMx 下面会补一行设备身份（厂商 / 描述 / VID:PID），来自 PnP 设备节点。这里只查询、不打开——打开会占住串口句柄，正是由它列出来的这些口随后反而打不开（UnauthorizedAccessException）。查不到就只显示端口名：板载串口与虚拟串口常常没有 USB 信息，这不影响扫描本身，查询超时或失败也只丢这一行补充信息",
+        "端口备注 / 标签 / 分组：可用串口列表下方新增「端口备注」，可以给任意端口写一句备注、打几个标签、归到一个分组，这些信息显示在这一行下方，也能被 F2 命令面板搜到，不必再逐个打开确认哪台是哪台。备注是纯本地元数据：不会发出去、不会写进该串口的文件日志、不会出现在导出里；清空所有字段即等于删除这条备注，不留空条目",
+        "打开后自动发送初始化序列（默认关闭）：勾选后串口打开成功会自动发送一段预设内容，多行逐行发送，支持与快捷指令相同的 ${date} / \\r 等变量（未识别的写法保持原样发出，不会被吞掉）。默认关闭，因为它会向一个你还没来得及看的设备主动写入内容——不少 bootloader 与配置台在启动头一秒收到意外指令会直接切换模式，所以这不是「多发一行无害」而是「设备不再做原来的事了」。每次打开只发一次，自动重连不会重发，「全部打开」也不触发",
+        "多行发送可以设置行间隔（默认 0）：勾选「多行拆分」后旁边新增「行间隔（ms）」，逐行发送时行与行之间等待一段时间，喂那些处理不过来连续命令的设备（例如烧录或配置脚本）。默认 0 表示整段一次发出——没有设过行间隔时发出的字节与以往逐字节一致。上限 10 秒；等待用 Task.Delay 而不是阻塞线程，窗口在等待期间不卡；等待时如果目标串口关了会立刻停掉剩余行",
+        "发送历史面板：发送行新增「发送历史」，打开一个可搜索、可逐条删除的完整列表（搜索与 F2 命令面板同一套匹配排序）：Enter 或单击把一条填回发送框，行尾图标删除单条，右下角一键清空。它叠加而不是替换既有的 ↑/↓ 召回——两者读的是同一份数据，所以在面板里删掉的 ↑ 也不会再召回；历史条数上限与存储位置都未变",
+        "启动时恢复上次打开的串口（默认关闭）：勾选并重启后按上次记住的参数重新打开这些串口，已经拔掉的设备会被跳过并在状态栏说明，不会卡住启动。默认关闭：启动时就去占用 COM 会和别的程序（或同机的另一个使用者）抢端口，产线设备被意外占用远比「少点一次」严重。恢复不会发送任何东西——那是打开后初始化序列的事，两者各自独立",
+        "默认设置下发送的字节、日志的筛选/裁剪/滚轮与贴底判定全部维持原样；新增的两个开关（自动初始化序列、启动恢复）默认关闭，行间隔默认 0，不改变任何既有行为的默认值"
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "version": "2.4.0",
+      "changes": [
+        "串口事件现在会出现在日志里：打开、关闭、断开、重连与端口错误都会作为一条 [SYS] 行写进日志流，与数据行按时间顺序交错排列。此前这些事只写状态栏和程序运行日志——状态栏会被下一条消息覆盖，而运行日志是另一个文件，于是「这几秒为什么没有数据」这个问题在日志里根本查不到",
+        "同一批事件也写进每个串口的文件日志（标记为 SYS），所以事后翻文件就能回答「凌晨三点这个口为什么断了」。代价要说明白：文件日志从此不再等于「设备发来的字节流」，而是「收到的数据 + 这个端口上发生的事」。发送出去的内容仍然不落这个文件，这一点和以前一样",
+        "错误风暴不会再淹没数据：驱动可以在一秒内报三十多次帧错误/溢出错误，现在每一次错误出现时立刻记一行，随后同一端口同一内容的重复会在 1 秒窗口内折叠成一条带次数的汇总行（例如「重复 17 次」）。状态栏的原有节流保持不变，但日志不再跟着一起丢——那等于 30 次里悄悄丢掉 29 次",
+        "状态变化不折叠：断开、重连这类事件无论多频繁都逐条记录，因为「这个口每隔三秒断一次」正是要看到的信息，而不是要压掉的噪声",
+        "事件行用弱化的中性灰显示，与端口颜色区分开，多口日志里一眼能看出哪几行是设备数据、哪几行是这个端口本身的状态；切换浅色/深色时它们也会跟着换",
+        "日志字号可调：在日志区按住 Ctrl 滚轮即可缩放，Ctrl + 加号 / 减号 同样可以，Ctrl + 0 恢复默认；「外观 → 日志字号」菜单里也有这三项。字号会被记住（范围 10~24），重启后保持",
+        "日志区的滚轮步长与「贴底」判定现在跟随行高：以前这两个数值是按固定行高写死的，把字调大之后一格滚轮会变得明显偏小、判断是否在底部也会比一行还紧。它们现在按当前字号推导，所以放大字体不会让滚轮变弱",
+        "发送可以只发给指定串口：发送行新增「目标」选择器，默认「全部」，可以逐个勾选；选中的范围会同时作用于发送框、快捷指令和 F2 命令面板，并且按钮上始终显示当前范围，部分发送时状态栏也会点名实际发给了哪些口——「以为在广播、其实只发了一个口」是这类功能最容易出的错",
+        "「目标」只在本此运行内有效、不写入设置；被选中的串口关闭时会自动从中移除，全部移除后回到「全部」。Tuning 推送不受该设置影响，仍然广播到所有已打开串口",
+        "默认设置下发送的字节、日志的筛选/裁剪/滚轮与贴底判定全部维持原样；不改变任何既有行为的默认值"
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "version": "2.3.0",
+      "changes": [
+        "串口参数补齐：侧栏「串口参数」区现在可以设置停止位（1 / 1.5 / 2）、校验位（无 / 奇 / 偶 / 标记 / 空格）与流控（无 / 软件 XON-XOFF / 硬件 RTS-CTS / 两者），这一直写在说明里但界面里其实只有波特率和数据位",
+        "五项线路参数（波特率、数据位、停止位、校验位、流控）全部随设置保存，重启后保持上次选择；此前只有波特率会被记住，数据位、停止位与校验位每次启动都回到默认值",
+        "这些参数只在串口打开时生效，所以在已有串口打开的情况下改动下拉框会在状态栏明确说明「对下次打开生效」，而不是让改动悄悄无效；重新打开串口后即按新参数工作",
+        "选择 1.5 停止位而串口打开失败时，错误提示会额外指出可能是设备或驱动不支持 1.5 停止位，建议改回 1 或 2 —— 这类失败原本只是一条普通的打开异常，看不出与刚改的那一栏有关",
+        "新增「编码」下拉（UTF-8 / GB18030）：接收数据的解码方式可以按串口设置，GB18030 设备的中文日志不再显示为乱码；每个串口各自记住自己的编码，改动的当下就对已打开的串口生效（不需要关闭重开）",
+        "修复混合内容丢字：`AT+READY 温度` 这类以 ASCII 为主、夹杂中文的行，在通过数据清理分支时中文会被整段删掉，日志里只剩前半句。现在清理只去除控制字符，任何非 ASCII 内容都原样保留（U+FFFD 也保留，以便看出「这段字节没能按当前编码解码」而不是被悄悄抹掉）",
+        "修复中文日志被判为乱码：质量评分此前只把 ASCII 可见字符算作「文本」，于是正确解码的中文会让文本似然度接近 0，数据可能被判为垃圾而丢弃、或误报「建议重新检测波特率」。现在评分按「解码后不是控制字符也不是替换字符」计算，中文正常计为文本，真正的二进制数据仍然会因为满是替换字符而被识别出来",
+        "新增「行尾」下拉（无 / CR / LF / CRLF，默认「无」）：发送框是单行输入框，先前没有任何办法在末尾加一个回车，只能靠快捷指令里写转义；默认值为「无」意味着不改变任何现有发送字节",
+        "新增「多行拆分」开关（选中行尾符后可用）：勾选时输入里的换行会逐行发送、每行各带一个行尾符，不勾选则整段内容末尾只加一个行尾符；无论哪种，多行内容的发送日志每行一条（超过 20 行只逐行显示前 20 条并注明其余行已发送）",
+        "发送框支持先按 ↑ 召回最近发送过的内容（最多 10 条，随设置保存），按 ↓ 回到更新的一条，走过最新一条会恢复开始召回前输入框里的内容；重新发送同一条只会把它移到最前，不会产生重复项。十六进制内容按原样记入历史，召回后由十六进制开关决定如何解释",
+        "命令面板（F2）的搜索升级为分词匹配：多词查询按词逐条命中（顺序无关）、忽略连字符与标点（`prod api` 或 `prodapi` 都能找到 `prod-api-01`），中文不再需要和空格、标点严丝合缝，并且结果按「标题开头 > 标题包含 > 关键字包含」排序 —— 先前是取列表里的前 60 条做整串包含判断，条目一多就可能把用户明确点名的那个指令挤掉",
+        "外观、日志、滚轮、贴底与裁剪行为全部不变；默认设置下发送的字节与升级前逐字节一致"
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "version": "2.2.4",
+      "changes": [
+        "Started a round of improvements borrowed from a comparable project (Netcatty, an Electron/React terminal client): the borrowable items, the trade-off rules they must obey and an explicit \"not borrowing\" list are now archived in AGENTS.md, so later phases work from one written source instead of re-deriving them",
+        "The backlog is grouped into performance/smoothness, UI/motion, new features and engineering/testing, and every item names the mechanism it must not break - the wheel-scroll ownership, the pinned-to-bottom follow state, the single-Reset batch notifications and the display-buffer trim thresholds are all off limits",
+        "Fixed the log view competing with a data flood instead of surviving it: while a port delivers far more lines than the view can present at full detail, the per-port statistics and the combined traffic totals are no longer recomputed on every update, so the UI thread spends its budget applying the incoming lines and stays responsive to scrolling and typing - the counters settle on their exact final values as soon as the stream calms down",
+        "A flood is judged from the traffic itself (150 lines or 16 KB within 100 ms, or a line that has grown past 4096 characters without a terminator) and the verdict is held for 750 ms of quiet afterwards, so bursty traffic cannot make the view flip in and out of the mode",
+        "No data is dropped or delayed by this: received lines are still queued, filtered, trimmed and written to the log files exactly as before, and the display-buffer thresholds are unchanged",
+        "While a flood lasts, the log view is now refreshed in fewer, larger batches instead of many small ones: the number of full list rebuilds per second drops to about a third, which is where most of the per-frame layout work was going, while the number of lines shown per second is unchanged",
+        "The refresh rate returns to normal on its own within a second of the stream calming down, and the batch size is scaled together with the rate so the queue drains at exactly the same speed as before - a slower drain would have turned a flood into dropped lines",
+        "The log area no longer sits blank before anything is open: it shows a short hint explaining how to start (pick a port on the left, or press 全部打开) and that several ports can be monitored at once with a colour per port",
+        "Added a shared card/panel style to the theme (raised surface, hairline edge, card radius) so a new surface starts from one silhouette instead of re-inventing it, including in high-contrast mode where the two new tokens map onto the system colours",
+        "The appearance switch (跟随系统 / 浅色 / 深色) is now a short cross-fade instead of an instant repaint, and the baud-rate banner fades in and out instead of appearing and disappearing; both are opacity-only, so the UI thread pays nothing for them, and both are skipped entirely when Windows' animations are switched off",
+        "Starting the app still paints its first frame in the saved appearance with no fade: the transition only runs when the resolved light/dark actually changes while the window is already on screen",
+        "Added short notifications in the bottom-right corner: copying logs now confirms itself, and a refused clipboard - the failure a status-bar line used to lose, because an empty clipboard is the only evidence the user gets - stays on screen until it is dismissed",
+        "The notification stack shows at most four messages and never blocks the log behind it: only the messages themselves take clicks, so the wheel and selections still reach the log through the space around them",
+        "The port colour palette now has exactly one definition: the menu swatches are generated from it instead of being mirrored by hand in both the window markup and the theme file, which removes a whole class of 'the menu offers this colour while the log renders another' drift. No visible change.",
+        "Added a quick-send library: save what is in the send box as a named, grouped command and broadcast it to every open port in one click from the 快捷 menu beside 发送 - the library is stored with your settings, so it survives restarts and upgrades, and each entry can be deleted on its own",
+        "A saved command can opt into substitution: ${date}, ${time}, ${datetime}, ${epoch} and ${epochms} plus the usual CR/LF/TAB escapes are interpreted at send time, while anything unrecognised is sent exactly as typed - so a payload that really contains the text ${...} is never rewritten",
+        "Saved commands are sent through the same code path as the send box, so hex parsing, error messages, the sent-line entry and the byte counters behave identically",
+        "Added keyword highlighting: define rules from the 高亮 menu beside the search box - plain text or a regular expression, optionally case-sensitive, with a colour taken from the same palette the port colours use - and the matching text is recoloured in the log so ERROR, TIMEOUT and friends stand out while scanning. Rules are saved with your settings and can be disabled or deleted one at a time",
+        "Highlighting is decoration, so it is the first thing to go under load: while a port is flooding the log it pauses and returns on its own within a second of the stream calming down. The log contents, the file output and the filters are unaffected",
+        "Highlighting paints the text element each row already has instead of adding anything to the row, so the list keeps its previous scrolling and virtualization behaviour, and a pattern that cannot work is rejected when you add it rather than silently doing nothing",
+        "Added log export: the toolbar's export button saves what you are looking at to a text file - the whole filtered view, or just the rows you have selected when there is a selection - so it matches the screen line for line rather than dumping the raw byte stream",
+        "Exports carry a short commented header with the time, the scope (current view or selection), the row count, the search box contents and the encoding, and are written as UTF-8 without a BOM so they can be piped straight into grep or a parser",
+        "The export is taken as one snapshot before the file dialog opens, so the file always describes a single moment instead of whatever streamed in while you were choosing where to save it; the write happens off the UI thread, and a failure (a read-only folder, or a file open in another program) is reported in the status bar instead of ending the session",
+        "Added a command palette on F2: one keyboard-first switcher for both serial ports (already-open ones show their channel colour and byte counts, and can be opened or closed from here) and saved quick-send commands (searchable by name, group or payload), so the common actions no longer need the mouse",
+        "The palette filters as you type, with arrow keys to move, Enter to run and Esc, a second F2 or a click on the dimmed backdrop to dismiss; it reads the same snippet and port lists the rest of the interface uses, so nothing it offers can disagree with what you see elsewhere",
+        "F2 rather than a Ctrl+ combination: letter shortcuts are routinely swallowed by input methods and resident tools, which is the same reason F9 already opens the log folder",
+        "Added a logic-layer unit test suite (xUnit) covering the highlight-rule engine and the export writer: persistence round-trips, corrupt settings tolerance, pattern validation, literal versus regex matching, case sensitivity, overlap precedence, the per-line cap, the overlong-line skip, the export header, UTF-8 without a BOM, failure reporting and cancellation",
+        "Fixed a cancellation path in the log export that could surface as an unhandled exception instead of a result - a token that was already cancelled made the call throw out of a method documented never to throw. Found by the new tests",
+        "A cancelled or failed export now deletes the half-written file, so a truncated log cannot be mistaken for a complete one"
+      ]
+    },
+    {
+      "date": "2026-09-28",
+      "version": "2.2.3",
+      "changes": [
+        "Log list wheel scrolling is now a short glide instead of a teleport: one notch still covers about a fifth of the list, but the view eases into place over ~150-200ms, and a burst of notches (or a touchpad's fine-grained deltas) now adds up instead of each event overwriting the previous one",
+        "Scrolling away from the newest row now detaches the follow instead of being dragged back by the next batch: you can read history during a live stream without pausing reception, and scrolling back down re-attaches automatically",
+        "Added a 回到最新 button at the bottom-right of the log area - it appears only while the view is detached from the newest row and jumps straight back to it, resuming the follow",
+        "While you are reading history the display buffer stops being trimmed from the head, so rows are no longer pulled out from under the cursor (the buffer still has a hard cap, and the trims that were skipped are made up as soon as the view returns to the newest row)"
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "version": "2.2.2",
+      "changes": [
+        "A found update is now remembered locally: once a newer version has been discovered, later silent checks read it back instead of asking GitHub again, so dismissing the prompt with 稍后 and restarting the app shows the update immediately - no waiting out a throttle window and no extra API request",
+        "The remembered update stays valid for 24 hours, so the app re-confirms against GitHub once a day instead of advertising a superseded or withdrawn release indefinitely, and it is dropped immediately when it stops being newer than the running build (i.e. you installed it) or when you choose 跳过此版本 - it can never pin the app to a version it has already installed or to one you deliberately skipped",
+        "Silent update checks are now throttled on the success side as well: when no update is pending, two successful checks are at least 30 minutes apart, so restarting the app repeatedly (or sharing a public IP with other GitHub users behind NAT or a proxy) can no longer burn through the anonymous 60 requests/hour API limit and surface as \"更新检查过于频繁（GitHub 接口限流）\" - Help → Check for updates is unaffected and still hits the network immediately",
+        "A new version is now found within at most 30 minutes of its release instead of within a day, and the failed-check backoff (1 hour) is unchanged, so a rate-limited or offline check still cannot turn into a request storm"
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "version": "2.2.1",
+      "changes": [
+        "Renamed the installed application and its shortcuts from 串口工具 (SerialPortTool) to SerialPortTool, so the Start-menu folder, the desktop shortcut, the Setup window and Apps & features all read SerialPortTool",
+        "The installer now removes the previous 串口工具 (SerialPortTool) Start-menu group and desktop shortcut while upgrading, so a renamed display name can no longer leave both the old and the new entry behind"
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "version": "2.2.0",
+      "changes": [
+        "Added window-level keyboard shortcuts, resolved by a single KeyDown handler on the root content Grid so a gesture works wherever the focus is - the search and send boxes included",
+        "F9 now opens the log folder from anywhere in the window, and the 工具 → 打开日志文件夹 menu entry shows the gesture"
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "version": "2.1.5",
+      "changes": [
+        "Log list wheel scrolling now moves in proportional, viewport-relative steps (about a fifth of the list per notch) instead of barely one row, so scrolling back through a paused log actually works",
+        "The wheel is now handled by the log list itself rather than by the framework: the step is viewport-relative (60-240 px) and scaled for precision wheels and touchpads, horizontal-wheel gestures and scrolling with the scrollbar or the keyboard are unaffected, and the 'locked to latest' follow behaviour while running is unchanged"
+      ]
+    },
+    {
+      "date": "2026-09-20",
+      "version": "2.1.4",
+      "changes": [
+        "Log search now filters on commit: typing only fills the box and the query runs on Enter or the 搜索 button, so a half-typed pattern can no longer rebuild the whole log view (or blank it out) on every keystroke",
+        "Added a 文本 / 正则 switch to the search bar. Text mode is the default and matches literally, so a query containing ( ) [ ] * . or ? is no longer rejected as an invalid regular expression with an empty result list",
+        "Added a 区分大小写 switch; both switches are remembered across restarts (settings keys SearchUseRegex / SearchCaseSensitive)",
+        "Search history moved out of the auto-opening dropdown into a flyout behind a 历史 button: typing opens nothing, a query is recorded when it is run rather than when the box loses focus, each entry can still be deleted individually, and 清空历史 keeps its confirmation prompt",
+        "The invalid-pattern message is now Chinese and can only appear in regex mode (正则表达式无效：…)",
+        "The live log flush and the full re-filter now share one cached matcher keyed by (query, mode, case), so newly arriving lines and already displayed lines can no longer be filtered by different rules"
+      ]
+    },
+    {
+      "date": "2026-09-20",
+      "version": "2.1.3",
+      "changes": [
+        "Closing a port can no longer be undone by the automatic reconnect: a close that landed while a reconnect was waiting out its delay used to be followed by the reconnect reopening the port, and that handle was then invisible to both the app and the UI — the only way to release it was to exit the app",
+        "Closing a port now also cancels a running baud-rate scan for that port; the scan owns the port while it probes (~40 s) and used to reopen it afterwards, so a close during a scan looked like it had silently failed",
+        "The baud-rate scan no longer reopens a port that was closed while it was running, and duplicate scan requests for the same port are ignored instead of stacking another close/reopen cycle",
+        "An auto-reconnect that lost the race to a close no longer reports the port as Connected",
+        "关闭全部 now also undoes ports that were still being opened at that moment, instead of letting them appear (open) a moment later",
+        "Port lookups are case-insensitive, matching Windows: a close using a differently spelled port name (com3 / COM3) used to do nothing at all, silently leaving the port open",
+        "The same case-insensitivity applies to opening: a saved port name in a different case was refused as “not available in the system” after waiting, even though the port was there",
+        "Closing a port is no longer queued behind its log file: the port is released first and the file logger is stopped afterwards, so a slow or redirected log volume can no longer look like an unclosable port, and the tail of the log is kept instead of being cut off",
+        "An open request that outlives the app no longer registers a port after shutdown has already released everything"
+      ]
+    },
+    {
+      "date": "2026-09-18",
+      "version": "2.1.2",
+      "changes": [
+        "Update checks are no longer throttled by a successful check: every launch now checks GitHub Releases, so a version published minutes after the previous check is reported immediately instead of staying invisible for up to 24 hours",
+        "Only failed checks are throttled now: a failure (offline, timeout, rate limit, unusable response) backs off for one hour, which keeps the anonymous API limit safe without ever hiding a new release",
+        "The app also re-checks every 24 hours while it stays open, so a long-running session no longer has to be restarted to learn about a new version",
+        "Help → Check for updates always hits the network immediately and no longer changes the throttle state, so a manual check cannot push the next silent check back by a day",
+        "The obsolete Update.LastCheckUtc throttle timestamp is cleaned up on the first launch of this build"
+      ]
+    },
+    {
+      "date": "2026-09-18",
+      "version": "2.1.1",
+      "changes": [
+        "Tuning / TOTA pushing is now a hidden feature that is off by default: the toolbar row only appears after ticking 工具 → 启用 Tuning 功能, the choice is remembered across restarts, and the default interface shows no Tuning controls at all",
+        "Turning the Tuning switch off stops the file watch but keeps the configured .bin path, protocol JSON and the was-watching preference, so re-enabling the feature restores exactly what was configured",
+        "Removed the bundled mic-tota-tuning.json sample; a tuning protocol descriptor must now be supplied by the user",
+        "Added a single-instance guard: a second launch explains itself and exits instead of competing for the same COM ports and overwriting the settings file, and the application log is now opened for sharing so a second process no longer loses its logging silently",
+        "Settings can no longer be destroyed by a bad read: a settings.json that fails to parse puts the service into a visible read-only state instead of being overwritten with an empty document, and writes are atomic (temp file + replace) so an interrupted write cannot create the truncated file that starts that cycle",
+        "Shutdown no longer leaks COM handles: ports are closed asynchronously while the window tears down, the synchronous fallback path no longer blocks on nested timeouts that abandoned their own work, and queued writes are cancelled before the port is disposed",
+        "Fixed the ObjectDisposedException that could surface when the window was closed with sends in flight",
+        "Baud-rate detection can be cancelled and no longer races its own receive callback; closing the window during a scan no longer keeps the process alive for up to a minute",
+        "Fixed the log list rebuilding itself about 20 times per second once it reached its size cap; trimming now removes extra so a rebuild happens a few times per minute instead",
+        "Fixed port colours not repainting log rows that were already on screen, which left the log showing two palettes at once",
+        "Fixed the port-colour lookup racing the UI thread during concurrent reception",
+        "Copying logs no longer takes the application down when another program holds the clipboard",
+        "Hexadecimal send no longer mangles payloads that contain a literal 0x",
+        "Enter in the send box now sends, matching what the placeholder text promises",
+        "Custom baud rates are validated against a sane upper bound instead of accepting any positive number",
+        "Search re-filtering is debounced for real: the history dropdown and the Enter key no longer each trigger an extra full rebuild on top of it",
+        "Sent and tuning log entries now go through the same queue as received data, so they are trimmed, filtered and batched like everything else",
+        "Fixed auto-scroll staying permanently dead after the log view was unloaded and re-loaded",
+        "Fixed a tuning bin file that was still being written being hashed and sent as if it were final, which then suppressed every later automatic send",
+        "Fixed an infinite loop when a text filter with an empty pattern was used for highlighting",
+        "Tuning descriptor validation now covers the info area fields and rejects integer overflow instead of building a packet with wrong lengths",
+        "The About dialog no longer shows the current time as the build time when the generated build timestamp is missing, which made \"which build am I running?\" unanswerable in exactly the situation where it matters",
+        "The build now fails when version.json cannot be read instead of stamping a stale hard-coded version, and the release pipeline asserts the manifest version, the assembly version and the presence of both release assets",
+        "The installer refuses to build without an injected version (a 0.0.0 package would permanently break auto-update on every machine that installed it) and no longer installs on Windows versions below 1809",
+        "Removed the dead code, duplicate language-folder rules and stale documentation references found by a full repository audit"
+      ]
+    },
+    {
+      "date": "2026-09-18",
+      "version": "2.1.0",
+      "changes": [
+        "Redesigned the interface around a bench-instrument faceplate: graphite/paper neutrals, hairline dividers, monospace data and one live-signal accent, replacing the stock-control look",
+        "Added an appearance switch (follow system / light / dark) under a new 外观 menu; the choice is remembered and applied before the first frame, so a dark-theme launch no longer flashes light",
+        "Both palettes are calibrated separately rather than inverted - including the ten port identity colours, which gained a lifted, desaturated dark variant so multi-port logs stay readable on graphite",
+        "Fused the title bar with the app chrome: brand, menus, port overview and the window buttons now share one band, backed by Mica with an automatic opaque fallback where Mica is unavailable (Windows 10, transparency effects off)",
+        "Rearranged the layout: a narrower foldable configuration rail that also collapses itself below 900 px, search and Tuning merged into a single two-row toolbar with file paths reduced to name chips (full path on hover), and the log area absorbing all remaining height",
+        "Added a channel trace and channel legend to the log: a 3 px bar in the row's port colour plus a legend strip mapping colour to port and byte counts, so interleaved multi-port traffic stays attributable at a glance",
+        "Log rows now re-colour immediately when a port colour changes or the appearance switches, instead of staying on the previous palette",
+        "Status bar now reports the open-port count, combined RX/TX totals, the live match count and the current appearance",
+        "Replaced the emoji icons with themed Fluent glyphs and unified button, input, dropdown, checkbox, menu, tooltip, scrollbar and dialog styling on one token set",
+        "Removed the last hard-coded light-theme colours (the baud-rate banner and the regex error hint) in favour of semantic tokens, and added a high-contrast theme dictionary that follows the system colours",
+        "UI-thread exceptions raised by the XAML framework are now logged: only AppDomain.UnhandledException was wired up, which never sees a binding, template or window-construction failure, so such a crash left the log completely empty",
+        "Serilog and the exception handlers are configured before App.xaml is loaded and before the XAML compiler's generated break-on-unhandled-exception hook is registered, so the log now names the failure before the debugger stops on it",
+        "Window chrome setup (Mica material, custom title bar, caption button colours) is now best-effort: an unsupported or policy-blocked API logs a warning and falls back to the plain window instead of preventing the window from appearing",
+        "Reading the system animation preference can no longer fail the startup path"
+      ]
+    },
+    {
+      "date": "2026-09-17",
+      "version": "2.0.4",
+      "changes": [
+        "Finished the Node 24 migration of the release pipeline: the artifact actions were still on the deprecated runtime - upload-artifact v5 and download-artifact v5 both target Node 20, so they needed v6 and v7 respectively, one major higher than the checkout/setup-dotnet bumps",
+        "Release runs no longer print any Node.js 20 deprecation warning"
+      ]
+    },
+    {
+      "date": "2026-09-17",
+      "version": "2.0.3",
+      "changes": [
+        "Moved the release pipeline to the Node 24 generation of the official GitHub Actions (checkout, setup-dotnet, upload-artifact, download-artifact v5), so release runs stop reporting the deprecated Node 20 runtime",
+        "Fixed desktop and Start-menu shortcuts still showing the previous icon after an update: Windows keeps the old bitmap in its icon cache and in Explorer's in-memory image list, and a silent in-place update never gives the shell a chance to re-read it",
+        "The installer now notifies the shell (SHChangeNotify / SHCNE_ASSOCCHANGED) once the files are in place, so Explorer re-reads the shortcut icons and repaints the desktop immediately instead of waiting for a manual refresh",
+        "Shortcuts now take their icon explicitly from the shipped logo.ico instead of indirectly from the executable's icon resource, so the shortcut icon can no longer drift from the icon that actually ships"
+      ]
+    },
+    {
+      "date": "2026-09-17",
+      "version": "2.0.2",
+      "changes": [
+        "Fixed the app not coming back after an auto-update: the installed build used to install the new files silently and then stay closed",
+        "The installer now restarts the app explicitly in silent mode instead of relying on Restart Manager, which only relaunches processes it closed itself - and the app has already exited by the time the installer runs",
+        "Removed the never-enabled restart fallback switch from the Inno Setup script and the RESTARTAPPLICATIONS flag from the updater's arguments, so exactly one restart path is active and two instances can never be started"
+      ]
+    },
+    {
+      "date": "2026-09-17",
+      "version": "2.0.1",
+      "changes": [
+        "Rebuilt the application icon as a genuine multi-resolution .ico (16 to 256 px) so Explorer and the taskbar stop upscaling a single 32 px bitmap, which is what made the desktop icon look blurry",
+        "Added a simplified small-size variant of the icon (filled connector, bolder strokes, larger symbol ratio) so the 16/20/24 px frames stay legible instead of turning into grey mush",
+        "Replaced the icon artwork with a watermark-free, centred composition on a rounded blue-to-cyan gradient"
+      ]
+    },
+    {
+      "date": "2026-09-14",
+      "version": "2.0.0",
+      "changes": [
+        "Version 2.0.0 milestone: distribution moves from a loose file dump to a single per-user installer, with in-app update checking and silent auto-update built in",
+        "Added in-app update checking against GitHub Releases: a silent check a few seconds after startup plus a manual 'Check for updates' entry in the Help menu",
+        "Added the download-and-install flow - the installer is streamed to a temp folder, verified by length and PE header, then launched silently to replace files and restart the app",
+        "Skipping a version is persisted so the silent check stops nagging; the portable ZIP build only notifies and opens the download page instead of replacing files",
+        "Added an Inno Setup per-user installer (no administrator rights, no UAC prompt) so a release is a single Setup.exe instead of hundreds of loose files; the portable ZIP is still published",
+        "Update checks throttle themselves to once per 24 hours and fail silently, keeping the anonymous GitHub API rate limit in mind",
+        "Version comparison parses the release tag numerically instead of comparing strings"
+      ]
+    },
+    {
+      "date": "2026-09-14",
+      "version": "1.8.13",
+      "changes": [
+        "Reassemble serial chunks per port so UTF-8 characters and lines split across reads no longer become replacement characters or broken log entries",
+        "Cache the live-search regex and hand whole batches to the file logger to cut UI-thread work under high-throughput streams",
+        "Send tuning/text payloads to all ports via async I/O instead of a dedicated thread per port",
+        "Run data validation inline on each port's read thread and pause garbage bursts with a short drop cooldown instead of queueing overlapping work",
+        "Pass binary and non-ASCII payloads through unchanged so the text cleaner no longer strips them",
+        "Removed unused code (performance monitor, string-to-visibility converter, an alert overload, LogEntry id) and kept ReadyToRun disabled for WinUI 3 stability",
+        "Bound log-list update frequency with adaptive add/remove-range notifications, a throttled statistics refresh, and a UI-thread brush cache"
+      ]
+    },
+    {
+      "date": "2026-05-28",
+      "version": "1.8.12",
+      "changes": [
+        "Fixed WinUI 3 ListView crash with 'indices larger than Int32.MaxValue - 1' by switching RangeObservableCollection batch updates to Reset notifications",
+        "Debounced settings persistence with 500ms in-memory coalescing to eliminate per-keystroke disk I/O in the send-text box and other property-change save paths",
+        "Reused per-port byte buffer for SerialPort.Read to reduce GC pressure under high-throughput data",
+        "Cached OpenPorts dictionary to remove LINQ scans from GetPortColor and the per-flush stats/sent-log paths",
+        "Rewrote GarbageDataDetector as a zero-allocation single-pass span scan (preserves existing thresholds)",
+        "Stopped firing CollectionChanged notifications for AllLogs (back-buffer only — never bound to UI)",
+        "Removed unused PortViewModel.Logs / FilteredLogs collections and their O(n) RemoveAt(0) trim path",
+        "Guarded hot-path LogTrace calls with IsEnabled to skip argument boxing at production log levels"
+      ]
+    },
+    {
+      "date": "2026-05-22",
+      "version": "1.8.11",
+      "changes": [
+        "Fixed port reopen failure after closing with incorrect baud rate (retry availability check for OS handle release)",
+        "Clear stale validation state and reconnection cooldown on port close",
+        "Reset _isClosing flag on port open to ensure clean state for reopen",
+        "Moved cleanup delay to finally block in PortInstance Dispose for reliable handle release"
+      ]
+    },
+    {
+      "date": "2026-05-14",
+      "version": "1.8.10",
+      "changes": [
+        "Fixed settings.json file lock conflicts causing tuning watcher and port open failures",
+        "Added reconnection cooldown to prevent reconnect storm with thousands of UnauthorizedAccessException errors",
+        "Fixed CancellationTokenSource disposed crash in tuning auto-send",
+        "Fixed tuning send failure when port is reconnecting (check IsPortOpen before sending)",
+        "Fixed concurrent Queue modification exception in DataValidationService",
+        "Added global unhandled exception handlers to prevent silent crashes"
+      ]
+    },
+    {
+      "date": "2026-04-29",
+      "version": "1.8.9",
+      "changes": [
+        "Fixed multi-port tuning sends by running each COM port on its own send worker",
+        "Updated the regular send button to broadcast to all open COM ports with per-port results"
+      ]
+    },
+    {
+      "date": "2026-04-29",
+      "version": "1.8.8",
+      "changes": [
+        "Version 1.8.8 release"
+      ]
+    },
+    {
+      "date": "2026-04-29",
+      "version": "1.8.7",
+      "changes": [
+        "Version 1.8.7 release"
+      ]
+    },
+    {
+      "date": "2026-04-14",
+      "version": "1.8.6",
+      "changes": [
+        "Reduced high-volume log flicker by merging pending serial log updates before applying them on the UI thread",
+        "Deferred log trimming until the display buffer exceeds a higher threshold to avoid repeated full-list churn near the cap",
+        "Throttled auto-scroll updates to prevent forced layout refreshes on every incoming log batch",
+        "Improved batch collection notifications to keep WinUI bindings in sync during range updates"
+      ]
+    },
+    {
+      "date": "2026-04-10",
+      "version": "1.8.5",
+      "changes": [
+        "Removed unused package references including WinUIEx, Newtonsoft.Json, CsvHelper, and unused CommunityToolkit controls",
+        "Replaced Host.CreateDefaultBuilder with a lightweight ServiceCollection container for desktop startup",
+        "Reduced release output dependencies by trimming unused hosting, configuration, and WebView-related assemblies"
+      ]
+    },
+    {
+      "date": "2026-04-10",
+      "version": "1.8.4",
+      "changes": [
+        "Trimmed GitHub release packages by removing debug symbol files",
+        "Kept only zh-CN and en-us framework language resource folders in release archives",
+        "Stopped bundling README.md and version.json in release ZIP packages"
+      ]
+    },
+    {
+      "date": "2026-04-09",
+      "version": "1.8.3",
+      "changes": [
+        "Optimized log trimming by replacing RemoveRange with the more efficient RemoveFromStart path",
+        "Updated the GitHub release workflow to publish updated releases without keeping them in draft state"
+      ]
+    },
+    {
+      "date": "2026-04-08",
+      "version": "1.8.2",
+      "changes": [
+        "Fixed GitHub Actions release workflow version verification against git tags",
+        "Hardened version.json parsing in the release pipeline to avoid whitespace and encoding mismatches",
+        "Standardized workflow step outputs to lowercase names for more reliable release packaging"
+      ]
+    },
+    {
+      "date": "2026-04-08",
+      "version": "1.8.0",
+      "changes": [
+        "Replaced ItemsRepeater with ListView for multi-line log selection and copy support",
+        "Added Ctrl+C to copy selected logs, Ctrl+A to select all, and right-click context menu",
+        "Custom compact ListViewItem template for tight log spacing with soft selection highlight",
+        "Preserved per-line color display and UI virtualization for smooth scrolling"
+      ]
+    },
+    {
+      "date": "2026-02-04",
+      "version": "1.7.0",
+      "changes": [
+        "Added per-port color customization for visual distinction of multiple COM ports",
+        "Each port automatically gets a unique color from a 10-color palette when opened",
+        "Added color picker dropdown in open ports list to manually change port colors",
+        "Log entries now display in their port's assigned color for easy identification",
+        "Moved HexColorToBrushConverter to application resources for global accessibility"
+      ]
+    },
+    {
+      "date": "2026-01-12",
+      "version": "1.6.3",
+      "changes": [
+        "Fixed custom baud rate not being applied correctly (added UpdateSourceTrigger=PropertyChanged)",
+        "Added save/restore functionality for custom baud rate settings",
+        "Fixed COM port close issue when using incorrect baud rate (added timeout and _isClosing flag)",
+        "Custom baud rate checkbox and value now persist across application restarts",
+        "Status message now displays the actual baud rate being used when opening ports"
+      ]
+    },
+    {
+      "date": "2025-12-25",
+      "version": "1.6.2",
+      "changes": [
+        "Enhanced search history functionality with improved UI and user experience",
+        "Added clear current search button (✕) that appears when there is text",
+        "Added individual delete buttons for each history item in dropdown",
+        "Added clear all search history button with confirmation dialog",
+        "Fixed issue where selecting history items would cause text to disappear",
+        "Fixed duplicate history save issues with debounce mechanism",
+        "Improved dropdown menu layout to prevent text truncation",
+        "Added StringToVisibilityConverter for dynamic UI element visibility",
+        "Optimized ComboBox event handling to prevent binding conflicts",
+        "Enhanced search box with better focus management and selection handling",
+        "Search history now correctly persists across application restarts",
+        "Added detailed debug logging for troubleshooting search functionality"
+      ]
+    },
+    {
+      "date": "2025-12-15",
+      "version": "1.6.1",
+      "changes": [
+        "Disabled ReadyToRun (R2R) compilation in release workflow for better compatibility",
+        "Disabled single-file publishing to resolve deployment issues"
+      ]
+    },
+    {
+      "date": "2025-12-15",
+      "version": "1.6.0",
+      "changes": [
+        "Implemented simplified version management with single source of truth in version.json",
+        "Added automatic version synchronization between version.json, .csproj, and Package.appxmanifest",
+        "Added clear logs functionality with dedicated button and command",
+        "Refactored search event handlers for better reliability (replaced TextSubmitted with separate handlers)",
+        "Added SearchBox_DropDownClosed, SearchBox_LostFocus, and SearchBox_KeyDown event handlers",
+        "Fixed Package.appxmanifest encoding with BOM for UTF-8 support",
+        "Updated Package.appxmanifest MinVersion to use app version instead of Windows version",
+        "Enhanced build process with UpdateManifestVersion MSBuild target",
+        "Improved version extraction using regex at MSBuild evaluation time",
+        "Simplified bump-version.ps1 script to only modify version.json"
+      ]
+    },
+    {
+      "date": "2025-12-12",
+      "version": "1.5.0",
+      "changes": [
+        "Added recent search history with combobox for quick access to previous searches",
+        "Enhanced search functionality with dropdown history selection",
+        "Improved user experience with search term persistence"
+      ]
+    },
+    {
+      "date": "2025-12-10",
+      "version": "1.4.1",
+      "changes": [
+        "Removed clear logs functionality to simplify log management",
+        "Enhanced port closing and disposal reliability with comprehensive logging",
+        "Increased retry count from 3 to 5 for port close operations",
+        "Added specific handling for UnauthorizedAccessException and IOException",
+        "Improved buffer discarding before closing to prevent blocking",
+        "Extended delays for Windows COM port handle release (500ms, 250ms, 150ms)",
+        "Added garbage collection fallback on close errors to free resources",
+        "Enhanced error handling in Dispose method with proper cleanup steps",
+        "Added detailed debug logging for close and dispose process",
+        "Improved edge case handling for null ports and missing ports"
+      ]
+    },
+    {
+      "date": "2025-12-09",
+      "version": "1.4.0",
+      "changes": [
+        "Added automatic baud rate detection with BaudRateDetectorService",
+        "Implemented DataValidationService for real-time data quality assessment",
+        "Added baud rate mismatch alert UI with auto-fix functionality",
+        "Integrated validation services into SerialPortService for enhanced data processing",
+        "Added garbage data detection and filtering to prevent UI issues",
+        "Implemented automatic baud rate switching with high confidence detection",
+        "Added data quality statistics and trend analysis",
+        "Enhanced error handling with fallback encoding support (UTF-8/ASCII/binary)",
+        "Added rate limiting and memory protection for large data packets",
+        "Removed ARM64 platform support, simplified to x64-only builds",
+        "Updated CI/CD pipeline to streamline x64-only releases"
+      ]
+    },
+    {
+      "date": "2025-12-05",
+      "version": "1.3.1",
+      "changes": [
+        "Added application icon integration to main window",
+        "Added logo.ico and logo.png assets to Assets/Images directory",
+        "Configured ApplicationIcon property in project file",
+        "Implemented icon loading with existence validation",
+        "Enhanced visual branding and professional appearance"
+      ]
+    },
+    {
+      "date": "2025-12-04",
+      "version": "1.3.0",
+      "changes": [
+        "Bug fixes and performance improvements"
+      ]
+    },
+    {
+      "date": "2025-12-03",
+      "version": "1.2.0",
+      "changes": [
+        "Added comprehensive About dialog with version and build information",
+        "Implemented VersionInfo helper for centralized version display",
+        "Enhanced About dialog with app features and copyright information",
+        "Removed unused 'New Connection' menu item for cleaner UI",
+        "Connected About menu item to functional About dialog",
+        "UI improvements for better user experience"
+      ]
+    },
+    {
+      "date": "2025-12-02",
+      "version": "1.1.0",
+      "changes": [
+        "Major performance optimizations for high-throughput scenarios (10-20x improvement)",
+        "Added LogEntry formatted text caching (50-70% reduction in string allocations)",
+        "Implemented batch file writing with async queue (10-20x faster file I/O)",
+        "Added regex compilation caching with smart memory management (5-10x faster filtering)",
+        "Implemented RangeObservableCollection for batch UI updates (50-80% improvement)",
+        "Optimized data reception with pre-allocated capacity and batch processing",
+        "Added PerformanceMonitor helper for operation profiling and slow operation warnings",
+        "Increased MaxDisplayLogs from 1000 to 2000 for better data visibility",
+        "Enhanced UI virtualization with TextBlock optimizations",
+        "Reduced GC pressure by 40-60% through memory allocation optimizations",
+        "Added comprehensive performance documentation in PERFORMANCE_OPTIMIZATIONS.md"
+      ]
+    },
+    {
+      "date": "2025-12-01",
+      "version": "1.0.2",
+      "changes": [
+        "Fixed GitHub Actions workflow .NET setup issues",
+        "Corrected RuntimeIdentifier format for ARM64 builds",
+        "Updated build configuration for better cross-platform support"
+      ]
+    },
+    {
+      "date": "2025-12-01",
+      "version": "1.0.1",
+      "changes": [
+        "Bug fixes"
+      ]
+    },
+    {
+      "version": "1.0.0",
+      "date": "2025-12-01",
+      "changes": [
+        "Initial release",
+        "Multi-port serial monitor support",
+        "Automatic version and build time display"
+      ]
+    }
+  ]
 }

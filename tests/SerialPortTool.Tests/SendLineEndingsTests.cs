@@ -129,4 +129,55 @@ public sealed class SendLineEndingsTests
         Assert.Equal("\r", plan.Payload);
         Assert.Equal(new[] { string.Empty }, plan.DisplayLines);
     }
+
+    // ---- 逐行片段（F7 行间隔） ----------------------------------------------------------------
+    //
+    // The line delay is only safe if sending every segment separately and sending the payload whole put the
+    // same bytes on the wire. That identity is what the assertions below pin: it is the reason a install
+    // that never opens the new setting cannot change behaviour.
+
+    [Fact]
+    public void Segments_ConcatenateToExactlyThePayload()
+    {
+        foreach (var ending in new[] { SendLineEnding.None, SendLineEnding.Cr, SendLineEnding.Lf, SendLineEnding.CrLf })
+        {
+            foreach (var split in new[] { true, false })
+            {
+                var plan = SendLineEndings.CreatePlan("A\nB", ending, split);
+
+                Assert.Equal(plan.Payload, string.Concat(plan.Segments));
+            }
+        }
+    }
+
+    [Fact]
+    public void Segments_AreOneWhenNothingAsksForLines()
+    {
+        // No terminator, or a terminator without the split flag: one write either way, which is what makes
+        // the delay a no-op at the default interval.
+        Assert.Single(SendLineEndings.CreatePlan("A\nB", SendLineEnding.None, splitMultiline: true).Segments);
+        Assert.Single(SendLineEndings.CreatePlan("A\nB", SendLineEnding.Cr, splitMultiline: false).Segments);
+    }
+
+    [Fact]
+    public void Segments_StayAlignedWithTheDisplayLines()
+    {
+        // The sender walks these two lists in lockstep to write one sent-log row per line, so a length
+        // mismatch would drop rows or index out of range.
+        var plan = SendLineEndings.CreatePlan("A\n\nB\n", SendLineEnding.Cr, splitMultiline: true);
+
+        Assert.Equal(new[] { "A\r", "\r", "B\r" }, plan.Segments);
+        Assert.Equal(plan.DisplayLines.Count, plan.Segments.Count);
+        Assert.Equal(new[] { "A", string.Empty, "B" }, plan.DisplayLines);
+    }
+
+    [Fact]
+    public void CreateLineSequence_MatchesThePlanItCameFrom()
+    {
+        var plan = SendLineEndings.CreatePlan("AT+SEND\r\nAT+INFO", SendLineEnding.CrLf, splitMultiline: true);
+
+        Assert.Equal(
+            plan.Segments,
+            SendLineEndings.CreateLineSequence("AT+SEND\r\nAT+INFO", SendLineEnding.CrLf, true));
+    }
 }

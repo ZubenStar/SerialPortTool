@@ -756,13 +756,155 @@ public sealed partial class MainWindow : Window
         Application.Current.Exit();
     }
 
+    // =============================================================================================
+    // v2.5.0 — port notes (F6), presets (F3), send history panel (F8)
+    // =============================================================================================
+
+    /// <summary>
+    /// 编辑一个串口的备注 / 标签 / 分组。
+    /// </summary>
+    /// <remarks>
+    /// Built in code through <see cref="CreateDialog"/>, like the quick-send editor. A separate port picker
+    /// rather than a button inside the row: clicking anything inside a <c>ListViewItem</c> selects that
+    /// item, and here selection IS "open the port" — a per-row edit button would open a port as a side
+    /// effect of trying to rename it.
+    /// </remarks>
+    private async void EditPortNotes_Click(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.AvailablePorts.Count == 0)
+        {
+            ViewModel.StatusMessage = "还没有扫描到串口，先点「扫描」";
+            return;
+        }
+
+        var portBox = new ComboBox
+        {
+            Header = "串口",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinWidth = 240,
+        };
+
+        // An explicit template: a ComboBox over AvailablePortItem would otherwise render the CLR type name,
+        // which is the lesson recorded on SerialParameterOption<T>.ToString.
+        portBox.ItemTemplate = (Microsoft.UI.Xaml.DataTemplate)RootLayout.Resources["PortNameItemTemplate"];
+        portBox.ItemsSource = ViewModel.AvailablePorts;
+        portBox.SelectedIndex = 0;
+
+        var notesBox = new TextBox { Header = "备注", PlaceholderText = "例如：实验台左侧那台传感器" };
+        var tagsBox = new TextBox { Header = "标签（逗号或空格分隔）", PlaceholderText = "例如：温度, 现场" };
+        var groupBox = new TextBox { Header = "分组（可留空）", PlaceholderText = "例如：实验台" };
+
+        void LoadFor(AvailablePortItem item)
+        {
+            notesBox.Text = item.Notes;
+            tagsBox.Text = item.Tags;
+            groupBox.Text = item.Group;
+        }
+
+        LoadFor(ViewModel.AvailablePorts[0]);
+        portBox.SelectionChanged += (_, _) =>
+        {
+            if (portBox.SelectedItem is AvailablePortItem item)
+            {
+                LoadFor(item);
+            }
+        };
+
+        var panel = new StackPanel { Spacing = 10, MinWidth = 320 };
+        panel.Children.Add(portBox);
+        panel.Children.Add(notesBox);
+        panel.Children.Add(tagsBox);
+        panel.Children.Add(groupBox);
+
+        var dialog = CreateDialog();
+        dialog.Title = "端口备注";
+        dialog.Content = panel;
+        dialog.PrimaryButtonText = "保存";
+        dialog.CloseButtonText = "取消";
+        dialog.DefaultButton = ContentDialogButton.Primary;
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        if (portBox.SelectedItem is not AvailablePortItem selected)
+        {
+            return;
+        }
+
+        await ViewModel.SavePortMetadataAsync(selected.PortName, notesBox.Text, tagsBox.Text, groupBox.Text);
+    }
+
+    private async void ApplyPortPreset_Click(object sender, RoutedEventArgs e)
+        => await ViewModel.ApplyPortPresetAsync(ViewModel.SelectedPortPreset);
+
+    private async void DeletePortPreset_Click(object sender, RoutedEventArgs e)
+        => await ViewModel.DeletePortPresetAsync(ViewModel.SelectedPortPreset);
+
+    /// <summary>
+    /// 把当前参数存成一套命名档案。
+    /// </summary>
+    /// <remarks>
+    /// A name is asked for rather than derived: a preset named after its own baud rate is indistinguishable
+    /// from another one, and nobody renames things later. The user's job is one word; the preset's job is
+    /// remembering everything else.
+    /// </remarks>
+    private async void SavePortPreset_Click(object sender, RoutedEventArgs e)
+    {
+        var nameBox = new TextBox
+        {
+            Header = "档案名称",
+            PlaceholderText = "例如：调试台 921600 8N1",
+            MaxLength = PortPreset.MaxNameLength,
+        };
+
+        var panel = new StackPanel { Spacing = 10, MinWidth = 320 };
+        panel.Children.Add(nameBox);
+
+        var dialog = CreateDialog();
+        dialog.Title = "保存配置档案";
+        dialog.Content = panel;
+        dialog.PrimaryButtonText = "保存";
+        dialog.CloseButtonText = "取消";
+        dialog.DefaultButton = ContentDialogButton.Primary;
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        await ViewModel.SavePortPresetAsync(nameBox.Text);
+    }
+
+    private void OpenSendHistory_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.OpenSendHistoryPanel();
+        HistoryPanel.Open();
+    }
+
+    private void HistoryPanel_Activated(object? sender, string payload)
+        => ViewModel.UseSendHistoryEntry(payload);
+
+    private async void HistoryPanel_EntryDeleted(object? sender, string payload)
+        => await ViewModel.RemoveSendHistoryEntryAsync(payload);
+
+    private async void HistoryPanel_ClearRequested(object? sender, EventArgs e)
+        => await ViewModel.ClearSendHistoryAsync();
+
     private async void PortListView_SelectionChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
     {
+        // AvailablePortItem since v2.5.0 (the row carries device metadata and notes, not just a name). The
+        // pattern match is over `object`, so this compiled unchanged and simply stopped opening anything
+        // when the element type moved — hence the explicit two-step below.
+        //
+        // SelectedItem is cleared right after, which re-raises this same handler; the type guard is what
+        // keeps that second pass a no-op, exactly as the old `is string` check did.
         if (sender is Microsoft.UI.Xaml.Controls.ListView listView &&
-            listView.SelectedItem is string portName &&
-            !string.IsNullOrEmpty(portName))
+            listView.SelectedItem is AvailablePortItem item &&
+            !string.IsNullOrEmpty(item.PortName))
         {
-            await ViewModel.OpenPortCommand.ExecuteAsync(portName);
+            await ViewModel.OpenPortCommand.ExecuteAsync(item.PortName);
             listView.SelectedItem = null; // Deselect after opening
         }
     }

@@ -171,6 +171,9 @@ public partial class App : Application
         services.AddSingleton<ISnippetService, SnippetService>();
         services.AddSingleton<IHighlightRuleService, HighlightRuleService>();
         services.AddSingleton<ILogExportService, LogExportService>();
+        services.AddSingleton<ISerialPortDeviceEnumerator, SerialPortDeviceEnumerator>();
+        services.AddSingleton<IPortMetadataService, PortMetadataService>();
+        services.AddSingleton<IPortPresetService, PortPresetService>();
 
         // Register ViewModels
         services.AddTransient<MainViewModel>();
