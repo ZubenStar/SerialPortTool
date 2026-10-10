@@ -593,9 +593,13 @@
                                          is, what is behind it, and what the user calls it. The second and third
                                          lines are always present as elements and empty as strings when there is
                                          nothing to say — an empty TextBlock occupies no height, so no Visibility
-                                         binding is needed and none can get out of step. -->
+                                         binding is needed and none can get out of step. The rail is narrow, so
+                                         those two lines trim with an ellipsis; the tooltip on the row root is
+                                         where the trimmed text — plus the serial number, which has no line of
+                                         its own — can be read in full. -->
                                     <DataTemplate x:DataType="models:AvailablePortItem">
-                                        <StackPanel Margin="0,2" Spacing="1">
+                                        <StackPanel Margin="0,2" Spacing="1"
+                                                    ToolTipService.ToolTip="{x:Bind ToolTipText, Mode=OneWay}">
                                             <TextBlock Text="{x:Bind PortName, Mode=OneWay}"
                                                        FontFamily="{StaticResource AppMonoFontFamily}"
                                                        FontSize="13"

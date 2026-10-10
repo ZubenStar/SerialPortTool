@@ -146,8 +146,11 @@ public sealed class SerialPortDeviceEnumerator : ISerialPortDeviceEnumerator
         return new PortDeviceInfo
         {
             PortName = portName!,
-            Manufacturer = TryReadValue(instanceId, string.Empty, "Mfg"),
-            Description = HumanizeDeviceDesc(TryReadValue(instanceId, string.Empty, "DeviceDesc")),
+            // Mfg 与 DeviceDesc 一样是间接字符串（@oem12.inf,%key%;文本）。DeviceDesc 一直在解析而 Mfg
+            // 没有，端口行里于是出现「@oem12.inf,%ftdi%;FTDI USB S...」——INF 占位符没被展开，读起来像
+            // 乱码。两个字段现在走同一条解析路径。
+            Manufacturer = HumanizeIndirectString(TryReadValue(instanceId, string.Empty, "Mfg")),
+            Description = HumanizeIndirectString(TryReadValue(instanceId, string.Empty, "DeviceDesc")),
             VendorId = FirstMatch(VidPattern, instanceId),
             ProductId = FirstMatch(PidPattern, instanceId),
             SerialNumber = ReadSerialNumber(instanceId),
@@ -247,17 +250,37 @@ public sealed class SerialPortDeviceEnumerator : ISerialPortDeviceEnumerator
     }
 
     /// <summary>
-    /// <c>DeviceDesc</c> 常常是 <c>@%SystemRoot%\...;文本</c> 这样的间接引用，取分号后面的部分。
+    /// <c>DeviceDesc</c> 与 <c>Mfg</c> 常常是 <c>@oem12.inf,%key%;文本</c> 这样的间接引用，取分号后面的回退文本。
     /// </summary>
-    private static string? HumanizeDeviceDesc(string? raw)
+    /// <remarks>
+    /// 占位符（<c>%key%</c>）只有 INF 解析器能展开，注册表层做不到。所以取不到回退文本时（没有分号、分号在
+    /// 末尾、或整个值就是一个裸占位符）返回 null 而不是原样透传：把 <c>@oem12.inf,%ftdi%;</c> 显示进端口行
+    /// 只会被用户当成乱码。普通文本（<c>FTDI</c>、<c>wch.cn</c>）不以 <c>@</c> 或 <c>%</c> 开头，原样返回——
+    /// 它们中间的分号（"Foo; Inc"）不是分隔符，不能截。
+    /// </remarks>
+    private static string? HumanizeIndirectString(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
             return null;
         }
 
-        var semicolon = raw!.IndexOf(';');
-        return semicolon >= 0 && semicolon < raw.Length - 1 ? raw[(semicolon + 1)..] : raw;
+        var value = raw!.Trim();
+
+        if (!value.StartsWith('@') && !value.StartsWith('%'))
+        {
+            return value;
+        }
+
+        var semicolon = value.IndexOf(';');
+        if (semicolon < 0)
+        {
+            // 间接引用却没有回退文本：占位符本身不是给人看的。
+            return null;
+        }
+
+        var fallback = value[(semicolon + 1)..].Trim();
+        return fallback.Length > 0 ? fallback : null;
     }
 
     private static string? FirstMatch(Regex pattern, string input)
