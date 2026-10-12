@@ -145,6 +145,21 @@
                         </MenuFlyoutItem.Icon>
                     </MenuFlyoutItem>
                     <MenuFlyoutSeparator />
+                    <!-- Ctrl+L. The gesture lives in MainWindow.OnRootKeyDown (see the note on the root
+                         Grid) — this accelerator only advertises it in the menu and makes it work while
+                         this menu is open. Same command as the toolbar's 清空 button, so the two entries
+                         cannot diverge, and there is no confirmation dialog: 清屏 is one keystroke by
+                         definition. -->
+                    <MenuFlyoutItem Text="清空所有日志记录"
+                                    Command="{x:Bind ViewModel.ClearLogsCommand}">
+                        <MenuFlyoutItem.KeyboardAccelerators>
+                            <KeyboardAccelerator Key="L" Modifiers="Control" />
+                        </MenuFlyoutItem.KeyboardAccelerators>
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE74D;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                    <MenuFlyoutSeparator />
                     <!-- Hidden-by-default feature: the Tuning / TOTA panel only appears when this is
                          ticked, and the choice is persisted (ViewModel.IsTuningEnabled). -->
                     <ToggleMenuFlyoutItem x:Name="TuningEnabledMenuItem"
@@ -1095,7 +1110,7 @@
                                         </Button>
                                         <Button Style="{StaticResource AppToolbarIconButtonStyle}"
                                                 Command="{x:Bind ViewModel.ClearLogsCommand}"
-                                                ToolTipService.ToolTip="清空所有日志记录">
+                                                ToolTipService.ToolTip="清空所有日志记录 (Ctrl+L)">
                                             <FontIcon Glyph="&#xE74D;" FontSize="13" />
                                         </Button>
                                     </StackPanel>

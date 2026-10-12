@@ -1490,9 +1490,9 @@ public sealed partial class MainWindow : Window
     /// </remarks>
     private void OnRootKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        // Checked before the switch: the font-size gestures are the only ones here that need a modifier, and the
+        // Checked before the switch: these are the only gestures here that need a modifier, and the
         // switch below reads e.Key alone.
-        if (TryHandleLogFontSizeShortcut(e.Key))
+        if (TryHandleLogFontSizeShortcut(e.Key) || TryHandleClearLogsShortcut(e.Key))
         {
             e.Handled = true;
             return;
@@ -1520,8 +1520,8 @@ public sealed partial class MainWindow : Window
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Checked before the switch in <see cref="OnRootKeyDown"/> because it is the only gesture there that needs
-    /// a modifier, and that switch reads <c>e.Key</c> alone.
+    /// Checked before the switch in <see cref="OnRootKeyDown"/> because that switch reads <c>e.Key</c> alone and
+    /// cannot express a modifier — the same reason as <see cref="TryHandleClearLogsShortcut"/>.
     /// </para>
     /// <para>
     /// Both the numeric keypad (<c>Add</c> / <c>Subtract</c>) and the main row are accepted. The main row's
@@ -1557,6 +1557,40 @@ public sealed partial class MainWindow : Window
             default:
                 return false;
         }
+    }
+
+    /// <summary>
+    /// Ctrl+L 清空所有日志记录（清屏）。走的是工具栏「清空所有日志记录」按钮的同一条命令。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Checked before the switch in <see cref="OnRootKeyDown"/>, for the same reason as
+    /// <see cref="TryHandleLogFontSizeShortcut"/>: that switch reads <c>e.Key</c> alone and cannot express a
+    /// modifier.
+    /// </para>
+    /// <para>
+    /// <c>Ctrl+L</c> is the terminal / browser convention for "clear the screen", and the user asked for it by
+    /// name. The caveat that pushed F2 and F9 onto function keys still applies to it — a Chinese-session IME or
+    /// a resident tool can swallow a letter combination before the app ever sees it, and
+    /// <c>handledEventsToo: true</c> only covers controls inside this window. If a report says the gesture does
+    /// nothing, suspect the IME first rather than this handler.
+    /// </para>
+    /// <para>
+    /// No confirmation dialog, deliberately: 清屏 is supposed to be one keystroke, and the toolbar button it
+    /// mirrors does not ask either. It clears the visible log only — the ports keep reading, the file log keeps
+    /// being written, and <see cref="MainViewModel.ClearLogs"/> drops the queued batches so a flood cannot
+    /// repopulate the view a moment later.
+    /// </para>
+    /// </remarks>
+    private bool TryHandleClearLogsShortcut(Windows.System.VirtualKey key)
+    {
+        if (key != Windows.System.VirtualKey.L || !InputModifiers.IsControlDown())
+        {
+            return false;
+        }
+
+        ViewModel.ClearLogsCommand.Execute(null);
+        return true;
     }
 
     /// <summary>
