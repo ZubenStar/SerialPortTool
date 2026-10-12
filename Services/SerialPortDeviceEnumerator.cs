@@ -1,9 +1,9 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
+using SerialPortTool.Helpers;
 using SerialPortTool.Models;
 using System;
 using System.Collections.Generic;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.Devices.Enumeration;
@@ -27,11 +27,12 @@ namespace SerialPortTool.Services;
 /// <para>
 /// How the mapping works. <c>SerialDevice.GetDeviceSelector()</c> narrows the device query to serial
 /// devices only, and each result's <c>Id</c> is a device <em>interface</em> path:
-/// <c>\\?\USB#VID_1A86&amp;PID_7523#5&amp;1b4e8a2c&amp;0&amp;1#{...guid}</c>. The instance id is that path with the
-/// leading <c>\\?\</c> and the trailing <c>#{guid}</c> removed and every remaining <c>#</c> restored to a
-/// <c>\</c>. Windows writes the COM name the same place it reads it from afterwards: that device's own
-/// <c>Device Parameters\PortName</c> value. Everything else shown in the row (manufacturer, description,
-/// the identifiers themselves) is read from the same node.
+/// <c>\\?\USB#VID_1A86&amp;PID_7523#5&amp;1b4e8a2c&amp;0&amp;1#{...guid}</c>. That path becomes a device instance id via
+/// <see cref="DeviceInstanceId.FromInterfacePath"/>. Windows writes the COM name the same place it reads it from
+/// afterwards: that device's own <c>Device Parameters\PortName</c> value. Everything else shown in the row
+/// (manufacturer, description, the identifiers themselves) is read from the same node — except the serial number
+/// and the USB location, which are properties of the instance id itself and are parsed by
+/// <see cref="DeviceInstanceId"/>.
 /// </para>
 /// <para>
 /// Failure is a normal outcome here, not an exceptional one: onboard serial ports have no USB identifiers,
@@ -54,12 +55,6 @@ public sealed class SerialPortDeviceEnumerator : ISerialPortDeviceEnumerator
     public const int QueryTimeoutMs = 3000;
 
     private const string EnumRoot = @"SYSTEM\CurrentControlSet\Enum";
-
-    private static readonly Regex VidPattern =
-        new(@"VID_([0-9A-Fa-f]{4})", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex PidPattern =
-        new(@"PID_([0-9A-Fa-f]{4})", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly ILogger<SerialPortDeviceEnumerator> _logger;
 
@@ -118,9 +113,14 @@ public sealed class SerialPortDeviceEnumerator : ISerialPortDeviceEnumerator
     /// <summary>
     /// 把一个设备接口路径还原成完整的 <see cref="PortDeviceInfo"/>；无法确定串口名时返回 null。
     /// </summary>
+    /// <remarks>
+    /// 实例 id 的还原、VID/PID 的提取、序列号与 USB 位置的判定全部在 <see cref="DeviceInstanceId"/> 里：那些是纯
+    /// 字符串启发式，留在这里就永远进不了逻辑层测试（本类依赖 WinRT 与注册表，测试工程链接不进来）。本方法只负责
+    /// 读注册表与组装。
+    /// </remarks>
     private PortDeviceInfo? BuildInfo(string deviceInterfaceId)
     {
-        var instanceId = ParseInstanceId(deviceInterfaceId);
+        var instanceId = DeviceInstanceId.FromInterfacePath(deviceInterfaceId);
         if (instanceId is null)
         {
             return null;
@@ -149,11 +149,12 @@ public sealed class SerialPortDeviceEnumerator : ISerialPortDeviceEnumerator
             // Mfg 与 DeviceDesc 一样是间接字符串（@oem12.inf,%key%;文本）。DeviceDesc 一直在解析而 Mfg
             // 没有，端口行里于是出现「@oem12.inf,%ftdi%;FTDI USB S...」——INF 占位符没被展开，读起来像
             // 乱码。两个字段现在走同一条解析路径。
-            Manufacturer = HumanizeIndirectString(TryReadValue(instanceId, string.Empty, "Mfg")),
-            Description = HumanizeIndirectString(TryReadValue(instanceId, string.Empty, "DeviceDesc")),
-            VendorId = FirstMatch(VidPattern, instanceId),
-            ProductId = FirstMatch(PidPattern, instanceId),
-            SerialNumber = ReadSerialNumber(instanceId),
+            Manufacturer = DeviceInstanceId.HumanizeIndirectString(TryReadValue(instanceId, string.Empty, "Mfg")),
+            Description = DeviceInstanceId.HumanizeIndirectString(TryReadValue(instanceId, string.Empty, "DeviceDesc")),
+            VendorId = DeviceInstanceId.ReadVendorId(instanceId),
+            ProductId = DeviceInstanceId.ReadProductId(instanceId),
+            SerialNumber = DeviceInstanceId.ReadSerialNumber(instanceId),
+            Location = DeviceInstanceId.ReadLocation(instanceId),
         };
     }
 
@@ -161,39 +162,6 @@ public sealed class SerialPortDeviceEnumerator : ISerialPortDeviceEnumerator
     private static string? ResolvePortName(string instanceId)
         => TryReadValue(instanceId, "Device Parameters", "PortName")
            ?? TryReadValue(instanceId, string.Empty, "PortName");
-
-    /// <summary>
-    /// 把设备接口路径（<c>\\?\USB#VID_...#{guid}</c>）还原成设备实例 id（<c>USB\VID_...</c>）。
-    /// </summary>
-    private static string? ParseInstanceId(string deviceInterfaceId)
-    {
-        if (string.IsNullOrEmpty(deviceInterfaceId))
-        {
-            return null;
-        }
-
-        var trimmed = deviceInterfaceId;
-
-        const string prefix = @"\\?\";
-        if (trimmed.StartsWith(prefix, StringComparison.Ordinal))
-        {
-            trimmed = trimmed[prefix.Length..];
-        }
-
-        // Drop the trailing interface-class GUID segment: everything after the last '#{'.
-        var guidStart = trimmed.LastIndexOf("#{", StringComparison.Ordinal);
-        if (guidStart > 0)
-        {
-            trimmed = trimmed[..guidStart];
-        }
-
-        if (trimmed.Length == 0)
-        {
-            return null;
-        }
-
-        return trimmed.Replace('#', '\\');
-    }
 
     /// <summary>实例 id 去掉最后一段。返回 null 表示已经到根。</summary>
     private static string? Parent(string instanceId)
@@ -217,75 +185,5 @@ public sealed class SerialPortDeviceEnumerator : ISerialPortDeviceEnumerator
             // removed device) that per-node logging would bury everything else.
             return null;
         }
-    }
-
-    /// <summary>
-    /// 序列号：设备实例 id 的最后一段，只要它不是 ID 前言或位置路径。
-    /// </summary>
-    /// <remarks>
-    /// There is no dedicated "serial number" value every driver publishes, so this uses what Windows itself
-    /// uses to tell two adapters apart — everything after the last separator in the instance id. It is
-    /// best-effort by nature, which is why a short or clearly-not-a-serial tail is dropped rather than
-    /// shown: `SN：1` in every row would be worse than nothing.
-    /// </remarks>
-    private static string? ReadSerialNumber(string instanceId)
-    {
-        var separator = instanceId.LastIndexOf('\\');
-        if (separator < 0 || separator == instanceId.Length - 1)
-        {
-            return null;
-        }
-
-        var tail = instanceId[(separator + 1)..];
-
-        // A bare VID/PID preamble or a location path is not a serial number; a tail that looks like one is
-        // whatever the driver chose to distinguish two otherwise identical adapters, which is exactly what
-        // the user needs in the row.
-        if (VidPattern.IsMatch(tail) || PidPattern.IsMatch(tail) || tail.Length < 3)
-        {
-            return null;
-        }
-
-        return tail.Length > 40 ? tail[..40] : tail;
-    }
-
-    /// <summary>
-    /// <c>DeviceDesc</c> 与 <c>Mfg</c> 常常是 <c>@oem12.inf,%key%;文本</c> 这样的间接引用，取分号后面的回退文本。
-    /// </summary>
-    /// <remarks>
-    /// 占位符（<c>%key%</c>）只有 INF 解析器能展开，注册表层做不到。所以取不到回退文本时（没有分号、分号在
-    /// 末尾、或整个值就是一个裸占位符）返回 null 而不是原样透传：把 <c>@oem12.inf,%ftdi%;</c> 显示进端口行
-    /// 只会被用户当成乱码。普通文本（<c>FTDI</c>、<c>wch.cn</c>）不以 <c>@</c> 或 <c>%</c> 开头，原样返回——
-    /// 它们中间的分号（"Foo; Inc"）不是分隔符，不能截。
-    /// </remarks>
-    private static string? HumanizeIndirectString(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return null;
-        }
-
-        var value = raw!.Trim();
-
-        if (!value.StartsWith('@') && !value.StartsWith('%'))
-        {
-            return value;
-        }
-
-        var semicolon = value.IndexOf(';');
-        if (semicolon < 0)
-        {
-            // 间接引用却没有回退文本：占位符本身不是给人看的。
-            return null;
-        }
-
-        var fallback = value[(semicolon + 1)..].Trim();
-        return fallback.Length > 0 ? fallback : null;
-    }
-
-    private static string? FirstMatch(Regex pattern, string input)
-    {
-        var match = pattern.Match(input);
-        return match.Success ? match.Groups[1].Value.ToUpperInvariant() : null;
     }
 }

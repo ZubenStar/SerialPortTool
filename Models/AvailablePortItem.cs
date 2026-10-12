@@ -70,6 +70,17 @@ public partial class AvailablePortItem : ObservableObject
     [NotifyPropertyChangedFor(nameof(ToolTipText))]
     private string? _serialNumber;
 
+    /// <summary>
+    /// USB 位置（<c>6&amp;2F625D12&amp;0&amp;1&amp;2</c>），只出现在悬停详情里。
+    /// </summary>
+    /// <remarks>
+    /// 唯一的通知目标是 <see cref="ToolTipText"/>：位置只进 Tooltip，不进 <see cref="DeviceLine"/>、不参与
+    /// <see cref="SearchText"/>（<c>6&amp;2F625D12&amp;0&amp;1</c> 不是人能搜的词，放进去只会稀释 F2 的匹配质量）。
+    /// </remarks>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ToolTipText))]
+    private string? _location;
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(MetadataLine))]
     [NotifyPropertyChangedFor(nameof(HasMetadata))]
@@ -111,8 +122,9 @@ public partial class AvailablePortItem : ObservableObject
     /// </summary>
     /// <remarks>
     /// 左栏刻意窄（宽度让给日志），第二、三行以省略号截断是常态而非异常，完整文本必须另有出口。
-    /// 序列号也放这里：它最能区分两个外观相同的适配器，却挤不进任何一行。每个字段一行、空值跳过；
-    /// <see cref="PortName"/> 恒非空，所以结果至少一行，Tooltip 不会拿到空字符串。
+    /// 序列号也放这里：它最能区分两个外观相同的适配器，却挤不进任何一行。位置同样放这里，但理由不同——它不是
+    /// 身份，而是"插在哪个口上"，没有序列号的多口板子只能靠它区分几个口，换一个 USB 口它就会变。每个字段一行、
+    /// 空值跳过；<see cref="PortName"/> 恒非空，所以结果至少一行，Tooltip 不会拿到空字符串。
     /// </remarks>
     public string ToolTipText => BuildToolTipText();
 
@@ -131,6 +143,7 @@ public partial class AvailablePortItem : ObservableObject
         VendorId = info.VendorId;
         ProductId = info.ProductId;
         SerialNumber = info.SerialNumber;
+        Location = info.Location;
     }
 
     /// <summary>套用备注/标签/分组。</summary>
@@ -210,6 +223,11 @@ public partial class AvailablePortItem : ObservableObject
         if (!string.IsNullOrWhiteSpace(SerialNumber))
         {
             AppendToolTipLine(builder, $"SN：{SerialNumber}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(Location))
+        {
+            AppendToolTipLine(builder, $"位置：{Location}");
         }
 
         AppendToolTipLine(builder, MetadataLine);
